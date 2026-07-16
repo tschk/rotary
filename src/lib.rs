@@ -19,6 +19,7 @@
 //! ```
 
 pub mod agent;
+pub mod compaction;
 pub mod config;
 pub mod context;
 pub mod extract;
@@ -42,6 +43,8 @@ pub mod ipc;
 #[cfg(feature = "memory")]
 pub mod memory;
 
+pub mod models;
+
 #[cfg(feature = "mcp")]
 pub mod mcp;
 
@@ -51,9 +54,13 @@ pub mod pi;
 pub mod acp;
 pub mod lsp;
 
-pub use agent::{Agent, Event, ToolCall, ToolContext, ToolDefinition, ToolRegistry, ToolResult};
+pub use agent::{
+    Agent, Event, ToolCall, ToolContext, ToolDefinition, ToolEffect, ToolRegistry, ToolResult,
+};
+pub use compaction::{compact_messages, CompactionConfig, CompactionMarker, CompactionResult};
 pub use hooks::HookRegistry;
 pub use mode::{Profile, Scope};
+pub use models::{CompatConfig, ModelInfo, ModelRegistry};
 pub use permissions::{Approver, Decision, PermissionMode, Policy};
 pub use provider::{Message, Provider, ProviderRegistry, Role, StreamEvent};
 pub use session::Session;

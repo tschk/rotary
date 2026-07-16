@@ -1,6 +1,6 @@
 //! Computer-use tools via rs_peekaboo (crates.io dep — no FFI, no vendoring).
 
-use crate::agent::{ToolDefinition, ToolRegistry, ToolResult};
+use crate::agent::{ToolDefinition, ToolEffect, ToolRegistry, ToolResult};
 use rs_peekaboo::automation::{parse_point, Target};
 use rs_peekaboo::{Direction, ImageMode, Peekaboo, Point};
 use serde_json::Value;
@@ -18,30 +18,35 @@ pub fn register_tools(registry: &mut ToolRegistry) {
         description: "Call rs_peekaboo by method name with JSON args (extensible dispatch).".into(),
         parameters_json: r#"{"type":"object","properties":{"method":{"type":"string"},"args":{"type":"object"}},"required":["method"]}"#.into(),
         execute: |_ctx, args| Box::pin(exec_call(args)),
+        effect: ToolEffect::Process,
     });
     registry.register(ToolDefinition {
         name: "cu_see".into(),
         description: "Capture UI snapshot (optional app filter, mode, path, retina).".into(),
         parameters_json: r#"{"type":"object","properties":{"app":{"type":"string"},"mode":{"type":"string"},"path":{"type":"string"},"retina":{"type":"boolean"}}}"#.into(),
         execute: |_ctx, args| Box::pin(exec_see(args)),
+        effect: ToolEffect::Process,
     });
     registry.register(ToolDefinition {
         name: "cu_image".into(),
         description: "Screenshot screen/window/menu to path.".into(),
         parameters_json: r#"{"type":"object","properties":{"mode":{"type":"string"},"path":{"type":"string"},"retina":{"type":"boolean"}}}"#.into(),
         execute: |_ctx, args| Box::pin(exec_image(args)),
+        effect: ToolEffect::Process,
     });
     registry.register(ToolDefinition {
         name: "cu_click".into(),
         description: "Click at coords \"x,y\" or {x,y}. Optional button, count.".into(),
         parameters_json: r#"{"type":"object","properties":{"coords":{"type":"string"},"x":{"type":"integer"},"y":{"type":"integer"},"button":{"type":"string"},"count":{"type":"integer"}}}"#.into(),
         execute: |_ctx, args| Box::pin(exec_click(args)),
+        effect: ToolEffect::Process,
     });
     registry.register(ToolDefinition {
         name: "cu_type".into(),
         description: "Type text; optional clear, return, delay_ms, app.".into(),
         parameters_json: r#"{"type":"object","properties":{"text":{"type":"string"},"clear":{"type":"boolean"},"return":{"type":"boolean"},"delay_ms":{"type":"integer"},"app":{"type":"string"}},"required":["text"]}"#.into(),
         execute: |_ctx, args| Box::pin(exec_type(args)),
+        effect: ToolEffect::Process,
     });
     registry.register(ToolDefinition {
         name: "cu_hotkey".into(),
@@ -50,42 +55,49 @@ pub fn register_tools(registry: &mut ToolRegistry) {
             r#"{"type":"object","properties":{"keys":{"type":"string"}},"required":["keys"]}"#
                 .into(),
         execute: |_ctx, args| Box::pin(exec_hotkey(args)),
+        effect: ToolEffect::Process,
     });
     registry.register(ToolDefinition {
         name: "cu_scroll".into(),
         description: "Scroll direction up|down|left|right, amount.".into(),
         parameters_json: r#"{"type":"object","properties":{"direction":{"type":"string"},"amount":{"type":"integer"}}}"#.into(),
         execute: |_ctx, args| Box::pin(exec_scroll(args)),
+        effect: ToolEffect::Process,
     });
     registry.register(ToolDefinition {
         name: "cu_window".into(),
         description: "Window list/focus/close/minimize. action + optional app, title.".into(),
         parameters_json: r#"{"type":"object","properties":{"action":{"type":"string"},"app":{"type":"string"},"title":{"type":"string"}}}"#.into(),
         execute: |_ctx, args| Box::pin(exec_window(args)),
+        effect: ToolEffect::Process,
     });
     registry.register(ToolDefinition {
         name: "cu_app".into(),
         description: "App list/launch/switch/quit. action + optional name.".into(),
         parameters_json: r#"{"type":"object","properties":{"action":{"type":"string"},"name":{"type":"string"}}}"#.into(),
         execute: |_ctx, args| Box::pin(exec_app(args)),
+        effect: ToolEffect::Process,
     });
     registry.register(ToolDefinition {
         name: "cu_list".into(),
         description: "List apps, windows, or screens.".into(),
         parameters_json: r#"{"type":"object","properties":{"what":{"type":"string"}}}"#.into(),
         execute: |_ctx, args| Box::pin(exec_list(args)),
+        effect: ToolEffect::Process,
     });
     registry.register(ToolDefinition {
         name: "cu_open".into(),
         description: "Open path or URL, optional app, no_focus.".into(),
         parameters_json: r#"{"type":"object","properties":{"target":{"type":"string"},"app":{"type":"string"},"no_focus":{"type":"boolean"}},"required":["target"]}"#.into(),
         execute: |_ctx, args| Box::pin(exec_open(args)),
+        effect: ToolEffect::Process,
     });
     registry.register(ToolDefinition {
         name: "cu_clipboard".into(),
         description: "Clipboard read/write. action read|write, optional text.".into(),
         parameters_json: r#"{"type":"object","properties":{"action":{"type":"string"},"text":{"type":"string"}},"required":["action"]}"#.into(),
         execute: |_ctx, args| Box::pin(exec_clipboard(args)),
+        effect: ToolEffect::Process,
     });
     tracing::info!("computer_use: registered rs_peekaboo tools (crates.io dep)");
 }

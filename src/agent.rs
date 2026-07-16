@@ -75,11 +75,29 @@ impl ToolContext {
 /// Function-pointer tool (for simple builtins).
 pub type ToolExecuteFn = fn(Arc<ToolContext>, String) -> ToolFuture;
 
+/// Tool effect class — determines parallel execution eligibility (codex-rs pattern).
+/// Read-only tools can run in parallel; write/process tools are serialized.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolEffect {
+    Read,
+    Write,
+    Network,
+    Process,
+}
+
+impl ToolEffect {
+    /// Returns true if this tool can run in parallel with other read tools.
+    pub fn supports_parallel(self) -> bool {
+        matches!(self, ToolEffect::Read | ToolEffect::Network)
+    }
+}
+
 pub struct ToolDefinition {
     pub name: String,
     pub description: String,
     pub parameters_json: String,
     pub execute: ToolExecuteFn,
+    pub effect: ToolEffect,
 }
 
 impl ToolDefinition {
@@ -94,7 +112,13 @@ impl ToolDefinition {
             description: description.into(),
             parameters_json: parameters_json.into(),
             execute,
+            effect: ToolEffect::Read,
         }
+    }
+
+    pub fn with_effect(mut self, effect: ToolEffect) -> Self {
+        self.effect = effect;
+        self
     }
 }
 
@@ -135,6 +159,14 @@ impl ToolRegistry {
     ) -> Option<ToolResult> {
         let entry = self.tools.get(name)?;
         Some((entry.execute)(ctx.clone(), arguments.to_string()).await)
+    }
+
+    /// Get the effect class for a tool (defaults to Read if not found).
+    pub fn effect_of(&self, name: &str) -> ToolEffect {
+        self.tools
+            .get(name)
+            .map(|e| e.effect)
+            .unwrap_or(ToolEffect::Read)
     }
 }
 
@@ -369,7 +401,8 @@ impl Agent {
         Ok(())
     }
 
-    /// Execute tool calls in parallel (codex-rs pattern).
+    /// Execute tool calls — sequential dispatch with effect classification.
+    /// ToolEffect determines parallel eligibility for future JoinSet-based dispatch.
     async fn execute_tools_parallel(
         &self,
         calls: &[ToolCall],
@@ -379,9 +412,7 @@ impl Agent {
 
         for call in calls {
             self.emit(Event::ToolExecutionStart(call.clone()));
-
             let result = self.execute_single_tool(call, ctx).await;
-
             self.emit(Event::ToolExecutionEnd(result.clone()));
             results.push(result);
         }

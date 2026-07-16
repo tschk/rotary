@@ -31,7 +31,7 @@ sqlite-sessions = ["dep:rusqlite"]
 # Pi protocol compatibility — JSONL v3 sessions, RPC over stdin/stdout,
 # pi tool names, extension protocol with QuickJS, capability policy, SDK surface.
 pi-compat = ["dep:serde_yaml", "dep:dirs"]
-pi-extensions = ["pi-compat", "dep:rquickjs"]
+pi-extensions = ["pi-compat", "dep:rquickjs", "dep:regex"]
 
 [dependencies]
 serde = { version = "1", features = ["derive", "rc"] }
@@ -74,7 +74,7 @@ serde_yaml = { version = "0.9", optional = true }
 dirs = { version = "6", optional = true }
 
 # Optional — pi-extensions (QuickJS runtime for pi extension execution)
-rquickjs = { version = "0.7", features = ["loader", "allocator"], optional = true }
+rquickjs = { version = "0.7", features = ["loader", "allocator", "parallel"], optional = true }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }

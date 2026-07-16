@@ -1,7 +1,7 @@
 //! Built-in coding tools: read, write, edit, bash, grep, find, ls.
 //! Uses rayon for parallel search (grok pattern).
 
-use crate::agent::{ToolContext, ToolDefinition, ToolFuture, ToolRegistry, ToolResult};
+use crate::agent::{ToolContext, ToolDefinition, ToolEffect, ToolFuture, ToolRegistry, ToolResult};
 use std::process::Command;
 use std::sync::Arc;
 use tracing::debug;
@@ -10,48 +10,69 @@ use tracing::debug;
 use rayon::prelude::*;
 
 pub fn register_builtin_tools(registry: &mut ToolRegistry) {
-    registry.register(ToolDefinition::new_fn(
-        "read",
-        "Read the contents of a file at the given path. Returns content with line numbers.",
-        r#"{"type":"object","properties":{"path":{"type":"string"},"offset":{"type":"integer"},"limit":{"type":"integer"}},"required":["path"]}"#,
-        exec_read,
-    ));
-    registry.register(ToolDefinition::new_fn(
-        "write",
-        "Write content to a file, creating or overwriting it.",
-        r#"{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"]}"#,
-        exec_write,
-    ));
-    registry.register(ToolDefinition::new_fn(
-        "edit",
-        "Perform a string replacement in a file. old_string must be unique.",
-        r#"{"type":"object","properties":{"path":{"type":"string"},"old_string":{"type":"string"},"new_string":{"type":"string"}},"required":["path","old_string","new_string"]}"#,
-        exec_edit,
-    ));
-    registry.register(ToolDefinition::new_fn(
-        "bash",
-        "Execute a shell command and return stdout/stderr. Optional timeout in seconds.",
-        r#"{"type":"object","properties":{"command":{"type":"string"},"cwd":{"type":"string"},"timeout":{"type":"integer"}},"required":["command"]}"#,
-        exec_bash,
-    ));
-    registry.register(ToolDefinition::new_fn(
-        "grep",
-        "Search file contents using regex. Returns matching lines with context.",
-        r#"{"type":"object","properties":{"pattern":{"type":"string"},"path":{"type":"string"},"context":{"type":"integer"}},"required":["pattern"]}"#,
-        exec_grep,
-    ));
-    registry.register(ToolDefinition::new_fn(
-        "find",
-        "Find files by glob pattern. Uses rayon for parallel traversal.",
-        r#"{"type":"object","properties":{"pattern":{"type":"string"},"path":{"type":"string"}},"required":["pattern"]}"#,
-        exec_find,
-    ));
-    registry.register(ToolDefinition::new_fn(
-        "ls",
-        "List entries in a directory.",
-        r#"{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}"#,
-        exec_ls,
-    ));
+    registry.register(
+        ToolDefinition::new_fn(
+            "read",
+            "Read the contents of a file at the given path. Returns content with line numbers.",
+            r#"{"type":"object","properties":{"path":{"type":"string"},"offset":{"type":"integer"},"limit":{"type":"integer"}},"required":["path"]}"#,
+            exec_read,
+        )
+        .with_effect(ToolEffect::Read),
+    );
+    registry.register(
+        ToolDefinition::new_fn(
+            "write",
+            "Write content to a file, creating or overwriting it.",
+            r#"{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"]}"#,
+            exec_write,
+        )
+        .with_effect(ToolEffect::Write),
+    );
+    registry.register(
+        ToolDefinition::new_fn(
+            "edit",
+            "Perform a string replacement in a file. old_string must be unique.",
+            r#"{"type":"object","properties":{"path":{"type":"string"},"old_string":{"type":"string"},"new_string":{"type":"string"}},"required":["path","old_string","new_string"]}"#,
+            exec_edit,
+        )
+        .with_effect(ToolEffect::Write),
+    );
+    registry.register(
+        ToolDefinition::new_fn(
+            "bash",
+            "Execute a shell command and return stdout/stderr. Optional timeout in seconds.",
+            r#"{"type":"object","properties":{"command":{"type":"string"},"cwd":{"type":"string"},"timeout":{"type":"integer"}},"required":["command"]}"#,
+            exec_bash,
+        )
+        .with_effect(ToolEffect::Process),
+    );
+    registry.register(
+        ToolDefinition::new_fn(
+            "grep",
+            "Search file contents using regex. Returns matching lines with context.",
+            r#"{"type":"object","properties":{"pattern":{"type":"string"},"path":{"type":"string"},"context":{"type":"integer"}},"required":["pattern"]}"#,
+            exec_grep,
+        )
+        .with_effect(ToolEffect::Read),
+    );
+    registry.register(
+        ToolDefinition::new_fn(
+            "find",
+            "Find files by glob pattern. Uses rayon for parallel traversal.",
+            r#"{"type":"object","properties":{"pattern":{"type":"string"},"path":{"type":"string"}},"required":["pattern"]}"#,
+            exec_find,
+        )
+        .with_effect(ToolEffect::Read),
+    );
+    registry.register(
+        ToolDefinition::new_fn(
+            "ls",
+            "List entries in a directory.",
+            r#"{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}"#,
+            exec_ls,
+        )
+        .with_effect(ToolEffect::Read),
+    );
 }
 
 fn parse_str_field(args: &str, field: &str) -> Option<String> {
