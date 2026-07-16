@@ -3,19 +3,19 @@
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use rx4::compaction::{compact_messages, CompactionConfig};
-use rx4::pi::PiSession;
 use rx4::provider::{Message, Role};
 use rx4::secrets::Redactor;
 use rx4::sse::SseParser;
+use rx4::Session;
 
 fn bench_session_append(c: &mut Criterion) {
     let mut group = c.benchmark_group("session/append");
     for n in [100, 1_000, 10_000] {
         group.bench_with_input(BenchmarkId::from_parameter(n), &n, |b, &n| {
             b.iter(|| {
-                let mut s = PiSession::new("/bench", "gpt-4o");
+                let mut s = Session::new("/bench", "gpt-4o");
                 for i in 0..n {
-                    s.append_message(Role::User, format!("message {i}"));
+                    s.append(Role::User, format!("message {i}"));
                 }
                 black_box(&s);
             });
@@ -29,13 +29,13 @@ fn bench_session_jsonl_roundtrip(c: &mut Criterion) {
     for n in [100, 1_000] {
         group.bench_with_input(BenchmarkId::from_parameter(n), &n, |b, &n| {
             let tmp = tempfile::tempdir().unwrap();
-            let mut s = PiSession::new("/bench", "gpt-4o");
+            let mut s = Session::new("/bench", "gpt-4o");
             for i in 0..n {
-                s.append_message(Role::User, format!("message {i}"));
+                s.append(Role::User, format!("message {i}"));
             }
             b.iter(|| {
                 let path = s.save_jsonl(tmp.path()).unwrap();
-                let loaded = PiSession::load_jsonl(&path).unwrap();
+                let loaded = Session::load_jsonl(&path).unwrap();
                 black_box(loaded);
             });
         });

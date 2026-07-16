@@ -238,20 +238,24 @@ mod tests {
 
     #[test]
     fn router_routes_simple_to_simple_model() {
-        let mut config = RoutingConfig::default();
-        config.enabled = true;
-        config.simple_model = Some("gpt-4o-mini".to_string());
-        config.strong_model = Some("gpt-4o".to_string());
+        let config = RoutingConfig {
+            enabled: true,
+            simple_model: Some("gpt-4o-mini".to_string()),
+            strong_model: Some("gpt-4o".to_string()),
+            ..Default::default()
+        };
         let router = SmartRouter::new(config);
         assert_eq!(router.route("hello", "gpt-4o"), "gpt-4o-mini");
     }
 
     #[test]
     fn router_routes_strong_to_strong_model() {
-        let mut config = RoutingConfig::default();
-        config.enabled = true;
-        config.simple_model = Some("gpt-4o-mini".to_string());
-        config.strong_model = Some("gpt-4o".to_string());
+        let config = RoutingConfig {
+            enabled: true,
+            simple_model: Some("gpt-4o-mini".to_string()),
+            strong_model: Some("gpt-4o".to_string()),
+            ..Default::default()
+        };
         let router = SmartRouter::new(config);
         assert_eq!(
             router.route("analyze the architecture", "gpt-4o-mini"),
@@ -261,19 +265,23 @@ mod tests {
 
     #[test]
     fn router_falls_back_when_target_unset() {
-        let mut config = RoutingConfig::default();
-        config.enabled = true;
-        config.simple_model = None;
+        let config = RoutingConfig {
+            enabled: true,
+            simple_model: None,
+            ..Default::default()
+        };
         let router = SmartRouter::new(config);
         assert_eq!(router.route("hello", "gpt-4o"), "gpt-4o");
     }
 
     #[test]
     fn router_tracks_stats() {
-        let mut config = RoutingConfig::default();
-        config.enabled = true;
-        config.simple_model = Some("gpt-4o-mini".to_string());
-        config.strong_model = Some("gpt-4o".to_string());
+        let config = RoutingConfig {
+            enabled: true,
+            simple_model: Some("gpt-4o-mini".to_string()),
+            strong_model: Some("gpt-4o".to_string()),
+            ..Default::default()
+        };
         let router = SmartRouter::new(config);
         router.route("hello", "gpt-4o");
         router.route("analyze this", "gpt-4o");
@@ -286,10 +294,12 @@ mod tests {
 
     #[test]
     fn router_route_batch() {
-        let mut config = RoutingConfig::default();
-        config.enabled = true;
-        config.simple_model = Some("gpt-4o-mini".to_string());
-        config.strong_model = Some("gpt-4o".to_string());
+        let config = RoutingConfig {
+            enabled: true,
+            simple_model: Some("gpt-4o-mini".to_string()),
+            strong_model: Some("gpt-4o".to_string()),
+            ..Default::default()
+        };
         let router = SmartRouter::new(config);
         let models = router.route_batch(&["hello", "analyze this"], "gpt-4o");
         assert_eq!(models, vec!["gpt-4o-mini", "gpt-4o"]);

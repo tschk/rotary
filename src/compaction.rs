@@ -283,9 +283,9 @@ mod tests {
         let config = CompactionConfig::new(100, 30, 20);
         let messages = vec![
             Message::system("system prompt"),
-            Message::user(&"old ".repeat(50)),
-            Message::assistant(&"mid ".repeat(50)),
-            Message::user(&"new ".repeat(50)),
+            Message::user("old ".repeat(50)),
+            Message::assistant("mid ".repeat(50)),
+            Message::user("new ".repeat(50)),
         ];
         let result = compact_messages(&messages, &config);
         assert!(result.removed_count > 0);
@@ -300,8 +300,8 @@ mod tests {
         let system_content = "important system prompt";
         let messages = vec![
             Message::system(system_content),
-            Message::user(&"a".repeat(200)),
-            Message::assistant(&"b".repeat(200)),
+            Message::user("a".repeat(200)),
+            Message::assistant("b".repeat(200)),
             Message::user("recent"),
         ];
         let result = compact_messages(&messages, &config);
@@ -314,9 +314,9 @@ mod tests {
         let config = CompactionConfig::new(200, 60, 30);
         let messages = vec![
             Message::system("sys"),
-            Message::user(&"a".repeat(300)),
-            Message::assistant(&"b".repeat(300)),
-            Message::user(&"c".repeat(60)),
+            Message::user("a".repeat(300)),
+            Message::assistant("b".repeat(300)),
+            Message::user("c".repeat(60)),
         ];
         let result = compact_messages(&messages, &config);
         let total = estimate_messages(&messages);
@@ -377,8 +377,8 @@ mod tests {
         let config = CompactionConfig::new(100, 30, 20);
         let messages = vec![
             Message::system("Task: do the thing"),
-            Message::user(&"a".repeat(200)),
-            Message::assistant(&"b".repeat(200)),
+            Message::user("a".repeat(200)),
+            Message::assistant("b".repeat(200)),
             Message::user("Decision: keep it simple"),
         ];
         let result = compact_messages(&messages, &config);

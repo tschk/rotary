@@ -398,9 +398,11 @@ mod tests {
         b.trigger_patterns = vec!["deploy".into(), "ship".into()];
         b.confidence = 0.5;
         let engine = engine_with(vec![a, b]);
-        let mut config = CuratorConfig::default();
-        config.consolidate = true;
-        config.max_suggestions_per_run = 10;
+        let config = CuratorConfig {
+            consolidate: true,
+            max_suggestions_per_run: 10,
+            ..Default::default()
+        };
         let curator = SkillCurator::new(config);
         let suggestions = curator.audit(&engine);
         let consolidate = suggestions

@@ -2,7 +2,7 @@
 
 [![crates.io](https://img.shields.io/crates/v/rx4.svg)](https://crates.io/crates/rx4)
 [![License: MPL-2.0](https://img.shields.io/badge/License-MPL--2.0-blue.svg)](LICENSE)
-[![MSRV: 1.75](https://img.shields.io/badge/MSRV-1.75-blue.svg)](https://blog.rust-lang.org/2023/12/28/Rust-1.75.0.html)
+[![MSRV: 1.88](https://img.shields.io/badge/MSRV-1.88-blue.svg)](https://blog.rust-lang.org/2025/06/26/Rust-1.88.0.html)
 
 Pure agent harness engine. Models write; rotary gives them tools, memory,
 loops, permissions, sessions, and control planes. **No product UI, no

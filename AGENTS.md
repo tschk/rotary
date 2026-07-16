@@ -19,7 +19,7 @@ cycle or audit; the host decides *when*.
 
 ## Stack
 
-- Rust 2021 (MSRV 1.75), `#![forbid(unsafe_code)]`
+- Rust 2021 (MSRV 1.88), `#![forbid(unsafe_code)]`
 - tokio (async runtime, feature-gated)
 - serde / serde_json
 - rs_peekaboo 0.3.2 (crates.io, computer-use, feature-gated)
