@@ -294,7 +294,7 @@ impl PiExtensionManager {
     }
 
     /// Get an extension by ID.
-    pub fn get(&self, id: &str) -> Option<dashmap::mapref::one::Ref<String, PiExtension>> {
+    pub fn get(&self, id: &str) -> Option<dashmap::mapref::one::Ref<'_, String, PiExtension>> {
         self.extensions.get(id)
     }
 

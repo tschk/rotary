@@ -14,7 +14,7 @@ pub enum Scope {
 }
 
 impl Scope {
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn parse_scope(s: &str) -> Option<Self> {
         match s.to_ascii_lowercase().as_str() {
             "coding" | "code" => Some(Self::Coding),
             "research" | "explore" => Some(Self::Research),
@@ -159,7 +159,7 @@ pub fn compose_prompt(base: Option<&str>, p: &Profile) -> String {
 pub fn tool_allowed(p: &Profile, tool_name: &str) -> bool {
     match p.allowed_tools {
         None => true,
-        Some(list) => list.iter().any(|name| *name == tool_name),
+        Some(list) => list.contains(&tool_name),
     }
 }
 
@@ -169,9 +169,9 @@ mod tests {
 
     #[test]
     fn scope_parse() {
-        assert_eq!(Scope::from_str("code"), Some(Scope::Coding));
-        assert_eq!(Scope::from_str("cu"), Some(Scope::ComputerUse));
-        assert_eq!(Scope::from_str("nope"), None);
+        assert_eq!(Scope::parse_scope("code"), Some(Scope::Coding));
+        assert_eq!(Scope::parse_scope("cu"), Some(Scope::ComputerUse));
+        assert_eq!(Scope::parse_scope("nope"), None);
     }
 
     #[test]

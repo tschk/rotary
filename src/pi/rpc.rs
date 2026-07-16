@@ -124,6 +124,7 @@ impl PiRpcServer {
         Ok(())
     }
 
+    #[allow(clippy::await_holding_lock)]
     fn handle_command(&self, line: &str) -> Option<String> {
         let cmd: PiRpcCommand = match serde_json::from_str(line) {
             Ok(c) => c,

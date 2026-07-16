@@ -37,7 +37,7 @@ impl PiCapability {
         }
     }
 
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn parse_capability(s: &str) -> Option<Self> {
         match s {
             "exec" => Some(Self::Exec),
             "write" => Some(Self::Write),

@@ -3,7 +3,7 @@
 use crate::extract::ProactiveItem;
 
 pub fn rank(items: &mut [ProactiveItem]) {
-    items.sort_by(|a, b| b.priority.cmp(&a.priority));
+    items.sort_by_key(|a| std::cmp::Reverse(a.priority));
 }
 
 pub fn top_n(items: &mut Vec<ProactiveItem>, n: usize) -> Vec<ProactiveItem> {

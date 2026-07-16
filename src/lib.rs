@@ -51,9 +51,7 @@ pub mod pi;
 pub mod acp;
 pub mod lsp;
 
-pub use agent::{
-    Agent, Event, ToolCall, ToolContext, ToolDefinition, ToolExecutor, ToolRegistry, ToolResult,
-};
+pub use agent::{Agent, Event, ToolCall, ToolContext, ToolDefinition, ToolRegistry, ToolResult};
 pub use hooks::HookRegistry;
 pub use mode::{Profile, Scope};
 pub use permissions::{Approver, Decision, PermissionMode, Policy};

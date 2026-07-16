@@ -15,7 +15,9 @@ use serde::{Deserialize, Serialize};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
-use tracing::{debug, error, info, warn};
+#[cfg(feature = "providers")]
+use tracing::error;
+use tracing::{debug, info, warn};
 
 #[cfg(feature = "ipc")]
 use cancellation_token::CancellationToken;
@@ -70,28 +72,14 @@ impl ToolContext {
     }
 }
 
-/// Trait-based tool execution (pi_agent_rust pattern).
-#[async_trait::async_trait]
-pub trait ToolExecutor: Send + Sync {
-    fn name(&self) -> &str;
-    fn description(&self) -> &str;
-    fn parameters_json(&self) -> &str;
-    async fn execute(&self, ctx: &ToolContext, arguments: &str) -> ToolResult;
-}
-
 /// Function-pointer tool (for simple builtins).
 pub type ToolExecuteFn = fn(Arc<ToolContext>, String) -> ToolFuture;
-
-pub enum ToolEntry {
-    Trait(Box<dyn ToolExecutor>),
-    Fn(ToolExecuteFn),
-}
 
 pub struct ToolDefinition {
     pub name: String,
     pub description: String,
     pub parameters_json: String,
-    pub entry: ToolEntry,
+    pub execute: ToolExecuteFn,
 }
 
 impl ToolDefinition {
@@ -105,16 +93,7 @@ impl ToolDefinition {
             name: name.into(),
             description: description.into(),
             parameters_json: parameters_json.into(),
-            entry: ToolEntry::Fn(execute),
-        }
-    }
-
-    pub fn new_trait(executor: Box<dyn ToolExecutor>) -> Self {
-        Self {
-            name: executor.name().to_string(),
-            description: executor.description().to_string(),
-            parameters_json: executor.parameters_json().to_string(),
-            entry: ToolEntry::Trait(executor),
+            execute,
         }
     }
 }
@@ -136,19 +115,8 @@ impl ToolRegistry {
         self.tools.insert(tool.name.clone(), tool);
     }
 
-    pub fn get(&self, name: &str) -> Option<ToolEntry> {
-        self.tools.get(name).map(|e| match &e.entry {
-            ToolEntry::Trait(_) => ToolEntry::Trait(Box::new(FnAdapter(e.parameters_json.clone()))),
-            ToolEntry::Fn(f) => ToolEntry::Fn(*f),
-        })
-    }
-
     pub fn count(&self) -> usize {
         self.tools.len()
-    }
-
-    pub fn names(&self) -> Vec<String> {
-        self.tools.iter().map(|e| e.key().clone()).collect()
     }
 
     pub fn definitions(&self) -> Vec<serde_json::Value> {
@@ -166,33 +134,13 @@ impl ToolRegistry {
         arguments: &str,
     ) -> Option<ToolResult> {
         let entry = self.tools.get(name)?;
-        match &entry.entry {
-            ToolEntry::Trait(executor) => Some(executor.execute(ctx, arguments).await),
-            ToolEntry::Fn(f) => Some((f)(ctx.clone(), arguments.to_string()).await),
-        }
+        Some((entry.execute)(ctx.clone(), arguments.to_string()).await)
     }
 }
 
 impl Default for ToolRegistry {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-struct FnAdapter(String);
-#[async_trait::async_trait]
-impl ToolExecutor for FnAdapter {
-    fn name(&self) -> &str {
-        "fn_adapter"
-    }
-    fn description(&self) -> &str {
-        ""
-    }
-    fn parameters_json(&self) -> &str {
-        &self.0
-    }
-    async fn execute(&self, _ctx: &ToolContext, _arguments: &str) -> ToolResult {
-        ToolResult::err("fn_adapter", "not directly executable")
     }
 }
 
@@ -339,7 +287,9 @@ impl Agent {
             let messages: Vec<Message> = self.messages.read().clone();
             let system = self.system_prompt.clone();
 
-            let mut tool_calls = Vec::new();
+            #[allow(unused_mut)]
+            let mut tool_calls: Vec<ToolCall> = Vec::new();
+            #[allow(unused_assignments)]
             let mut assistant_content = String::new();
 
             self.emit(Event::MessageStart {
@@ -382,7 +332,7 @@ impl Agent {
 
             #[cfg(not(feature = "providers"))]
             {
-                let _ = provider;
+                let _ = (&provider, &messages, &system);
                 assistant_content =
                     "[providers feature not enabled — enable with --features providers]"
                         .to_string();

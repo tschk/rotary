@@ -22,7 +22,7 @@ pub use policy::{PiCapability, PiCapabilityPolicy, PiExtensionOverride, PiPolicy
 pub use rpc::{PiRpcClient, PiRpcCommand, PiRpcEvent, PiRpcServer};
 pub use sdk::{create_agent_session, AgentSessionHandle, AgentSessionOptions, SessionTransport};
 pub use session::{PiEntry, PiEntryType, PiSession, PiSessionHeader};
-pub use tools::{pi_to_rx4_tool, rx4_to_pi_tool, PI_TOOL_ALIASES};
+pub use tools::{is_pi_tool_name, pi_to_rx4_tool, pi_tool_names, rx4_to_pi_tool};
 
 /// Pi session format version.
 pub const PI_SESSION_VERSION: u32 = 3;
@@ -47,8 +47,7 @@ pub fn pi_sessions_dir(project_path: &std::path::Path) -> std::path::PathBuf {
 /// Encode a project path the way pi does (replaces path separators).
 pub fn encode_project_path(path: &std::path::Path) -> String {
     let s = path.to_string_lossy();
-    s.replace('/', "--")
-        .replace('\\', "--")
+    s.replace(['/', '\\'], "--")
         .replace(' ', "-")
         .replace(':', "")
 }

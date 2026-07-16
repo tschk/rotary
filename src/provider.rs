@@ -6,7 +6,8 @@ use async_trait::async_trait;
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use tracing::error;
+#[cfg(feature = "providers")]
+use tracing::{debug, error};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -97,9 +98,9 @@ pub trait Provider: Send + Sync {
         model: &str,
         tools: &[serde_json::Value],
     ) -> Result<String, ProviderError> {
-        let mut content = String::new();
         #[cfg(feature = "providers")]
         {
+            let mut content = String::new();
             let mut stream = self.stream(messages, system, model, tools).await?;
             use futures::StreamExt;
             while let Some(event) = stream.next().await {
@@ -107,13 +108,13 @@ pub trait Provider: Send + Sync {
                     content.push_str(&delta);
                 }
             }
+            return Ok(content);
         }
         #[cfg(not(feature = "providers"))]
         {
             let _ = (messages, system, model, tools);
-            content = "[providers feature not enabled]".to_string();
+            return Ok("[providers feature not enabled]".to_string());
         }
-        Ok(content)
     }
 }
 
@@ -264,9 +265,10 @@ impl Provider for OpenAIProvider {
         }
 
         let byte_stream = response.bytes_stream();
-        let sse_stream = eventsource_stream::Eventsource::new(byte_stream);
+        let sse_stream = eventsource_stream::Eventsource::eventsource(byte_stream);
         let provider_id = self.provider_id.clone();
 
+        use futures::StreamExt;
         let mapped = sse_stream.filter_map(move |event_result| {
             let pid = provider_id.clone();
             async move {

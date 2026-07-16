@@ -19,18 +19,13 @@ use tokio::sync::Mutex;
 use tracing::info;
 
 /// Transport for the session (pi pattern).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub enum SessionTransport {
     /// Direct in-process embedding.
+    #[default]
     InProcess,
     /// RPC subprocess (spawns a child process running `rx4 --mode rpc`).
     RpcSubprocess { command: String },
-}
-
-impl Default for SessionTransport {
-    fn default() -> Self {
-        Self::InProcess
-    }
 }
 
 /// Options for creating an agent session (pi SDK).
@@ -168,7 +163,7 @@ pub fn create_agent_session(options: AgentSessionOptions) -> AgentSessionHandle 
         agent.set_workspace_root(workspace.clone());
     }
 
-    if let Some(scope) = crate::mode::Scope::from_str(&options.scope) {
+    if let Some(scope) = crate::mode::Scope::parse_scope(&options.scope) {
         agent.set_scope(scope);
     }
 

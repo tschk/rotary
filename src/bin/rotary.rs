@@ -13,11 +13,9 @@ fn main() {
 
     // pi-compatible RPC mode: `rx4 --mode rpc`
     #[cfg(feature = "pi-compat")]
-    if args.iter().any(|a| a == "--mode" || a == "rpc") {
-        if args.iter().any(|a| a == "rpc") {
-            run_rpc_mode();
-            return;
-        }
+    if args.iter().any(|a| a == "--mode" || a == "rpc") && args.iter().any(|a| a == "rpc") {
+        run_rpc_mode();
+        return;
     }
 
     // Default: run a single demo prompt
