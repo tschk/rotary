@@ -22,6 +22,22 @@ use tracing::{debug, info, warn};
 #[cfg(feature = "ipc")]
 use cancellation_token::CancellationToken;
 
+/// Normalize a tool name, translating common pi-style aliases to rx4 native
+/// names. Unknown names pass through unchanged.
+pub fn normalize_tool_name(name: &str) -> &str {
+    match name {
+        "read_file" | "read" => "read",
+        "write_file" | "write" => "write",
+        "list_dir" | "ls" => "ls",
+        "run_command" | "bash" => "bash",
+        "find_files" | "find" => "find",
+        "code_intel" | "grep" => "grep",
+        "hashline_edit" | "search_replace" | "apply_patch" | "edit" => "edit",
+        "spawn_agent" => "spawn_agent",
+        _ => name,
+    }
+}
+
 pub type ToolFuture = Pin<Box<dyn Future<Output = ToolResult> + Send>>;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -75,6 +91,25 @@ impl ToolContext {
 /// Function-pointer tool (for simple builtins).
 pub type ToolExecuteFn = fn(Arc<ToolContext>, String) -> ToolFuture;
 
+/// Boxed-closure tool (for stateful tools that capture external state).
+pub type ToolExecuteBox = Box<dyn Fn(Arc<ToolContext>, String) -> ToolFuture + Send + Sync>;
+
+/// Tool executor — either a function pointer or a boxed closure.
+pub enum ToolExecutor {
+    Fn(ToolExecuteFn),
+    Boxed(ToolExecuteBox),
+}
+
+impl ToolExecutor {
+    /// Execute the tool, dispatching to the appropriate variant.
+    pub fn call(&self, ctx: Arc<ToolContext>, args: String) -> ToolFuture {
+        match self {
+            ToolExecutor::Fn(f) => f(ctx, args),
+            ToolExecutor::Boxed(b) => b(ctx, args),
+        }
+    }
+}
+
 /// Tool effect class — determines parallel execution eligibility (codex-rs pattern).
 /// Read-only tools can run in parallel; write/process tools are serialized.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -96,7 +131,7 @@ pub struct ToolDefinition {
     pub name: String,
     pub description: String,
     pub parameters_json: String,
-    pub execute: ToolExecuteFn,
+    pub execute: ToolExecutor,
     pub effect: ToolEffect,
 }
 
@@ -111,7 +146,23 @@ impl ToolDefinition {
             name: name.into(),
             description: description.into(),
             parameters_json: parameters_json.into(),
-            execute,
+            execute: ToolExecutor::Fn(execute),
+            effect: ToolEffect::Read,
+        }
+    }
+
+    /// Create a tool definition with a boxed closure executor (for stateful tools).
+    pub fn new_boxed(
+        name: impl Into<String>,
+        description: impl Into<String>,
+        parameters_json: impl Into<String>,
+        execute: ToolExecuteBox,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            description: description.into(),
+            parameters_json: parameters_json.into(),
+            execute: ToolExecutor::Boxed(execute),
             effect: ToolEffect::Read,
         }
     }
@@ -158,7 +209,7 @@ impl ToolRegistry {
         arguments: &str,
     ) -> Option<ToolResult> {
         let entry = self.tools.get(name)?;
-        Some((entry.execute)(ctx.clone(), arguments.to_string()).await)
+        Some(entry.execute.call(ctx.clone(), arguments.to_string()).await)
     }
 
     /// Get the effect class for a tool (defaults to Read if not found).
@@ -421,12 +472,9 @@ impl Agent {
     }
 
     async fn execute_single_tool(&self, call: &ToolCall, ctx: &Arc<ToolContext>) -> ToolResult {
-        // Pi tool name mapping: translate pi names (read_file, write_file, etc.)
+        // Translate common pi-style tool aliases (read_file, write_file, etc.)
         // to rx4 native names (read, write, etc.) before execution.
-        #[cfg(feature = "pi-compat")]
-        let resolved_name = crate::pi::tools::pi_to_rx4_tool(&call.name).to_string();
-        #[cfg(not(feature = "pi-compat"))]
-        let resolved_name = call.name.clone();
+        let resolved_name = normalize_tool_name(&call.name).to_string();
 
         if let Some(profile) = &self.scope_profile {
             if !mode::tool_allowed(profile, &call.name)

@@ -58,7 +58,6 @@ impl From<serde_json::Error> for SkillError {
     }
 }
 
-#[cfg(feature = "pi-compat")]
 impl From<serde_yaml::Error> for SkillError {
     fn from(err: serde_yaml::Error) -> Self {
         SkillError::Yaml(err.to_string())
@@ -494,14 +493,7 @@ impl SkillEngine {
         let mut fm: SkillFrontmatter = if frontmatter_text.trim().is_empty() {
             SkillFrontmatter::default()
         } else {
-            #[cfg(feature = "pi-compat")]
-            {
-                serde_yaml::from_str(&frontmatter_text)?
-            }
-            #[cfg(not(feature = "pi-compat"))]
-            {
-                parse_frontmatter_simple(&frontmatter_text)
-            }
+            serde_yaml::from_str(&frontmatter_text)?
         };
 
         let id = fm
@@ -836,51 +828,6 @@ fn extract_section_body(body: &str, section: &str) -> Option<String> {
             Some(text)
         }
     }
-}
-
-/// Minimal frontmatter parser for when `serde_yaml` is not available.
-/// Handles simple `key: value` and `key: [a, b, c]` lines.
-fn parse_frontmatter_simple(text: &str) -> Result<SkillFrontmatter, SkillError> {
-    let mut fm = SkillFrontmatter::default();
-    for line in text.lines() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        let (key, val) = match line.split_once(':') {
-            Some((k, v)) => (k.trim(), v.trim()),
-            None => continue,
-        };
-        match key {
-            "id" => fm.id = Some(val.to_string()),
-            "name" => fm.name = Some(val.to_string()),
-            "description" => fm.description = Some(val.to_string()),
-            "confidence" => {
-                fm.confidence = val.parse().ok();
-            }
-            "success_count" => fm.success_count = val.parse().ok(),
-            "failure_count" => fm.failure_count = val.parse().ok(),
-            "tags" => fm.tags = Some(parse_yaml_list(val)),
-            "trigger_patterns" => fm.trigger_patterns = Some(parse_yaml_list(val)),
-            "category" => fm.category = Some(val.to_string()),
-            "related_skills" => fm.related_skills = Some(parse_yaml_list(val)),
-            _ => {}
-        }
-    }
-    Ok(fm)
-}
-
-/// Parse a YAML inline list like `[a, b, c]` or `a, b, c`.
-fn parse_yaml_list(val: &str) -> Vec<String> {
-    let inner = val
-        .strip_prefix('[')
-        .and_then(|v| v.strip_suffix(']'))
-        .unwrap_or(val);
-    inner
-        .split(',')
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .collect()
 }
 
 /// A simpler wrapper for auto-activating skills based on a prompt.

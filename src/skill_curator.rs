@@ -12,10 +12,11 @@
 use crate::skill_engine::{SkillEngine, SkillError, SkillState};
 
 /// Configuration for the skill curator.
+///
+/// The host decides *when* to run `audit` — this config only controls
+/// the thresholds and behavior of the audit itself.
 #[derive(Debug, Clone)]
 pub struct CuratorConfig {
-    /// Whether the curator is enabled (OFF by default).
-    pub enabled: bool,
     /// Days of inactivity before a skill is marked stale.
     pub stale_after_days: u64,
     /// Days of inactivity before a skill is archived.
@@ -29,7 +30,6 @@ pub struct CuratorConfig {
 impl Default for CuratorConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
             stale_after_days: 30,
             archive_after_days: 90,
             consolidate: false,

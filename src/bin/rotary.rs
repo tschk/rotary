@@ -6,11 +6,8 @@ use std::sync::Arc;
 #[cfg(feature = "computer-use")]
 use rx4::computer_use;
 
-#[cfg(feature = "pi-compat")]
-use rx4::pi::PiRpcServer;
-
 #[derive(Parser)]
-#[command(name = "rx4", version, about = "Agent harness engine (pi-compatible)")]
+#[command(name = "rx4", version, about = "Agent harness engine")]
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
@@ -35,8 +32,6 @@ enum Commands {
     },
     /// Start the IPC server on a Unix socket
     Serve { socket: Option<String> },
-    /// Run the pi-compatible JSON-RPC server over stdin/stdout
-    Rpc,
     /// Print version, feature flags, and module list
     Version,
     /// Check environment, config, and connectivity
@@ -56,7 +51,6 @@ fn main() {
         Commands::Chat => run_chat(cli.model, cli.scope),
         Commands::Exec { prompt, json } => run_exec(&prompt, json, cli.model, cli.scope),
         Commands::Serve { socket } => run_serve(socket),
-        Commands::Rpc => run_rpc_mode(),
         Commands::Version => run_version(),
         Commands::Doctor => run_doctor(),
         Commands::Models => run_models(),
@@ -567,43 +561,11 @@ fn run_serve(_socket: Option<String>) {
     std::process::exit(1);
 }
 
-#[cfg(feature = "pi-compat")]
-fn run_rpc_mode() {
-    use rx4::pi::tools::pi_to_rx4_tool;
-    let _ = pi_to_rx4_tool;
-
-    let mut agent = Agent::new();
-    let mut tools = ToolRegistry::new();
-    register_builtin_tools(&mut tools);
-
-    #[cfg(feature = "computer-use")]
-    {
-        computer_use::register_tools(&mut tools);
-    }
-
-    agent.set_tools(tools);
-    agent.set_scope(Scope::Coding);
-
-    let server = PiRpcServer::new(agent);
-    if let Err(e) = server.run() {
-        eprintln!("rpc server error: {e}");
-        std::process::exit(1);
-    }
-}
-
-#[cfg(not(feature = "pi-compat"))]
-fn run_rpc_mode() {
-    eprintln!("rpc mode requires pi-compat feature");
-    std::process::exit(1);
-}
-
 fn run_version() {
     println!("rx4 {}", rx4::VERSION);
     println!("features:");
     println!("  providers:    {}", cfg_feature("providers"));
     println!("  ipc:          {}", cfg_feature("ipc"));
-    println!("  pi-compat:    {}", cfg_feature("pi-compat"));
-    println!("  pi-extensions:{}", cfg_feature("pi-extensions"));
     println!("  computer-use: {}", cfg_feature("computer-use"));
     println!("  builtin-tools:{}", cfg_feature("builtin-tools"));
     println!("  memory:       {}", cfg_feature("memory"));

@@ -14,8 +14,6 @@ use crate::skill_engine::{ConversationTurn, SkillEngine, SkillError, SkillOutcom
 /// Configuration for the background review loop.
 #[derive(Debug, Clone)]
 pub struct BackgroundReviewConfig {
-    /// Whether the background review loop is enabled.
-    pub enabled: bool,
     /// Minimum number of turns in a conversation before a review is run.
     pub min_turns: usize,
     /// Soft cap on tokens spent on review (advisory; not enforced here).
@@ -25,7 +23,6 @@ pub struct BackgroundReviewConfig {
 impl Default for BackgroundReviewConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
             min_turns: 3,
             max_review_tokens: 500,
         }
@@ -97,9 +94,6 @@ impl<'a> BackgroundReviewer<'a> {
         conversation: &[ConversationTurn],
         outcome: SkillOutcome,
     ) -> Result<Vec<ReviewResult>, SkillError> {
-        if !self.config.enabled {
-            return Ok(Vec::new());
-        }
         if conversation.len() < self.config.min_turns {
             return Ok(Vec::new());
         }
@@ -409,7 +403,6 @@ mod tests {
         let mut reviewer = BackgroundReviewer::with_config(
             &mut engine,
             BackgroundReviewConfig {
-                enabled: true,
                 min_turns: 3,
                 max_review_tokens: 500,
             },
@@ -429,7 +422,6 @@ mod tests {
         let mut reviewer = BackgroundReviewer::with_config(
             &mut engine,
             BackgroundReviewConfig {
-                enabled: true,
                 min_turns: 3,
                 max_review_tokens: 500,
             },
@@ -468,7 +460,6 @@ mod tests {
         let mut reviewer = BackgroundReviewer::with_config(
             &mut engine,
             BackgroundReviewConfig {
-                enabled: true,
                 min_turns: 1,
                 max_review_tokens: 500,
             },
@@ -481,23 +472,11 @@ mod tests {
     }
 
     #[test]
-    fn test_review_disabled_returns_empty() {
-        let mut engine = test_engine();
-        let mut reviewer = BackgroundReviewer::new(&mut engine);
-        let conv = conversation_with_correction();
-        let results = reviewer
-            .review_conversation(&conv, SkillOutcome::Failure)
-            .expect("review");
-        assert!(results.is_empty());
-    }
-
-    #[test]
     fn test_review_below_min_turns_returns_empty() {
         let mut engine = test_engine();
         let mut reviewer = BackgroundReviewer::with_config(
             &mut engine,
             BackgroundReviewConfig {
-                enabled: true,
                 min_turns: 10,
                 max_review_tokens: 500,
             },
@@ -515,7 +494,6 @@ mod tests {
         let mut reviewer = BackgroundReviewer::with_config(
             &mut engine,
             BackgroundReviewConfig {
-                enabled: true,
                 min_turns: 3,
                 max_review_tokens: 500,
             },
@@ -540,7 +518,6 @@ mod tests {
         let mut reviewer = BackgroundReviewer::with_config(
             &mut engine,
             BackgroundReviewConfig {
-                enabled: true,
                 min_turns: 1,
                 max_review_tokens: 500,
             },
@@ -571,7 +548,6 @@ mod tests {
         let mut reviewer = BackgroundReviewer::with_config(
             &mut engine,
             BackgroundReviewConfig {
-                enabled: true,
                 min_turns: 1,
                 max_review_tokens: 500,
             },

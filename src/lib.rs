@@ -1,4 +1,4 @@
-//! rx4 — the agent harness engine with full pi protocol compatibility.
+//! rx4 — the agent harness engine.
 //!
 //! Models write. rx4 gives them tools, memory, loops, permissions, sessions,
 //! and control planes. Hosts (CLIs, TUIs, IDEs) embed rx4.
@@ -8,9 +8,6 @@
 //! This crate is `#![forbid(unsafe_code)]` — no unsafe code is allowed anywhere.
 
 #![forbid(unsafe_code)]
-//!
-//! Pi-compatible: JSONL v3 sessions, RPC over stdin/stdout, pi tool names,
-//! extension protocol with capability policy, SDK surface.
 //!
 //! ```no_run
 //! use rx4::Agent;
@@ -74,23 +71,21 @@ pub mod models;
 #[cfg(feature = "mcp")]
 pub mod mcp;
 
-#[cfg(feature = "pi-compat")]
-pub mod pi;
-
 pub mod acp;
 #[cfg(feature = "ipc")]
 pub mod lsp;
 pub mod marketplace;
 
 pub use agent::{
-    Agent, Event, ToolCall, ToolContext, ToolDefinition, ToolEffect, ToolRegistry, ToolResult,
+    Agent, Event, ToolCall, ToolContext, ToolDefinition, ToolEffect, ToolExecuteBox,
+    ToolExecuteFn, ToolExecutor, ToolFuture, ToolRegistry, ToolResult, normalize_tool_name,
 };
 pub use background_review::{
     BackgroundReviewConfig, BackgroundReviewer, ReviewResult, ReviewSignal,
 };
 pub use compaction::{compact_messages, CompactionConfig, CompactionMarker, CompactionResult};
 pub use cost::{CostEntry, ModelPricing, PricingRegistry, SessionCost, TokenUsage};
-pub use dream_scheduler::{DreamReport, DreamScheduleConfig, DreamScheduler};
+pub use dream_scheduler::{DreamReport, DreamScheduler};
 pub use embeddings::{
     cosine_similarity, EmbedError, EmbeddingClient, EmbeddingConfig, EmbeddingProvider,
     SemanticSearch,
@@ -147,5 +142,5 @@ pub use lsp::{Diagnostic, DiagnosticSeverity, Location, LspManager, LspServer};
 pub const VERSION: &str = "0.3.0";
 
 pub fn print_banner() {
-    eprintln!("rx4 {VERSION} — agent harness engine (pi-compatible)");
+    eprintln!("rx4 {VERSION} — agent harness engine");
 }
