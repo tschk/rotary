@@ -1,0 +1,22 @@
+.{
+    .name = .rotary,
+    .version = "0.1.0",
+    .fingerprint = 0x75d2a9c5ae53c78e,
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        .httpx = .{
+            .url = "git+https://github.com/muhammad-fiaz/httpx.zig.git#870647e2582b57cd66364c6a6de41c88242cf385",
+            .hash = "httpx-0.1.2-8qj2erENDgA9jcFYrZcP-IhxGfMguR_ynyeAS1cdjBCw",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "plugins",
+        "docs",
+        "README.md",
+        "AGENTS.md",
+        "LICENSE",
+    },
+}

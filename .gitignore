@@ -1,0 +1,7 @@
+zig-out/
+.zig-cache/
+zig-pkg/
+.rotary/
+*.sock
+.DS_Store
+node_modules/
