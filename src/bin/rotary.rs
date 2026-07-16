@@ -94,26 +94,167 @@ fn build_agent(model: Option<&str>, scope: Option<&str>) -> Agent {
 #[cfg(feature = "providers")]
 fn setup_provider() -> Option<Arc<dyn rx4::Provider>> {
     use rx4::provider::OpenAIProvider;
+
+    // Providers with native Anthropic API (non-OpenAI-compatible)
     if let Ok(key) = std::env::var("ANTHROPIC_API_KEY") {
         if !key.is_empty() {
             return Some(Arc::new(OpenAIProvider::anthropic(key)));
         }
     }
-    if let Ok(key) = std::env::var("XAI_API_KEY") {
-        if !key.is_empty() {
-            return Some(Arc::new(OpenAIProvider::with_base_url(
-                "https://api.x.ai/v1",
-                key,
-                "xai",
-                "xAI",
-            )));
+
+    // OpenAI-compatible providers: (env_var, base_url, provider_id, display_name)
+    const COMPAT_PROVIDERS: &[(&str, &str, &str, &str)] = &[
+        ("XAI_API_KEY", "https://api.x.ai/v1", "xai", "xAI"),
+        (
+            "OPENAI_API_KEY",
+            "https://api.openai.com/v1",
+            "openai",
+            "OpenAI",
+        ),
+        (
+            "GROQ_API_KEY",
+            "https://api.groq.com/openai/v1",
+            "groq",
+            "Groq",
+        ),
+        (
+            "DEEPINFRA_API_KEY",
+            "https://api.deepinfra.com/v1/openai",
+            "deepinfra",
+            "Deep Infra",
+        ),
+        (
+            "CEREBRAS_API_KEY",
+            "https://api.cerebras.ai/v1",
+            "cerebras",
+            "Cerebras",
+        ),
+        (
+            "OPENROUTER_API_KEY",
+            "https://openrouter.ai/api/v1",
+            "openrouter",
+            "OpenRouter",
+        ),
+        (
+            "MISTRAL_API_KEY",
+            "https://api.mistral.ai/v1",
+            "mistral",
+            "Mistral AI",
+        ),
+        (
+            "MOONSHOT_API_KEY",
+            "https://api.moonshot.ai/v1",
+            "moonshot",
+            "Moonshot AI (Kimi)",
+        ),
+        (
+            "KIMI_API_KEY",
+            "https://api.moonshot.ai/v1",
+            "moonshot",
+            "Moonshot AI (Kimi)",
+        ),
+        (
+            "DASHSCOPE_API_KEY",
+            "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+            "alibaba",
+            "Alibaba (Qwen)",
+        ),
+        (
+            "QWEN_API_KEY",
+            "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+            "alibaba",
+            "Alibaba (Qwen)",
+        ),
+        (
+            "DEEPSEEK_API_KEY",
+            "https://api.deepseek.com",
+            "deepseek",
+            "DeepSeek",
+        ),
+        (
+            "FIREWORKS_API_KEY",
+            "https://api.fireworks.ai/inference/v1",
+            "fireworks",
+            "Fireworks AI",
+        ),
+        (
+            "TOGETHER_API_KEY",
+            "https://api.together.xyz/v1",
+            "together",
+            "Together AI",
+        ),
+        (
+            "TOGETHER_AI_API_KEY",
+            "https://api.together.xyz/v1",
+            "together",
+            "Together AI",
+        ),
+        (
+            "PERPLEXITY_API_KEY",
+            "https://api.perplexity.ai",
+            "perplexity",
+            "Perplexity",
+        ),
+        (
+            "NVIDIA_API_KEY",
+            "https://integrate.api.nvidia.com/v1",
+            "nvidia",
+            "NVIDIA",
+        ),
+        (
+            "GITHUB_TOKEN",
+            "https://models.github.ai/inference",
+            "github-models",
+            "GitHub Models",
+        ),
+        (
+            "NOVITA_API_KEY",
+            "https://api.novita.ai/v3/openai",
+            "novita",
+            "Novita AI",
+        ),
+        (
+            "SILICONFLOW_API_KEY",
+            "https://api.siliconflow.cn/v1",
+            "siliconflow",
+            "SiliconFlow",
+        ),
+        (
+            "NEBIUS_API_KEY",
+            "https://api.studio.nebius.ai/v1",
+            "nebius",
+            "Nebius",
+        ),
+        (
+            "HF_TOKEN",
+            "https://api-inference.huggingface.co/models",
+            "huggingface",
+            "Hugging Face",
+        ),
+        (
+            "GOOGLE_API_KEY",
+            "https://generativelanguage.googleapis.com/v1beta",
+            "google",
+            "Google Gemini",
+        ),
+        (
+            "GEMINI_API_KEY",
+            "https://generativelanguage.googleapis.com/v1beta",
+            "google",
+            "Google Gemini",
+        ),
+    ];
+
+    for &(env_var, base_url, id, name) in COMPAT_PROVIDERS {
+        if let Ok(key) = std::env::var(env_var) {
+            if !key.is_empty() {
+                return Some(Arc::new(OpenAIProvider::with_base_url(
+                    base_url, key, id, name,
+                )));
+            }
         }
     }
-    if let Ok(key) = std::env::var("OPENAI_API_KEY") {
-        if !key.is_empty() {
-            return Some(Arc::new(OpenAIProvider::new(key)));
-        }
-    }
+
     None
 }
 
@@ -135,7 +276,7 @@ fn run_chat(model: Option<String>, scope: Option<String>) {
     {
         if setup_provider().is_none() {
             eprintln!(
-                "warning: no API key found (set ANTHROPIC_API_KEY, XAI_API_KEY, or OPENAI_API_KEY)"
+                "warning: no API key found (run 'rx4 doctor' to see all supported providers)"
             );
         }
 
@@ -353,9 +494,7 @@ fn run_exec(prompt: &str, json: bool, model: Option<String>, scope: Option<Strin
     #[cfg(feature = "providers")]
     {
         if setup_provider().is_none() {
-            eprintln!(
-                "error: no API key found (set ANTHROPIC_API_KEY, XAI_API_KEY, or OPENAI_API_KEY)"
-            );
+            eprintln!("error: no API key found (run 'rx4 doctor' to see all supported providers)");
             std::process::exit(1);
         }
         let mut agent = build_agent(model.as_deref(), scope.as_deref());
@@ -546,36 +685,44 @@ fn run_doctor() {
     println!("rx4 {} — doctor", rx4::VERSION);
     println!();
 
-    let openai_key = std::env::var("OPENAI_API_KEY")
-        .ok()
-        .filter(|k| !k.is_empty());
-    let anthropic_key = std::env::var("ANTHROPIC_API_KEY")
-        .ok()
-        .filter(|k| !k.is_empty());
-    let xai_key = std::env::var("XAI_API_KEY").ok().filter(|k| !k.is_empty());
-    print_status(
-        "OPENAI_API_KEY",
-        if openai_key.is_some() {
-            "set"
-        } else {
-            "not set"
-        },
-        openai_key.is_some(),
-    );
-    print_status(
+    println!("api keys:");
+    const CHECK_KEYS: &[&str] = &[
         "ANTHROPIC_API_KEY",
-        if anthropic_key.is_some() {
-            "set"
-        } else {
-            "not set"
-        },
-        anthropic_key.is_some(),
-    );
-    print_status(
+        "OPENAI_API_KEY",
         "XAI_API_KEY",
-        if xai_key.is_some() { "set" } else { "not set" },
-        xai_key.is_some(),
-    );
+        "GROQ_API_KEY",
+        "DEEPINFRA_API_KEY",
+        "CEREBRAS_API_KEY",
+        "OPENROUTER_API_KEY",
+        "MISTRAL_API_KEY",
+        "MOONSHOT_API_KEY",
+        "KIMI_API_KEY",
+        "DASHSCOPE_API_KEY",
+        "QWEN_API_KEY",
+        "DEEPSEEK_API_KEY",
+        "FIREWORKS_API_KEY",
+        "TOGETHER_API_KEY",
+        "PERPLEXITY_API_KEY",
+        "NVIDIA_API_KEY",
+        "GITHUB_TOKEN",
+        "NOVITA_API_KEY",
+        "SILICONFLOW_API_KEY",
+        "NEBIUS_API_KEY",
+        "HF_TOKEN",
+        "GOOGLE_API_KEY",
+        "GEMINI_API_KEY",
+    ];
+    let mut any_key = false;
+    for key in CHECK_KEYS {
+        let set = std::env::var(key).map(|v| !v.is_empty()).unwrap_or(false);
+        if set {
+            any_key = true;
+        }
+        print_status(key, if set { "set" } else { "not set" }, set);
+    }
+    if !any_key {
+        println!("\n  hint: set any one of the above env vars to use rx4");
+    }
 
     let home = home_dir();
     let data_dir = home.join(".rx4");
