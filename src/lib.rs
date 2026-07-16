@@ -25,10 +25,13 @@
 //! ```
 
 pub mod agent;
+pub mod background_review;
 pub mod compaction;
 pub mod config;
 pub mod context;
 pub mod cost;
+pub mod dream_scheduler;
+pub mod embeddings;
 pub mod extract;
 pub mod graph_memory;
 pub mod guardrails;
@@ -81,11 +84,22 @@ pub mod marketplace;
 pub use agent::{
     Agent, Event, ToolCall, ToolContext, ToolDefinition, ToolEffect, ToolRegistry, ToolResult,
 };
+pub use background_review::{
+    BackgroundReviewConfig, BackgroundReviewer, ReviewResult, ReviewSignal,
+};
 pub use compaction::{compact_messages, CompactionConfig, CompactionMarker, CompactionResult};
 pub use cost::{CostEntry, ModelPricing, PricingRegistry, SessionCost, TokenUsage};
+pub use dream_scheduler::{DreamReport, DreamScheduleConfig, DreamScheduler};
+pub use embeddings::{
+    cosine_similarity, EmbeddingClient, EmbeddingConfig, EmbeddingProvider, EmbedError,
+    SemanticSearch,
+};
 pub use graph_memory::{
     ConversationExtractor, EdgeRelation, ExtractionResult, GraphMemory, GraphMemoryError,
     MemoryEdge as GraphMemoryEdge, MemoryNode as GraphMemoryNode, NodeType as GraphNodeType,
+};
+pub use guardrails::{
+    classify_tool, GuardrailConfig, GuardrailDecision, SelfHealingRetry, ToolClass, ToolGuardrails,
 };
 pub use hooks::HookRegistry;
 pub use mode::{Profile, Scope};
@@ -110,7 +124,7 @@ pub use secrets::{
     filter_env_vars, is_sensitive_env_var, RedactionConfig, Redactor, SecretMatch, SecretPattern,
 };
 pub use session::Session;
-pub use skill_engine::{Skill, SkillEngine, SkillError, SkillOutcome};
+pub use skill_engine::{Skill, SkillEngine, SkillError, SkillFrontmatter, SkillOutcome};
 pub use sse::{SseError, SseEvent, SseParser};
 pub use tools::register_builtin_tools;
 
