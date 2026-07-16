@@ -2,7 +2,7 @@
 
 ## Purpose
 
-rotary is a **general-purpose coding agent harness** implemented in Zig 0.16. It owns the agent loop, tools, providers, sessions, plugins, ACP, LSP, and IPC. Product UIs and multi-device meshes live elsewhere.
+rotary is a **general-purpose coding agent harness** implemented in Zig 0.16. It owns the agent loop, tools, providers, sessions, plugins, permissions, hooks, ACP, LSP, and IPC. Product UIs and multi-device meshes live elsewhere (e.g. telekinesis).
 
 ## Stack
 
@@ -15,27 +15,31 @@ rotary is a **general-purpose coding agent harness** implemented in Zig 0.16. It
 
 | File | Role |
 |---|---|
-| `agent.zig` | Event-driven loop, tool registry, streaming |
+| `agent.zig` | Event-driven loop, tools, permissions, hooks, compact |
 | `provider.zig` | Multi-provider OpenAI-compatible client |
-| `tools.zig` | Built-in filesystem / shell / subagent / code_intel tools |
-| `session.zig` | Session tree (fork/merge) + store |
-| `plugin.zig` | Pi extension host + skill loader |
-| `lsp.zig` | Multi-language LSP manager |
-| `acp.zig` | External agent processes |
-| `ipc.zig` | Unix-socket JSON-RPC server |
-| `config.zig` | Config file + env |
-| `db.zig` | Optional SQLite helper process client |
+| `tools.zig` | Built-in FS/shell/subagent/code_intel tools |
+| `session.zig` | Session tree + store |
+| `plugin.zig` | Pi extensions + skills |
+| `permissions.zig` | Policy modes + approver gate |
+| `hooks.zig` | Lifecycle hooks |
+| `context.zig` | AGENTS.md load + compaction |
+| `slash.zig` | Slash command parser |
+| `extract.zig` | Structured extraction (Omi-style) |
+| `ranking.zig` | Proactive ranking (Omi-style) |
+| `guardrails.zig` | Empty-turn / failure tripwires |
+| `lsp.zig` / `acp.zig` / `ipc.zig` | Language servers, external agents, daemon |
+| `config.zig` / `db.zig` | Config + optional SQLite helper |
 
 ## Rules
 
 - Pass allocators explicitly. No global allocator.
 - Use `std.log.scoped(.module)` per file.
-- Prefer explicit error sets; avoid swallowing failures.
-- Keep plugins as Bun subprocesses (pi compatibility); do not invent an in-process TS runtime.
-- ACP is for **external agents**; `plugin.zig` is for **extensions**. Do not merge those protocols.
-- Data dir default: `~/.rotary`. Session socket default: `/tmp/rotary.sock`.
-- Do not hardcode API keys or add outbound telemetry.
-- Prefer stdlib; only add deps that are mature and pure-Zig when possible.
+- Prefer explicit error sets.
+- Keep plugins as Bun subprocesses (pi compatibility).
+- ACP = external agents; `plugin.zig` = extensions. Do not merge.
+- Data dir default: `~/.rotary`. Socket: `/tmp/rotary.sock`.
+- No hardcoded API keys, no telemetry.
+- Prefer stdlib; deps must be mature and pure-Zig when possible.
 
 ## Verification
 
@@ -43,9 +47,10 @@ rotary is a **general-purpose coding agent harness** implemented in Zig 0.16. It
 zig build
 zig build test
 zig build run -- agent
+zig build run -- exec /help
 zig build run -- provider
 ```
 
 ## Commits
 
-English Conventional Commits, e.g. `feat(agent): stream tool call deltas`.
+English Conventional Commits, e.g. `feat(agent): gate tools through permission policy`.

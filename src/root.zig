@@ -12,8 +12,15 @@ pub const ipc = @import("ipc.zig");
 pub const config = @import("config.zig");
 pub const tools = @import("tools.zig");
 pub const db = @import("db.zig");
+pub const permissions = @import("permissions.zig");
+pub const context = @import("context.zig");
+pub const slash = @import("slash.zig");
+pub const hooks = @import("hooks.zig");
+pub const extract = @import("extract.zig");
+pub const ranking = @import("ranking.zig");
+pub const guardrails = @import("guardrails.zig");
 
-pub const version = "0.1.0";
+pub const version = "0.2.0";
 
 pub fn printBanner(writer: *std.Io.Writer) !void {
     try writer.print("rotary {s} — general-purpose agent harness\n", .{version});
@@ -35,3 +42,5 @@ pub const PluginActionHandler = plugin.ActionHandler;
 pub const PluginUiRequest = plugin.UiRequest;
 pub const PluginUiResponse = plugin.UiResponse;
 pub const PluginUiHandler = plugin.UiHandler;
+pub const Policy = permissions.Policy;
+pub const PermissionMode = permissions.Mode;

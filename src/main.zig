@@ -30,6 +30,8 @@ pub fn main(init: std.process.Init) !void {
             try runAcpDemo(gpa, io, stdout);
         } else if (std.mem.eql(u8, cmd, "serve")) {
             try runIpcServer(init, gpa, io, stdout, args[0], args[2..]);
+        } else if (std.mem.eql(u8, cmd, "exec")) {
+            try runExec(gpa, io, stdout, args[2..]);
         } else if (std.mem.eql(u8, cmd, "version")) {
             try stdout.print("{s}\n", .{rotary.version});
         } else {
@@ -55,9 +57,51 @@ fn printUsage(stdout: *std.Io.Writer) !void {
         \\  plugin-pi   Run a specific pi extension path
         \\  acp         Spawn an ACP child agent
         \\  serve       Start the JSON-RPC IPC server
+        \\  exec        Headless one-shot prompt (args after exec)
         \\  version     Print version
         \\
     , .{});
+}
+
+fn runExec(gpa: std.mem.Allocator, io: std.Io, stdout: *std.Io.Writer, args: []const []const u8) !void {
+    if (args.len == 0) {
+        try stdout.print("Usage: rotary exec <prompt...>\n", .{});
+        return;
+    }
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    var agent = rotary.Agent.init(arena, io);
+    defer agent.deinit();
+    agent.setPolicy(.{ .mode = .read_only });
+
+    if (try rotary.context.loadProjectInstructions(arena, io, ".")) |loaded| {
+        const merged = try rotary.context.composeSystemPrompt(arena, agent.system_prompt, loaded.content);
+        if (merged) |sp| agent.setSystemPrompt(sp);
+    }
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(arena);
+    for (args, 0..) |a, i| {
+        if (i > 0) try buf.append(arena, ' ');
+        try buf.appendSlice(arena, a);
+    }
+    const prompt = buf.items;
+    if (rotary.slash.parse(prompt)) |cmd| {
+        switch (cmd) {
+            .help => try stdout.print("{s}\n", .{rotary.slash.helpText()}),
+            .model => |q| try stdout.print("model query: {s}\n", .{q}),
+            .permissions => |m| try stdout.print("permissions: {s}\n", .{m orelse "workspace_write"}),
+            .tools => try stdout.print("tools: use `rotary agent` with a registry\n", .{}),
+            .clear, .compact, .session_new => try stdout.print("session command requires serve mode\n", .{}),
+            .unknown => |n| try stdout.print("unknown slash command: {s}\n", .{n}),
+        }
+        return;
+    }
+
+    try agent.prompt(prompt);
+    try stdout.print("exec complete ({d} messages)\n", .{agent.messages.items.len});
 }
 
 fn runAgentDemo(gpa: std.mem.Allocator, io: std.Io, stdout: *std.Io.Writer) !void {

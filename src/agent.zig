@@ -1,5 +1,7 @@
 const std = @import("std");
 const provider = @import("provider.zig");
+const permissions = @import("permissions.zig");
+const hooks = @import("hooks.zig");
 
 const log = std.log.scoped(.agent);
 
@@ -90,6 +92,12 @@ pub const Agent = struct {
     model: []const u8 = "gpt-4o",
     system_prompt: ?[]const u8 = null,
     tools: ?*ToolRegistry = null,
+    policy: permissions.Policy = .{ .mode = .full_access },
+    approver_ctx: ?*anyopaque = null,
+    approver: ?permissions.Approver = null,
+    hooks_registry: ?*hooks.Registry = null,
+    max_tool_iterations: usize = 20,
+    auto_compact_after: usize = 80,
     subscribers: std.ArrayList(SubscriberEntry),
     messages: std.ArrayList(Message),
 
@@ -140,11 +148,33 @@ pub const Agent = struct {
         self.tools = registry;
     }
 
+    pub fn setPolicy(self: *Agent, policy: permissions.Policy) void {
+        self.policy = policy;
+    }
+
+    pub fn setApprover(self: *Agent, ctx: ?*anyopaque, approver: permissions.Approver) void {
+        self.approver_ctx = ctx;
+        self.approver = approver;
+    }
+
+    pub fn setHooks(self: *Agent, registry: *hooks.Registry) void {
+        self.hooks_registry = registry;
+    }
+
     pub fn subscribe(self: *Agent, ctx: ?*anyopaque, callback: Subscriber) !void {
         try self.subscribers.append(self.allocator, .{ .ctx = ctx, .callback = callback });
     }
 
     pub fn prompt(self: *Agent, text: []const u8) !void {
+        if (self.hooks_registry) |hr| {
+            var hev: hooks.HookEvent = .{ .before_prompt = text };
+            hr.run(.before_prompt, &hev);
+        }
+
+        if (self.messages.items.len >= self.auto_compact_after) {
+            try self.compact("auto-compact before prompt");
+        }
+
         const owned = try self.allocator.dupe(u8, text);
         errdefer self.allocator.free(owned);
         try self.messages.append(self.allocator, .{ .role = .user, .content = owned });
@@ -155,7 +185,34 @@ pub const Agent = struct {
         } });
         self.emit(.agent_start);
         try self.runTurn();
+        if (self.hooks_registry) |hr| {
+            var hev: hooks.HookEvent = .after_turn;
+            hr.run(.after_turn, &hev);
+        }
         self.emit(.agent_end);
+    }
+
+    /// Compact conversation history in place. Keeps first 2 + last 12 messages.
+    pub fn compact(self: *Agent, summary: []const u8) !void {
+        if (self.hooks_registry) |hr| {
+            var hev: hooks.HookEvent = .{ .before_compact = self.messages.items.len };
+            hr.run(.before_compact, &hev);
+        }
+        const context = @import("context.zig");
+        const compacted = try context.compactMessages(self.allocator, self.messages.items, 2, 12, summary);
+        defer {
+            for (compacted) |m| self.allocator.free(m.content);
+            self.allocator.free(compacted);
+        }
+        for (self.messages.items) |message| {
+            self.allocator.free(message.content);
+        }
+        self.messages.clearRetainingCapacity();
+        for (compacted) |message| {
+            const owned = try self.allocator.dupe(u8, message.content);
+            try self.messages.append(self.allocator, .{ .role = message.role, .content = owned });
+        }
+        log.info("compacted conversation to {d} messages", .{self.messages.items.len});
     }
 
     fn runTurn(self: *Agent) !void {
@@ -192,7 +249,7 @@ pub const Agent = struct {
         }
 
         const has_tools = tool_defs.items.len > 0;
-        const max_iterations: usize = 20;
+        const max_iterations = self.max_tool_iterations;
 
         var iteration: usize = 0;
         while (iteration < max_iterations) : (iteration += 1) {
@@ -314,6 +371,31 @@ pub const Agent = struct {
     pub fn executeTool(self: *Agent, call: ToolCall) !void {
         self.emit(.{ .tool_call = call });
 
+        const req = permissions.Request{
+            .tool_name = call.name,
+            .arguments = call.arguments,
+        };
+        var before: hooks.HookEvent = .{ .before_tool = .{
+            .request = req,
+            .decision = permissions.authorize(self.policy, req, self.approver_ctx, self.approver),
+        } };
+        if (self.hooks_registry) |hr| {
+            hr.run(.before_tool, &before);
+        }
+        const decision = before.before_tool.decision;
+        if (decision == .deny or decision == .ask) {
+            const err_content = try std.fmt.allocPrint(self.allocator, "tool denied by policy: {s}", .{call.name});
+            defer self.allocator.free(err_content);
+            const err_result = ToolResult{
+                .id = call.id,
+                .content = err_content,
+                .is_error = true,
+            };
+            self.emit(.{ .tool_execution_end = err_result });
+            self.emit(.{ .tool_result = err_result });
+            return;
+        }
+
         if (self.tools) |registry| {
             if (registry.get(call.name)) |tool| {
                 self.emit(.{ .tool_execution_start = call });
@@ -325,11 +407,22 @@ pub const Agent = struct {
                         .content = err_content,
                         .is_error = true,
                     };
+                    if (self.hooks_registry) |hr| {
+                        var hev: hooks.HookEvent = .{ .on_error = err_content };
+                        hr.run(.on_error, &hev);
+                    }
                     self.emit(.{ .tool_execution_end = err_result });
                     self.emit(.{ .tool_result = err_result });
                     return;
                 };
                 defer self.allocator.free(result.content);
+                if (self.hooks_registry) |hr| {
+                    var hev: hooks.HookEvent = .{ .after_tool = .{
+                        .tool_name = call.name,
+                        .result = result,
+                    } };
+                    hr.run(.after_tool, &hev);
+                }
                 self.emit(.{ .tool_execution_end = result });
                 self.emit(.{ .tool_result = result });
             } else {
