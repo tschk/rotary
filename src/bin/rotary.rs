@@ -45,11 +45,6 @@ enum Commands {
     Models,
     /// List all built-in tools
     Tools,
-    /// Login to a provider via OAuth (xAI Grok, OpenAI ChatGPT)
-    Login {
-        /// Provider to login with (grok, openai)
-        provider: String,
-    },
 }
 
 fn main() {
@@ -66,7 +61,6 @@ fn main() {
         Commands::Doctor => run_doctor(),
         Commands::Models => run_models(),
         Commands::Tools => run_tools(),
-        Commands::Login { provider } => run_login(&provider),
     }
 }
 
@@ -476,7 +470,6 @@ fn run_version() {
     println!("  memory:       {}", cfg_feature("memory"));
     println!("  mcp:          {}", cfg_feature("mcp"));
     println!("  sqlite-sessions: {}", cfg_feature("sqlite-sessions"));
-    println!("  oauth:        {}", cfg_feature("oauth"));
     println!("modules: agent, compaction, config, context, cost, extract, guardrails, hooks, mode, permissions, plugin, prompt_cache, provider, ranking, repomap, rollout, routing, sandbox, secrets, session, slash, sse, tools, models, acp, marketplace");
 }
 
@@ -540,13 +533,6 @@ fn cfg_feature(name: &str) -> &'static str {
         }
         "sqlite-sessions" => {
             if cfg!(feature = "sqlite-sessions") {
-                "enabled"
-            } else {
-                "disabled"
-            }
-        }
-        "oauth" => {
-            if cfg!(feature = "oauth") {
                 "enabled"
             } else {
                 "disabled"
@@ -657,78 +643,4 @@ fn run_tools() {
         println!("{name:<16} {desc}");
     }
     println!("\n{} tools registered", tools.count());
-}
-
-#[cfg(feature = "oauth")]
-fn run_login(provider: &str) {
-    use rs_ai_oauth::{fetch_models, start_oauth_flow, OAuthProvider};
-
-    let oauth_provider = match OAuthProvider::parse(provider) {
-        Some(p) => p,
-        None => {
-            eprintln!("unknown provider '{provider}'. supported: grok (xAI), openai (ChatGPT)");
-            std::process::exit(1);
-        }
-    };
-
-    eprintln!("starting OAuth flow for {}...", oauth_provider.name());
-    eprintln!("opening browser — sign in and authorize, then return here");
-
-    let tokens = match start_oauth_flow(oauth_provider) {
-        Ok(t) => t,
-        Err(e) => {
-            eprintln!("oauth failed: {e}");
-            std::process::exit(1);
-        }
-    };
-
-    eprintln!("\noauth successful!");
-    eprintln!("access token expires at: {}", tokens.expires_at);
-
-    let home = home_dir();
-    let data_dir = home.join(".rx4");
-    let _ = std::fs::create_dir_all(&data_dir);
-    let token_path = data_dir.join(format!("oauth_{}.json", oauth_provider.name()));
-
-    let token_json = serde_json::json!({
-        "access_token": tokens.access_token,
-        "refresh_token": tokens.refresh_token,
-        "expires_at": tokens.expires_at,
-        "provider": oauth_provider.name(),
-    });
-
-    if let Err(e) = std::fs::write(&token_path, serde_json::to_vec_pretty(&token_json).unwrap()) {
-        eprintln!(
-            "warning: could not save tokens to {}: {e}",
-            token_path.display()
-        );
-    } else {
-        eprintln!("tokens saved to {}", token_path.display());
-    }
-
-    eprintln!("\nfetching available models...");
-    match fetch_models(oauth_provider, &tokens.access_token) {
-        Ok(models) => {
-            eprintln!("\n{} models available:", models.len());
-            for m in &models {
-                eprintln!("  {}", m.id);
-            }
-            eprintln!(
-                "\nset {}=your-token to use with rx4",
-                match oauth_provider {
-                    OAuthProvider::Xai => "XAI_API_KEY",
-                    OAuthProvider::ChatGpt => "OPENAI_API_KEY",
-                }
-            );
-        }
-        Err(e) => {
-            eprintln!("could not fetch models: {e}");
-        }
-    }
-}
-
-#[cfg(not(feature = "oauth"))]
-fn run_login(_provider: &str) {
-    eprintln!("login requires the `oauth` feature (build with --features oauth)");
-    std::process::exit(1);
 }
