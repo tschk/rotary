@@ -28,15 +28,19 @@ pub mod agent;
 pub mod compaction;
 pub mod config;
 pub mod context;
+pub mod cost;
 pub mod extract;
 pub mod guardrails;
 pub mod hooks;
 pub mod mode;
 pub mod permissions;
 pub mod plugin;
+pub mod prompt_cache;
 pub mod provider;
 pub mod ranking;
+pub mod repomap;
 pub mod rollout;
+pub mod routing;
 pub mod sandbox;
 pub mod secrets;
 pub mod session;
@@ -65,18 +69,29 @@ pub mod mcp;
 pub mod pi;
 
 pub mod acp;
+#[cfg(feature = "ipc")]
 pub mod lsp;
+pub mod marketplace;
 
 pub use agent::{
     Agent, Event, ToolCall, ToolContext, ToolDefinition, ToolEffect, ToolRegistry, ToolResult,
 };
 pub use compaction::{compact_messages, CompactionConfig, CompactionMarker, CompactionResult};
+pub use cost::{CostEntry, ModelPricing, PricingRegistry, SessionCost, TokenUsage};
 pub use hooks::HookRegistry;
 pub use mode::{Profile, Scope};
 pub use models::{CompatConfig, ModelInfo, ModelRegistry};
 pub use permissions::{Approver, Decision, PermissionMode, Policy};
+pub use prompt_cache::{
+    apply_cache_control, CachePoint, CachePosition, CacheProvider, CacheStats, CacheStatsTracker,
+    CacheTtl, PromptCacheConfig,
+};
 pub use provider::{Message, Provider, ProviderRegistry, Role, StreamEvent};
+pub use repomap::{RepoMap, RepoMapError};
 pub use rollout::{RolloutEntry, RolloutManager, TraceWriter};
+pub use routing::{
+    AgentRoute, AgentRouter, RoutingConfig, RoutingStats, SmartRouter, TurnComplexity,
+};
 pub use sandbox::{SandboxConfig, SandboxError, SandboxManager, SandboxProfile, SandboxViolation};
 pub use secrets::{
     filter_env_vars, is_sensitive_env_var, RedactionConfig, Redactor, SecretMatch, SecretPattern,
@@ -85,8 +100,19 @@ pub use session::Session;
 pub use sse::{SseError, SseEvent, SseParser};
 pub use tools::register_builtin_tools;
 
+#[cfg(feature = "mcp")]
+pub use mcp::{McpClient, McpError, McpRegistry, McpResourceInfo, McpToolInfo};
+
+pub use marketplace::{
+    InstalledPlugin, MarketplaceError, MarketplaceIndex, McpServerConfig, PluginBlocklist,
+    PluginInstaller, PluginManifest,
+};
+
 #[cfg(feature = "providers")]
 pub use http::{global_client, is_local_provider, HttpClient, TimeoutConfig};
+
+#[cfg(feature = "ipc")]
+pub use lsp::{Diagnostic, DiagnosticSeverity, Location, LspManager, LspServer};
 
 pub const VERSION: &str = "0.3.0";
 

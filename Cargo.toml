@@ -25,7 +25,7 @@ ipc = ["dep:tokio", "tokio/net", "tokio/io-util", "tokio/sync", "tokio/process",
 providers = ["dep:reqwest", "dep:eventsource-stream", "dep:futures"]
 builtin-tools = ["dep:rayon", "dep:glob", "dep:ignore", "dep:regex"]
 memory = ["dep:rusqlite"]
-mcp = ["dep:rmcp", "dep:tokio"]
+mcp = ["dep:rmcp", "dep:tokio", "tokio/process", "tokio/io-util", "tokio/sync"]
 sqlite-sessions = ["dep:rusqlite"]
 
 # Pi protocol compatibility — JSONL v3 sessions, RPC over stdin/stdout,
@@ -50,7 +50,7 @@ tokio = { version = "1", features = ["rt", "time"], optional = true }
 cancellation-token = { version = "0.1", optional = true }
 
 # Optional — providers
-reqwest = { version = "0.12", features = ["json", "stream"], default-features = false, optional = true }
+reqwest = { version = "0.12", features = ["json", "stream", "blocking"], default-features = false, optional = true }
 eventsource-stream = { version = "0.2", optional = true }
 futures = { version = "0.3", optional = true }
 
