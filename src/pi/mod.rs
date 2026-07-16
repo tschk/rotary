@@ -11,17 +11,23 @@
 //! Enable `pi-extensions` for QuickJS runtime execution of pi extensions.
 
 pub mod extension;
+#[cfg(feature = "pi-extensions")]
+pub mod extension_runtime;
 pub mod policy;
 pub mod rpc;
 pub mod sdk;
 pub mod session;
+pub mod session_store_v2;
 pub mod tools;
 
 pub use extension::{PiExtension, PiExtensionManager, PiExtensionManifest, PiExtensionRuntime};
+#[cfg(feature = "pi-extensions")]
+pub use extension_runtime::QuickjsRuntime;
 pub use policy::{PiCapability, PiCapabilityPolicy, PiExtensionOverride, PiPolicyMode};
 pub use rpc::{PiRpcClient, PiRpcCommand, PiRpcEvent, PiRpcServer};
 pub use sdk::{create_agent_session, AgentSessionHandle, AgentSessionOptions, SessionTransport};
 pub use session::{PiEntry, PiEntryType, PiSession, PiSessionHeader};
+pub use session_store_v2::{Checkpoint, SessionManifest, SessionStoreV2};
 pub use tools::{is_pi_tool_name, pi_to_rx4_tool, pi_tool_names, rx4_to_pi_tool};
 
 /// Pi session format version.
