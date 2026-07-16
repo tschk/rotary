@@ -3,7 +3,7 @@
 //! A marketplace is a JSON index of plugin manifests. Each manifest describes
 //! a plugin's metadata, MCP servers, skills, hooks, and dependencies. The
 //! [`PluginInstaller`] clones plugins from git URLs (or copies from local
-//! paths) into `~/.rx4/plugins/{name}/` and records an [`InstalledPlugin`]
+//! paths) into `~/.agents/plugins/{name}/` and records an [`InstalledPlugin`]
 //! entry in a local registry.
 
 use chrono::{DateTime, Utc};
@@ -208,7 +208,7 @@ impl PluginInstaller {
         let home = std::env::var("HOME")
             .map(PathBuf::from)
             .unwrap_or_else(|_| PathBuf::from("."));
-        home.join(".rx4").join("plugins")
+        home.join(".agents").join("plugins")
     }
 
     /// Returns the path to the installed-plugins registry JSON file.

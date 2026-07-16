@@ -55,7 +55,7 @@ pub struct ModelRegistry {
 
 impl ModelRegistry {
     /// Build a registry from the built-in model list, optionally merged with
-    /// `~/.rx4/models.json` and `./models.json` (user overrides take precedence).
+    /// `~/.agents/models.json` and `./models.json` (user overrides take precedence).
     pub fn load() -> Self {
         let mut models = HashMap::new();
         for model in builtin_models() {
@@ -407,7 +407,7 @@ fn load_user_overrides() -> Option<OverridesFile> {
     let home = std::env::var("HOME").ok();
     let candidates: Vec<std::path::PathBuf> =
         std::iter::once(std::path::PathBuf::from("./models.json"))
-            .chain(home.map(|h| std::path::Path::new(&h).join(".rx4").join("models.json")))
+            .chain(home.map(|h| std::path::Path::new(&h).join(".agents").join("models.json")))
             .collect();
 
     for path in candidates {

@@ -95,7 +95,7 @@ impl Default for SkillEngine {
     fn default() -> Self {
         let dir = dirs::home_dir()
             .unwrap_or_else(|| PathBuf::from("."))
-            .join(".rx4")
+            .join(".agents")
             .join("skills");
         Self::new(dir)
     }

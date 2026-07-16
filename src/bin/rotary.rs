@@ -357,7 +357,7 @@ fn handle_slash(input: &str, agent: &mut Agent) -> bool {
             eprintln!("  /scope <name>   set scope (coding, research, plan, ask)");
             eprintln!("  /sessions       list saved sessions");
             eprintln!("  /new            clear conversation");
-            eprintln!("  /save           save current session to ~/.rx4/sessions/");
+            eprintln!("  /save           save current session to ~/.agents/sessions/");
             eprintln!("  /load <id>      load a session by id");
             eprintln!("  /help           show this help");
             eprintln!("  /quit           exit");
@@ -474,7 +474,7 @@ fn handle_slash(input: &str, agent: &mut Agent) -> bool {
 }
 
 fn sessions_dir() -> std::path::PathBuf {
-    home_dir().join(".rx4").join("sessions")
+    home_dir().join(".agents").join("sessions")
 }
 
 fn home_dir() -> std::path::PathBuf {
@@ -549,7 +549,7 @@ fn run_serve(socket: Option<String>) {
     use rx4::ipc::IpcServer;
     let socket_path = socket.unwrap_or_else(|| {
         home_dir()
-            .join(".rx4")
+            .join(".agents")
             .join("rx4.sock")
             .to_string_lossy()
             .to_string()
@@ -725,7 +725,7 @@ fn run_doctor() {
     }
 
     let home = home_dir();
-    let data_dir = home.join(".rx4");
+    let data_dir = home.join(".agents");
     let data_dir_ok = data_dir.exists();
     print_status(
         "data directory",
