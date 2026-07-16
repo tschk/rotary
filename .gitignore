@@ -9,3 +9,4 @@ native/peekaboo_ffi/target/
 vendor/rs_peekaboo/target/
 
 target/
+references/
