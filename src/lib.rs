@@ -90,7 +90,9 @@ pub use agent::{
 pub use background_review::{
     BackgroundReviewConfig, BackgroundReviewer, ReviewResult, ReviewSignal,
 };
-pub use compaction::{compact_messages, CompactionConfig, CompactionMarker, CompactionResult};
+pub use compaction::{
+    apply_compaction, compact_messages, CompactionConfig, CompactionMarker, CompactionResult,
+};
 pub use cost::{CostEntry, ModelPricing, PricingRegistry, SessionCost, TokenUsage};
 #[cfg(feature = "graph-memory")]
 pub use dream_scheduler::{DreamReport, DreamScheduler};
@@ -134,7 +136,8 @@ pub use session::Session;
 pub use skill_curator::{CuratorConfig, CuratorSuggestion, SkillCurator, SuggestionKind};
 #[cfg(feature = "skills")]
 pub use skill_engine::{
-    Skill, SkillEngine, SkillError, SkillFrontmatter, SkillOutcome, SkillState,
+    ConfidencePrior, Skill, SkillEngine, SkillError, SkillFrontmatter, SkillOutcome, SkillRegistry,
+    SkillState,
 };
 pub use sse::{SseError, SseEvent, SseParser};
 pub use tools::register_builtin_tools;

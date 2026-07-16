@@ -180,6 +180,45 @@ pub fn compact_messages(messages: &[Message], config: &CompactionConfig) -> Comp
     }
 }
 
+/// Apply compaction in-place: keep system prefix, insert a summary system note,
+/// and retain the recent tail window. No-op when under the trigger threshold.
+pub fn apply_compaction(
+    messages: &mut Vec<Message>,
+    config: &CompactionConfig,
+) -> CompactionResult {
+    let result = compact_messages(messages, config);
+    if result.removed_count == 0 {
+        return result;
+    }
+
+    let system_end = messages
+        .iter()
+        .position(|m| m.role != Role::System)
+        .unwrap_or(messages.len());
+
+    let mut preserved_tokens = 0usize;
+    let mut tail_start = messages.len();
+    for i in (system_end..messages.len()).rev() {
+        let cost = estimate_messages(std::slice::from_ref(&messages[i]));
+        if preserved_tokens + cost > config.keep_recent {
+            break;
+        }
+        preserved_tokens += cost;
+        tail_start = i;
+    }
+
+    let tail: Vec<Message> = messages[tail_start..].to_vec();
+    messages.truncate(system_end);
+    if !result.summary.is_empty() {
+        messages.push(Message::system(format!(
+            "[context compacted] {} Markers preserved: {:?}",
+            result.summary, result.markers_preserved
+        )));
+    }
+    messages.extend(tail);
+    result
+}
+
 fn summarize_removed(removed: &[Message]) -> String {
     if removed.is_empty() {
         return String::new();
@@ -276,6 +315,25 @@ mod tests {
         assert_eq!(result.removed_tokens, 0);
         assert_eq!(result.remaining_tokens, estimate_messages(&messages));
         assert!(result.summary.is_empty());
+    }
+
+    #[test]
+    fn apply_compaction_mutates_message_list() {
+        let config = CompactionConfig::new(100, 30, 20);
+        let mut messages = vec![
+            Message::system("system prompt"),
+            Message::user("old ".repeat(50)),
+            Message::assistant("mid ".repeat(50)),
+            Message::user("new ".repeat(50)),
+        ];
+        let before_len = messages.len();
+        let result = apply_compaction(&mut messages, &config);
+        assert!(result.removed_count > 0);
+        assert!(messages.len() < before_len);
+        assert_eq!(messages.first().unwrap().role, Role::System);
+        assert!(messages
+            .iter()
+            .any(|m| m.content.contains("context compacted")));
     }
 
     #[test]

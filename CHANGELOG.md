@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.3.3] — 2026-03-16
+
+### Added
+- Parallel tool dispatch via `JoinSet` for `ToolEffect::Read` and `Network` batches
+- `ConfidencePrior` (Beta-Binomial posterior) for skill confidence
+- `apply_compaction` and token-based auto-compact trigger (`estimate_messages`)
+- `SkillRegistry::with_semantic_client` and `auto_activate_async` (embedding rank + keyword fallback)
+
+### Changed
+- `Agent::compact` uses `compaction::apply_compaction` instead of first/last truncation
+- `auto_compact_after` is interpreted as estimated **token** threshold before prompt (was message count)
+
 ## [0.3.2] — 2025-01
 
 ### Added

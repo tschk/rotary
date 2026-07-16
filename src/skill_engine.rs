@@ -92,6 +92,34 @@ pub struct ConversationTurn {
     pub tool_calls: Vec<String>,
 }
 
+/// Beta-Binomial prior hyperparameters for skill confidence.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+pub struct ConfidencePrior {
+    pub alpha: f64,
+    pub beta: f64,
+}
+
+impl Default for ConfidencePrior {
+    fn default() -> Self {
+        Self {
+            alpha: 1.0,
+            beta: 1.0,
+        }
+    }
+}
+
+impl ConfidencePrior {
+    /// Posterior mean P(success) ~ Beta(α + successes, β + failures).
+    pub fn mean(&self, successes: u32, failures: u32) -> f64 {
+        let a = self.alpha + f64::from(successes);
+        let b = self.beta + f64::from(failures);
+        if a + b <= 0.0 {
+            return 0.5;
+        }
+        a / (a + b)
+    }
+}
+
 /// A reusable skill created from agent experience.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Skill {
@@ -121,11 +149,14 @@ impl Skill {
         self.success_count + self.failure_count
     }
 
-    /// Recompute confidence using a Bayesian-ish prior:
-    /// `confidence = (successes + 1) / (total + 2)`.
+    /// Recompute confidence as the Beta-Binomial posterior mean (default prior α=β=1).
     pub fn recompute_confidence(&mut self) {
-        let total = self.total_outcomes();
-        self.confidence = (self.success_count as f64 + 1.0) / (total as f64 + 2.0);
+        self.recompute_confidence_with_prior(ConfidencePrior::default());
+    }
+
+    /// Recompute confidence with explicit Beta(α, β) prior hyperparameters.
+    pub fn recompute_confidence_with_prior(&mut self, prior: ConfidencePrior) {
+        self.confidence = prior.mean(self.success_count, self.failure_count);
     }
 }
 
@@ -306,8 +337,7 @@ impl SkillEngine {
             .collect()
     }
 
-    /// Adjust confidence based on an outcome using a Bayesian-ish update:
-    /// `confidence = (successes + 1) / (total + 2)`.
+    /// Adjust confidence based on an outcome (Beta-Binomial posterior with default prior).
     pub fn update_confidence(&mut self, id: &str, success: bool) -> Result<(), SkillError> {
         let skill = self
             .skills
@@ -829,16 +859,39 @@ fn extract_section_body(body: &str, section: &str) -> Option<String> {
     }
 }
 
+#[cfg(all(test, feature = "skills"))]
+use crate::embeddings::cosine_similarity;
+#[cfg(feature = "skills")]
+use crate::embeddings::{EmbedError, EmbeddingClient, SemanticSearch};
+
 /// A simpler wrapper for auto-activating skills based on a prompt.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Clone)]
 pub struct SkillRegistry {
     skills: Vec<Skill>,
+    #[cfg(feature = "skills")]
+    semantic: Option<SemanticSearch>,
+}
+
+impl Default for SkillRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl SkillRegistry {
     /// Create an empty registry.
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            skills: Vec::new(),
+            #[cfg(feature = "skills")]
+            semantic: None,
+        }
+    }
+
+    /// Enable semantic ranking via embeddings (falls back to keyword match when unavailable).
+    #[cfg(feature = "skills")]
+    pub fn with_semantic_client(&mut self, client: EmbeddingClient) {
+        self.semantic = Some(SemanticSearch::new(client));
     }
 
     /// Register a skill into the registry.
@@ -859,8 +912,29 @@ impl SkillRegistry {
             .collect()
     }
 
-    /// Return instructions for matching skills, sorted by confidence (desc).
+    /// Return instructions for matching skills, ranked by semantic similarity when
+    /// configured, otherwise by keyword trigger match; confidence breaks ties.
     pub fn auto_activate(&self, prompt: &str) -> Vec<String> {
+        self.auto_activate_sync(prompt)
+    }
+
+    /// Async activation: embedding similarity when online, keyword fallback on error.
+    #[cfg(feature = "skills")]
+    pub async fn auto_activate_async(&mut self, prompt: &str) -> Vec<String> {
+        let skills_snapshot: Vec<Skill> = self.skills.clone();
+        if let Some(semantic) = self.semantic.as_mut() {
+            match Self::rank_semantic_for_skills(prompt, &skills_snapshot, semantic).await {
+                Ok(ids) if !ids.is_empty() => {
+                    return Self::instructions_for_skills(&skills_snapshot, &ids)
+                }
+                Ok(_) => {}
+                Err(_) => {}
+            }
+        }
+        self.auto_activate_sync(prompt)
+    }
+
+    fn auto_activate_sync(&self, prompt: &str) -> Vec<String> {
         let mut matched: Vec<&Skill> = self.match_prompt(prompt);
         matched.sort_by(|a, b| {
             b.confidence
@@ -869,6 +943,76 @@ impl SkillRegistry {
         });
         matched.iter().map(|s| s.instructions.clone()).collect()
     }
+
+    #[cfg(feature = "skills")]
+    async fn rank_semantic_for_skills(
+        prompt: &str,
+        skills: &[Skill],
+        semantic: &mut SemanticSearch,
+    ) -> Result<Vec<String>, EmbedError> {
+        const MIN_SIM: f32 = 0.35;
+        let refs: Vec<&Skill> = skills.iter().collect();
+        let mut scored = semantic.search_skills(prompt, &refs, refs.len()).await?;
+        scored.retain(|(_, sim)| *sim >= MIN_SIM);
+        scored.sort_by(|a, b| {
+            let ca = skills
+                .iter()
+                .find(|s| s.id == a.0)
+                .map(|s| s.confidence)
+                .unwrap_or(0.0);
+            let cb = skills
+                .iter()
+                .find(|s| s.id == b.0)
+                .map(|s| s.confidence)
+                .unwrap_or(0.0);
+            b.1.partial_cmp(&a.1)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| cb.partial_cmp(&ca).unwrap_or(std::cmp::Ordering::Equal))
+        });
+        Ok(scored.into_iter().map(|(id, _)| id).collect())
+    }
+
+    #[cfg(feature = "skills")]
+    fn instructions_for_skills(skills: &[Skill], ids: &[String]) -> Vec<String> {
+        ids.iter()
+            .filter_map(|id| skills.iter().find(|s| &s.id == id))
+            .map(|s| s.instructions.clone())
+            .collect()
+    }
+
+    /// Deterministic local vectors for unit tests (no network).
+    #[cfg(all(test, feature = "skills"))]
+    pub(crate) fn auto_activate_semantic_local(&self, prompt: &str) -> Vec<String> {
+        let prompt_vec = local_embed(prompt);
+        let mut scored: Vec<(f32, f64, String)> = self
+            .skills
+            .iter()
+            .map(|s| {
+                let sim = cosine_similarity(&prompt_vec, &local_embed(&s.description));
+                (sim, s.confidence, s.instructions.clone())
+            })
+            .filter(|(sim, _, _)| *sim >= 0.2)
+            .collect();
+        scored.sort_by(|a, b| {
+            b.0.partial_cmp(&a.0)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal))
+        });
+        scored.into_iter().map(|(_, _, instr)| instr).collect()
+    }
+}
+
+#[cfg(all(test, feature = "skills"))]
+fn local_embed(text: &str) -> Vec<f32> {
+    let mut v = [0.0f32; 8];
+    for (i, b) in text.as_bytes().iter().enumerate() {
+        v[i % 8] += f32::from(*b) / 255.0;
+    }
+    let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+    if norm > 0.0 {
+        v.iter_mut().for_each(|x| *x /= norm);
+    }
+    v.to_vec()
 }
 
 #[cfg(test)]
@@ -965,8 +1109,79 @@ mod tests {
         let s = engine.get(&id).expect("exists");
         assert_eq!(s.success_count, 2);
         assert_eq!(s.failure_count, 1);
-        let expected = (2.0 + 1.0) / (3.0 + 2.0);
+        let expected = ConfidencePrior::default().mean(2, 1);
         assert!((s.confidence - expected).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_confidence_prior_hyperparameters() {
+        let prior = ConfidencePrior {
+            alpha: 2.0,
+            beta: 8.0,
+        };
+        assert!((prior.mean(0, 0) - 0.2).abs() < 1e-9);
+        assert!((prior.mean(8, 2) - 0.5).abs() < 1e-9);
+        let mut skill = Skill {
+            id: "x".into(),
+            name: "n".into(),
+            description: "d".into(),
+            trigger_patterns: vec![],
+            instructions: "i".into(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            success_count: 3,
+            failure_count: 1,
+            confidence: 0.0,
+            tags: vec![],
+            source_conversation: None,
+            pinned: false,
+            state: SkillState::Active,
+        };
+        skill.recompute_confidence_with_prior(prior);
+        assert!((skill.confidence - prior.mean(3, 1)).abs() < 1e-9);
+    }
+
+    #[cfg(feature = "skills")]
+    #[test]
+    fn test_semantic_local_ranks_deploy_skill() {
+        let mut registry = SkillRegistry::new();
+        let deploy = Skill {
+            id: "d".into(),
+            name: "deploy".into(),
+            description: "how do I deploy to production kubernetes cluster".into(),
+            trigger_patterns: vec!["zzz".into()],
+            instructions: "deploy steps".into(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            success_count: 1,
+            failure_count: 0,
+            confidence: 0.9,
+            tags: vec![],
+            source_conversation: None,
+            pinned: false,
+            state: SkillState::Active,
+        };
+        let other = Skill {
+            id: "o".into(),
+            name: "lint".into(),
+            description: "format rust source code with rustfmt cli".into(),
+            trigger_patterns: vec!["zzz".into()],
+            instructions: "lint steps".into(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            success_count: 0,
+            failure_count: 0,
+            confidence: 0.1,
+            tags: vec![],
+            source_conversation: None,
+            pinned: false,
+            state: SkillState::Active,
+        };
+        registry.register(other);
+        registry.register(deploy);
+        let activated = registry.auto_activate_semantic_local("how do I deploy to production");
+        assert!(!activated.is_empty());
+        assert_eq!(activated[0], "deploy steps");
     }
 
     #[test]

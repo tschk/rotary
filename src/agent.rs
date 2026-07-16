@@ -5,6 +5,8 @@
 //! grok-build (moka cache, dashmap registry, parking_lot), and pi_agent_rust
 //! (stable event ordering, bounded tool recursion).
 
+use crate::compaction::{apply_compaction, estimate_messages, CompactionConfig};
+use crate::guardrails::plan_tool_effect_batches;
 use crate::hooks::HookRegistry;
 use crate::mode::{self, Profile, Scope};
 use crate::permissions::{self, Approver, Decision, Policy};
@@ -250,7 +252,7 @@ pub type Subscriber = Arc<dyn Fn(&Event) + Send + Sync>;
 pub struct Agent {
     pub model: String,
     pub system_prompt: Option<String>,
-    pub tools: ToolRegistry,
+    pub tools: Arc<ToolRegistry>,
     pub policy: Policy,
     pub scope: Scope,
     scope_profile: Option<Profile>,
@@ -270,7 +272,7 @@ impl Agent {
         Self {
             model: "gpt-4o".into(),
             system_prompt: None,
-            tools: ToolRegistry::new(),
+            tools: Arc::new(ToolRegistry::new()),
             policy: Policy::full_access(),
             scope: Scope::Coding,
             scope_profile: None,
@@ -299,7 +301,7 @@ impl Agent {
     }
 
     pub fn set_tools(&mut self, tools: ToolRegistry) {
-        self.tools = tools;
+        self.tools = Arc::new(tools);
     }
 
     pub fn set_policy(&mut self, policy: Policy) {
@@ -355,7 +357,8 @@ impl Agent {
     /// Run a prompt through the agent loop.
     /// Streams events to subscribers, executes tools, cycles turns.
     pub async fn prompt(&mut self, text: &str) -> Result<(), AgentError> {
-        if self.message_count() >= self.auto_compact_after {
+        let tokens = estimate_messages(&self.messages.read());
+        if tokens >= self.auto_compact_after {
             self.compact("auto-compact before prompt");
         }
 
@@ -452,31 +455,116 @@ impl Agent {
         Ok(())
     }
 
-    /// Execute tool calls — sequential dispatch with effect classification.
-    /// ToolEffect determines parallel eligibility for future JoinSet-based dispatch.
+    /// Execute tool calls: parallel batches for Read/Network, serial for Write/Process.
     async fn execute_tools_parallel(
         &self,
         calls: &[ToolCall],
         ctx: &Arc<ToolContext>,
     ) -> Vec<ToolResult> {
-        let mut results = Vec::with_capacity(calls.len());
+        let effects: Vec<ToolEffect> = calls
+            .iter()
+            .map(|c| {
+                let name = normalize_tool_name(&c.name);
+                self.tools.effect_of(name)
+            })
+            .collect();
+        let batches = plan_tool_effect_batches(&effects);
+        let mut results: Vec<Option<ToolResult>> = vec![None; calls.len()];
 
-        for call in calls {
-            self.emit(Event::ToolExecutionStart(call.clone()));
-            let result = self.execute_single_tool(call, ctx).await;
-            self.emit(Event::ToolExecutionEnd(result.clone()));
-            results.push(result);
+        for batch in batches {
+            if batch.len() == 1 {
+                let idx = batch[0];
+                let call = &calls[idx];
+                self.emit(Event::ToolExecutionStart(call.clone()));
+                let result = self.execute_single_tool(call, ctx).await;
+                self.emit(Event::ToolExecutionEnd(result.clone()));
+                results[idx] = Some(result);
+                continue;
+            }
+
+            let tools = Arc::clone(&self.tools);
+            let policy = self.policy.clone();
+            let scope_profile = self.scope_profile.clone();
+            let approver = self.approver.clone();
+            let tool_cache = self.tool_cache.clone();
+            let mut join_set = tokio::task::JoinSet::new();
+
+            for idx in batch {
+                let call = calls[idx].clone();
+                self.emit(Event::ToolExecutionStart(call.clone()));
+                let ctx = Arc::clone(ctx);
+                let tools = Arc::clone(&tools);
+                let policy = policy.clone();
+                let scope_profile = scope_profile.clone();
+                let approver = approver.clone();
+                let tool_cache = tool_cache.clone();
+                join_set.spawn(async move {
+                    let result = Agent::run_tool_call(
+                        &tools,
+                        &policy,
+                        scope_profile.as_ref(),
+                        approver.as_deref(),
+                        &tool_cache,
+                        &call,
+                        &ctx,
+                    )
+                    .await;
+                    (idx, result)
+                });
+            }
+
+            while let Some(joined) = join_set.join_next().await {
+                match joined {
+                    Ok((idx, result)) => {
+                        self.emit(Event::ToolExecutionEnd(result.clone()));
+                        results[idx] = Some(result);
+                    }
+                    Err(e) => {
+                        warn!("parallel tool task join error: {e}");
+                    }
+                }
+            }
         }
 
         results
+            .into_iter()
+            .enumerate()
+            .map(|(i, r)| {
+                r.unwrap_or_else(|| {
+                    ToolResult::err(
+                        calls.get(i).map(|c| c.id.as_str()).unwrap_or(""),
+                        "tool execution failed",
+                    )
+                })
+            })
+            .collect()
     }
 
     async fn execute_single_tool(&self, call: &ToolCall, ctx: &Arc<ToolContext>) -> ToolResult {
-        // Translate common pi-style tool aliases (read_file, write_file, etc.)
-        // to rx4 native names (read, write, etc.) before execution.
+        Self::run_tool_call(
+            self.tools.as_ref(),
+            &self.policy,
+            self.scope_profile.as_ref(),
+            self.approver.as_deref(),
+            &self.tool_cache,
+            call,
+            ctx,
+        )
+        .await
+    }
+
+    async fn run_tool_call(
+        tools: &ToolRegistry,
+        policy: &Policy,
+        scope_profile: Option<&Profile>,
+        approver: Option<&dyn Approver>,
+        tool_cache: &Cache<String, ToolResult>,
+        call: &ToolCall,
+        ctx: &Arc<ToolContext>,
+    ) -> ToolResult {
         let resolved_name = normalize_tool_name(&call.name).to_string();
 
-        if let Some(profile) = &self.scope_profile {
+        if let Some(profile) = scope_profile {
             if !mode::tool_allowed(profile, &call.name)
                 && !mode::tool_allowed(profile, &resolved_name)
             {
@@ -485,40 +573,25 @@ impl Agent {
             }
         }
 
-        let decision = permissions::authorize(
-            &self.policy,
-            &resolved_name,
-            &call.arguments,
-            self.approver.as_deref(),
-        );
+        let decision = permissions::authorize(policy, &resolved_name, &call.arguments, approver);
 
         match decision {
             Decision::Deny => ToolResult::err(&call.id, "denied by policy"),
-            Decision::Ask => {
-                warn!(
-                    "approval required for tool: {} (no approver → deny)",
-                    call.name
-                );
-                ToolResult::err(&call.id, "approval required")
-            }
+            Decision::Ask => ToolResult::err(&call.id, "approval required"),
             Decision::Allow => {
                 let cache_key = format!("{}:{}", resolved_name, call.arguments);
-                if let Some(cached) = self.tool_cache.get(&cache_key).await {
+                if let Some(cached) = tool_cache.get(&cache_key).await {
                     debug!("tool cache hit: {}", resolved_name);
                     return ToolResult::ok(&call.id, cached.content);
                 }
 
-                let result = match self
-                    .tools
-                    .execute(&resolved_name, ctx, &call.arguments)
-                    .await
-                {
+                let result = match tools.execute(&resolved_name, ctx, &call.arguments).await {
                     Some(r) => r,
                     None => ToolResult::err(&call.id, format!("unknown tool: {}", call.name)),
                 };
 
                 if !result.is_error {
-                    self.tool_cache.insert(cache_key, result.clone()).await;
+                    tool_cache.insert(cache_key, result.clone()).await;
                 }
 
                 result
@@ -529,19 +602,94 @@ impl Agent {
     pub fn compact(&self, reason: &str) {
         info!("compacting context: {reason}");
         let mut msgs = self.messages.write();
-        if msgs.len() <= 4 {
+        if msgs.len() <= 2 {
             return;
         }
-        let first = msgs.first().cloned();
-        let last = msgs.last().cloned();
-        msgs.clear();
-        if let Some(f) = first {
-            msgs.push(f);
+        let trigger = self.auto_compact_after.max(64);
+        let reserve = (trigger / 4).max(32);
+        let keep_recent = (trigger / 4).max(32);
+        let config = CompactionConfig::new(trigger + reserve, reserve, keep_recent);
+        let result = apply_compaction(&mut msgs, &config);
+        if !result.summary.is_empty() {
+            msgs.push(Message::system(format!("[compact reason: {reason}]")));
         }
-        msgs.push(Message::system(format!("[context compacted: {reason}]")));
-        if let Some(l) = last {
-            msgs.push(l);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+
+    static PARALLEL_DELAY_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+    fn delay_read_tool(name: &str) -> ToolDefinition {
+        ToolDefinition::new_boxed(
+            name,
+            "delay read",
+            "{}",
+            Box::new(|_ctx, _args| {
+                Box::pin(async {
+                    PARALLEL_DELAY_CALLS.fetch_add(1, Ordering::SeqCst);
+                    tokio::time::sleep(Duration::from_millis(40)).await;
+                    ToolResult::ok("id", "ok")
+                })
+            }),
+        )
+        .with_effect(ToolEffect::Read)
+    }
+
+    #[tokio::test]
+    async fn parallel_read_tools_run_concurrently() {
+        PARALLEL_DELAY_CALLS.store(0, Ordering::SeqCst);
+        let mut registry = ToolRegistry::new();
+        registry.register(delay_read_tool("a"));
+        registry.register(delay_read_tool("b"));
+        let mut agent = Agent::new();
+        agent.set_tools(registry);
+        agent.set_policy(Policy::full_access());
+        let ctx = Arc::new(ToolContext::new("."));
+        let calls = vec![
+            ToolCall {
+                id: "1".into(),
+                name: "a".into(),
+                arguments: "{}".into(),
+            },
+            ToolCall {
+                id: "2".into(),
+                name: "b".into(),
+                arguments: "{}".into(),
+            },
+        ];
+        let start = std::time::Instant::now();
+        let results = agent.execute_tools_parallel(&calls, &ctx).await;
+        assert_eq!(results.len(), 2);
+        assert!(results.iter().all(|r| !r.is_error));
+        assert_eq!(PARALLEL_DELAY_CALLS.load(Ordering::SeqCst), 2);
+        assert!(start.elapsed() < Duration::from_millis(70));
+    }
+
+    #[test]
+    fn compact_uses_token_aware_compaction() {
+        let mut agent = Agent::new();
+        agent.auto_compact_after = 50;
+        {
+            let mut msgs = agent.messages.write();
+            msgs.push(Message::system("sys"));
+            for i in 0..20 {
+                msgs.push(Message::user(
+                    format!("old message {i} ",) + &"x".repeat(80),
+                ));
+                msgs.push(Message::assistant("reply".repeat(40)));
+            }
+            msgs.push(Message::user("recent tail"));
         }
+        agent.compact("test");
+        let msgs = agent.messages.read();
+        assert!(msgs.len() < 42);
+        assert!(msgs.iter().any(|m| m.content.contains("context compacted")));
+        assert!(msgs.iter().any(|m| m.content.contains("recent tail")));
     }
 }
 
