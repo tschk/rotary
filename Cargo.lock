@@ -1601,6 +1601,7 @@ dependencies = [
  "async-trait",
  "cancellation-token",
  "chrono",
+ "clap",
  "criterion",
  "dashmap",
  "dirs",
