@@ -52,9 +52,9 @@ pub mod sandbox;
 pub mod secrets;
 pub mod session;
 #[cfg(feature = "skills")]
-pub mod skill_engine;
-#[cfg(feature = "skills")]
 pub mod skill_curator;
+#[cfg(feature = "skills")]
+pub mod skill_engine;
 pub mod slash;
 pub mod sse;
 pub mod subagent;
@@ -83,8 +83,8 @@ pub mod lsp;
 pub mod marketplace;
 
 pub use agent::{
-    Agent, Event, ToolCall, ToolContext, ToolDefinition, ToolEffect, ToolExecuteBox,
-    ToolExecuteFn, ToolExecutor, ToolFuture, ToolRegistry, ToolResult, normalize_tool_name,
+    normalize_tool_name, Agent, Event, ToolCall, ToolContext, ToolDefinition, ToolEffect,
+    ToolExecuteBox, ToolExecuteFn, ToolExecutor, ToolFuture, ToolRegistry, ToolResult,
 };
 #[cfg(feature = "skills")]
 pub use background_review::{
@@ -131,9 +131,11 @@ pub use secrets::{
 };
 pub use session::Session;
 #[cfg(feature = "skills")]
-pub use skill_engine::{Skill, SkillEngine, SkillError, SkillFrontmatter, SkillOutcome, SkillState};
-#[cfg(feature = "skills")]
 pub use skill_curator::{CuratorConfig, CuratorSuggestion, SkillCurator, SuggestionKind};
+#[cfg(feature = "skills")]
+pub use skill_engine::{
+    Skill, SkillEngine, SkillError, SkillFrontmatter, SkillOutcome, SkillState,
+};
 pub use sse::{SseError, SseEvent, SseParser};
 pub use tools::register_builtin_tools;
 
@@ -141,8 +143,8 @@ pub use tools::register_builtin_tools;
 pub use mcp::{McpClient, McpError, McpRegistry, McpResourceInfo, McpToolInfo};
 
 pub use marketplace::{
-    InstalledPlugin, MarketplaceError, MarketplaceIndex, McpServerConfig, PluginBlocklist,
-    PluginInstaller, PluginManifest,
+    verify_plugin_integrity, InstalledPlugin, MarketplaceError, MarketplaceIndex, McpServerConfig,
+    PluginBlocklist, PluginInstaller, PluginManifest,
 };
 
 #[cfg(feature = "providers")]

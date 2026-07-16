@@ -149,9 +149,7 @@ impl SkillCurator {
         }
 
         // Consolidation pass: find skills with overlapping trigger_patterns.
-        if self.config.consolidate
-            && suggestions.len() < self.config.max_suggestions_per_run
-        {
+        if self.config.consolidate && suggestions.len() < self.config.max_suggestions_per_run {
             let overlap = self.find_overlapping(&skills);
             for (source, target) in overlap {
                 if suggestions.len() >= self.config.max_suggestions_per_run {
@@ -167,9 +165,7 @@ impl SkillCurator {
                 if source.pinned || target.pinned {
                     continue;
                 }
-                if source.state == SkillState::Archived
-                    || target.state == SkillState::Archived
-                {
+                if source.state == SkillState::Archived || target.state == SkillState::Archived {
                     continue;
                 }
                 suggestions.push(CuratorSuggestion {
@@ -192,7 +188,10 @@ impl SkillCurator {
     fn find_overlapping<'a>(
         &self,
         skills: &[&'a crate::skill_engine::Skill],
-    ) -> Vec<(&'a crate::skill_engine::Skill, &'a crate::skill_engine::Skill)> {
+    ) -> Vec<(
+        &'a crate::skill_engine::Skill,
+        &'a crate::skill_engine::Skill,
+    )> {
         let mut pairs = Vec::new();
         for i in 0..skills.len() {
             for j in (i + 1)..skills.len() {
@@ -364,10 +363,7 @@ mod tests {
         let engine = engine_with(vec![skill]);
         let curator = SkillCurator::default();
         let suggestions = curator.audit(&engine);
-        assert!(
-            suggestions.is_empty(),
-            "archived skills should be skipped"
-        );
+        assert!(suggestions.is_empty(), "archived skills should be skipped");
     }
 
     #[test]
@@ -385,19 +381,12 @@ mod tests {
     fn test_audit_respects_max_suggestions() {
         let mut skills = Vec::new();
         for i in 0..10 {
-            skills.push(make_skill_with_age(
-                &format!("old_{i}"),
-                "a skill",
-                100,
-            ));
+            skills.push(make_skill_with_age(&format!("old_{i}"), "a skill", 100));
         }
         let engine = engine_with(skills);
         let curator = SkillCurator::default();
         let suggestions = curator.audit(&engine);
-        assert_eq!(
-            suggestions.len(),
-            curator.config.max_suggestions_per_run
-        );
+        assert_eq!(suggestions.len(), curator.config.max_suggestions_per_run);
     }
 
     #[test]
@@ -491,9 +480,7 @@ mod tests {
     fn test_set_state() {
         let skill = make_skill_with_age("stateme", "a skill", 1);
         let mut engine = engine_with(vec![skill]);
-        engine
-            .set_state("stateme", SkillState::Stale)
-            .expect("set");
+        engine.set_state("stateme", SkillState::Stale).expect("set");
         assert_eq!(
             engine.get("stateme").expect("exists").state,
             SkillState::Stale

@@ -8,6 +8,7 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use thiserror::Error;
@@ -27,6 +28,8 @@ pub enum MarketplaceError {
     ManifestError(String),
     #[error("plugin already installed: {0}")]
     AlreadyInstalled(String),
+    #[error("integrity check failed: expected {expected}, got {actual}")]
+    IntegrityCheckFailed { expected: String, actual: String },
 }
 
 /// Configuration for a single MCP server declared by a plugin manifest.
@@ -65,6 +68,8 @@ pub struct PluginManifest {
     pub skills: Vec<String>,
     #[serde(default)]
     pub hooks: Vec<String>,
+    #[serde(default)]
+    pub sha256: Option<String>,
 }
 
 /// The index of available plugins in a marketplace.
@@ -290,6 +295,17 @@ impl PluginInstaller {
         let on_disk_manifest = read_manifest(&target).unwrap_or_else(|_| manifest.clone());
         validate_manifest(&on_disk_manifest)?;
 
+        if let Some(ref expected) = on_disk_manifest.sha256 {
+            verify_plugin_integrity(&target, expected)?;
+        } else if let Some(ref expected) = manifest.sha256 {
+            verify_plugin_integrity(&target, expected)?;
+        } else {
+            tracing::warn!(
+                "plugin {} has no sha256 in manifest — skipping integrity check",
+                on_disk_manifest.name
+            );
+        }
+
         if target.join("package.json").exists() {
             // npm install would run here; recorded but not executed.
         }
@@ -393,6 +409,75 @@ fn validate_manifest(manifest: &PluginManifest) -> Result<(), MarketplaceError> 
     Ok(())
 }
 
+/// Computes a deterministic SHA-256 digest over every file under `path`
+/// (recursively, entries sorted by relative path) and compares it against
+/// `expected_sha256`. Returns `Ok(())` on match or
+/// [`MarketplaceError::IntegrityCheckFailed`] on mismatch.
+pub fn verify_plugin_integrity(path: &Path, expected_sha256: &str) -> Result<(), MarketplaceError> {
+    let actual = compute_dir_sha256(path)?;
+    if actual.eq_ignore_ascii_case(expected_sha256) {
+        Ok(())
+    } else {
+        Err(MarketplaceError::IntegrityCheckFailed {
+            expected: expected_sha256.to_string(),
+            actual,
+        })
+    }
+}
+
+/// Recursively hashes the contents of every file under `path` into a single
+/// SHA-256 digest. Directory entries are visited in sorted order so the
+/// result is deterministic. Subdirectories named `.git` are skipped so that
+/// a cloned repository's metadata does not affect the content hash.
+fn compute_dir_sha256(path: &Path) -> Result<String, MarketplaceError> {
+    let mut hasher = Sha256::new();
+    let mut entries: Vec<PathBuf> = std::fs::read_dir(path)
+        .map_err(|e| MarketplaceError::InstallFailed(e.to_string()))?
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .collect();
+    entries.sort();
+    hash_entries(&mut hasher, path, &entries)?;
+    let digest = hasher.finalize();
+    Ok(format!("{:x}", digest))
+}
+
+fn hash_entries(
+    hasher: &mut Sha256,
+    base: &Path,
+    entries: &[PathBuf],
+) -> Result<(), MarketplaceError> {
+    for entry in entries {
+        let file_name = entry
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        if entry.is_dir() {
+            if file_name == ".git" {
+                continue;
+            }
+            let mut child_entries: Vec<PathBuf> = std::fs::read_dir(entry)
+                .map_err(|e| MarketplaceError::InstallFailed(e.to_string()))?
+                .filter_map(|e| e.ok().map(|e| e.path()))
+                .collect();
+            child_entries.sort();
+            hash_entries(hasher, base, &child_entries)?;
+        } else {
+            let rel = entry
+                .strip_prefix(base)
+                .unwrap_or(entry)
+                .to_string_lossy()
+                .to_string();
+            hasher.update(rel.as_bytes());
+            hasher.update(b"\0");
+            let data =
+                std::fs::read(entry).map_err(|e| MarketplaceError::InstallFailed(e.to_string()))?;
+            hasher.update(&data);
+            hasher.update(b"\0");
+        }
+    }
+    Ok(())
+}
+
 /// Recursively copies a directory tree from `src` to `dst`.
 fn copy_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(dst)?;
@@ -430,6 +515,7 @@ mod tests {
             mcp_servers: Vec::new(),
             skills: Vec::new(),
             hooks: Vec::new(),
+            sha256: None,
         }
     }
 
@@ -621,5 +707,54 @@ mod tests {
         let loaded = MarketplaceIndex::from_file(&path).unwrap();
         assert_eq!(loaded.plugins().len(), 1);
         assert_eq!(loaded.plugins()[0].name, "demo-plugin");
+    }
+
+    #[test]
+    fn test_verify_integrity_success() {
+        let tmp = TempDir::new().unwrap();
+        let source_dir = tmp.path().join("source");
+        write_plugin_dir(&source_dir, &sample_manifest());
+        let expected = compute_dir_sha256(&source_dir).unwrap();
+        assert!(verify_plugin_integrity(&source_dir, &expected).is_ok());
+    }
+
+    #[test]
+    fn test_verify_integrity_failure() {
+        let tmp = TempDir::new().unwrap();
+        let source_dir = tmp.path().join("source");
+        write_plugin_dir(&source_dir, &sample_manifest());
+        let wrong_hash =
+            "0000000000000000000000000000000000000000000000000000000000000000".to_string();
+        let err = verify_plugin_integrity(&source_dir, &wrong_hash).unwrap_err();
+        match err {
+            MarketplaceError::IntegrityCheckFailed { expected, actual } => {
+                assert_eq!(expected, wrong_hash);
+                assert_ne!(actual, wrong_hash);
+            }
+            other => panic!("expected IntegrityCheckFailed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_install_aborts_on_mismatch() {
+        let tmp = TempDir::new().unwrap();
+        let install_dir = tmp.path().join("plugins");
+        let source_dir = tmp.path().join("source");
+        let mut manifest = sample_manifest();
+        manifest.sha256 =
+            Some("0000000000000000000000000000000000000000000000000000000000000000".to_string());
+        write_plugin_dir(&source_dir, &manifest);
+
+        let installer = PluginInstaller::new(install_dir.clone());
+        let err = installer
+            .install(&manifest, source_dir.to_str().unwrap())
+            .unwrap_err();
+        match err {
+            MarketplaceError::IntegrityCheckFailed { expected, .. } => {
+                assert!(expected.starts_with("0000"));
+            }
+            other => panic!("expected IntegrityCheckFailed, got {other:?}"),
+        }
+        assert!(!installer.is_installed("demo-plugin"));
     }
 }

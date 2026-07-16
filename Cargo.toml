@@ -71,6 +71,9 @@ rmcp = { version = "0.6", optional = true }
 serde_yaml = { version = "0.9", optional = true }
 dirs = { version = "6", optional = true }
 
+# Plugin integrity verification (marketplace).
+sha2 = "0.10"
+
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }
 tokio-test = "0.4"

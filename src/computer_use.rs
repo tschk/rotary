@@ -109,7 +109,9 @@ pub fn register_tools(registry: &mut ToolRegistry) {
         description: "Health report for computer-use readiness (permissions, tools, capabilities)."
             .into(),
         parameters_json: r#"{"type":"object","properties":{}}"#.into(),
-        execute: ToolExecutor::Boxed(Box::new(|_ctx, _args| Box::pin(async { json_result(peekaboo().doctor()) }))),
+        execute: ToolExecutor::Boxed(Box::new(|_ctx, _args| {
+            Box::pin(async { json_result(peekaboo().doctor()) })
+        })),
         effect: ToolEffect::Process,
     });
     tracing::info!("computer_use: registered rs_peekaboo tools (crates.io dep)");

@@ -40,6 +40,16 @@ enum Commands {
     Models,
     /// List all built-in tools
     Tools,
+    /// Install a plugin from a local path or git URL
+    Install {
+        /// Plugin name
+        name: String,
+        /// Source path or git URL
+        source: String,
+        /// Require a SHA-256 hash and verify the install against it
+        #[arg(long, value_name = "HASH")]
+        verify: Option<String>,
+    },
 }
 
 fn main() {
@@ -55,6 +65,11 @@ fn main() {
         Commands::Doctor => run_doctor(),
         Commands::Models => run_models(),
         Commands::Tools => run_tools(),
+        Commands::Install {
+            name,
+            source,
+            verify,
+        } => run_install(&name, &source, verify.as_deref()),
     }
 }
 
@@ -737,4 +752,41 @@ fn run_tools() {
         println!("{name:<16} {desc}");
     }
     println!("\n{} tools registered", tools.count());
+}
+
+fn run_install(name: &str, source: &str, verify: Option<&str>) {
+    use rx4::marketplace::{PluginInstaller, PluginManifest};
+
+    let installer = PluginInstaller::default();
+    let manifest = PluginManifest {
+        name: name.to_string(),
+        version: "0.0.0".to_string(),
+        description: String::new(),
+        author: String::new(),
+        homepage: None,
+        repository: None,
+        license: None,
+        categories: Vec::new(),
+        keywords: Vec::new(),
+        dependencies: Vec::new(),
+        mcp_servers: Vec::new(),
+        skills: Vec::new(),
+        hooks: Vec::new(),
+        sha256: verify.map(|s| s.to_string()),
+    };
+
+    match installer.install(&manifest, source) {
+        Ok(installed) => {
+            println!(
+                "installed plugin {} v{} at {}",
+                installed.name,
+                installed.version,
+                installed.path.display()
+            );
+        }
+        Err(e) => {
+            eprintln!("install failed: {e}");
+            std::process::exit(1);
+        }
+    }
 }
