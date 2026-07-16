@@ -12,6 +12,23 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+/// YAML frontmatter parsed from a SKILL.md file.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SkillFrontmatter {
+    pub id: Option<String>,
+    pub name: Option<String>,
+    pub description: Option<String>,
+    pub confidence: Option<f64>,
+    pub success_count: Option<u32>,
+    pub failure_count: Option<u32>,
+    pub created_at: Option<String>,
+    pub updated_at: Option<String>,
+    pub tags: Option<Vec<String>>,
+    pub trigger_patterns: Option<Vec<String>>,
+    pub category: Option<String>,
+    pub related_skills: Option<Vec<String>>,
+}
+
 /// Errors produced by the skill engine.
 #[derive(Debug, Error)]
 pub enum SkillError {
@@ -23,6 +40,10 @@ pub enum SkillError {
     Serialization(String),
     #[error("extraction error: {0}")]
     Extraction(String),
+    #[error("yaml error: {0}")]
+    Yaml(String),
+    #[error("parse error: {0}")]
+    Parse(String),
 }
 
 impl From<std::io::Error> for SkillError {
@@ -37,12 +58,31 @@ impl From<serde_json::Error> for SkillError {
     }
 }
 
+#[cfg(feature = "pi-compat")]
+impl From<serde_yaml::Error> for SkillError {
+    fn from(err: serde_yaml::Error) -> Self {
+        SkillError::Yaml(err.to_string())
+    }
+}
+
 /// Outcome of a conversation that produced (or tested) a skill.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SkillOutcome {
     Success,
     Failure,
     Partial,
+}
+
+/// Lifecycle state of a skill, managed by the curator.
+///
+/// Skills transition `Active → Stale → Archived`. Pinned skills bypass all
+/// auto-transitions. Archived skills are never auto-deleted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum SkillState {
+    #[default]
+    Active,
+    Stale,
+    Archived,
 }
 
 /// A single turn in a conversation used for skill extraction.
@@ -68,6 +108,12 @@ pub struct Skill {
     pub confidence: f64,
     pub tags: Vec<String>,
     pub source_conversation: Option<String>,
+    /// Whether this skill is pinned (bypasses all auto-transitions).
+    #[serde(default)]
+    pub pinned: bool,
+    /// Lifecycle state managed by the curator.
+    #[serde(default)]
+    pub state: SkillState,
 }
 
 impl Skill {
@@ -89,6 +135,8 @@ impl Skill {
 pub struct SkillEngine {
     skills: HashMap<String, Skill>,
     skills_dir: PathBuf,
+    /// Additional directories scanned on load (e.g. project-local `.rx4/skills`).
+    extra_dirs: Vec<PathBuf>,
 }
 
 impl Default for SkillEngine {
@@ -107,12 +155,31 @@ impl SkillEngine {
         Self {
             skills: HashMap::new(),
             skills_dir,
+            extra_dirs: Vec::new(),
         }
     }
 
     /// Returns the configured skills directory.
     pub fn skills_dir(&self) -> &Path {
         &self.skills_dir
+    }
+
+    /// Add an extra directory to scan on `load()`.
+    pub fn add_extra_dir(&mut self, dir: PathBuf) {
+        if !self.extra_dirs.contains(&dir) {
+            self.extra_dirs.push(dir);
+        }
+    }
+
+    /// Returns the extra (non-primary) skill directories.
+    pub fn extra_dirs(&self) -> &[PathBuf] {
+        &self.extra_dirs
+    }
+
+    /// Insert a pre-constructed skill into the engine (for testing).
+    #[cfg(test)]
+    pub fn insert_skill_for_test(&mut self, skill: Skill) {
+        self.skills.insert(skill.id.clone(), skill);
     }
 
     /// Analyze a conversation and extract a reusable skill.
@@ -166,6 +233,8 @@ impl SkillEngine {
             confidence: 0.5,
             tags,
             source_conversation: Some(tool_sequence),
+            pinned: false,
+            state: SkillState::Active,
         };
         skill.recompute_confidence();
 
@@ -199,6 +268,8 @@ impl SkillEngine {
             confidence: 0.5,
             tags: Vec::new(),
             source_conversation: None,
+            pinned: false,
+            state: SkillState::Active,
         };
         self.skills.insert(id.clone(), skill.clone());
         Ok(skill)
@@ -253,6 +324,90 @@ impl SkillEngine {
         Ok(())
     }
 
+    /// Set the lifecycle state of a skill (Active/Stale/Archived).
+    pub fn set_state(&mut self, id: &str, state: SkillState) -> Result<(), SkillError> {
+        let skill = self
+            .skills
+            .get_mut(id)
+            .ok_or_else(|| SkillError::NotFound(id.to_string()))?;
+        skill.state = state;
+        skill.updated_at = Utc::now();
+        Ok(())
+    }
+
+    /// Pin or unpin a skill. Pinned skills bypass all auto-transitions.
+    pub fn set_pinned(&mut self, id: &str, pinned: bool) -> Result<(), SkillError> {
+        let skill = self
+            .skills
+            .get_mut(id)
+            .ok_or_else(|| SkillError::NotFound(id.to_string()))?;
+        skill.pinned = pinned;
+        Ok(())
+    }
+
+    /// Merge a source skill into a target skill.
+    ///
+    /// Unions trigger_patterns and tags, concatenates instructions, sums
+    /// success/failure counts, recomputes confidence, and removes the source
+    /// skill. Returns an error if either id is missing or they are the same.
+    pub fn merge_skill(&mut self, source_id: &str, target_id: &str) -> Result<(), SkillError> {
+        if source_id == target_id {
+            return Err(SkillError::Extraction(
+                "cannot merge a skill into itself".into(),
+            ));
+        }
+        // Take the source out first so we can mutably borrow the target.
+        let source = self
+            .skills
+            .remove(source_id)
+            .ok_or_else(|| SkillError::NotFound(source_id.to_string()))?;
+        let target = self
+            .skills
+            .get_mut(target_id)
+            .ok_or_else(|| SkillError::NotFound(target_id.to_string()))?;
+
+        // Union trigger_patterns (preserve order, no duplicates).
+        for pat in source.trigger_patterns {
+            if !target.trigger_patterns.contains(&pat) {
+                target.trigger_patterns.push(pat);
+            }
+        }
+
+        // Union tags.
+        for tag in source.tags {
+            if !target.tags.contains(&tag) {
+                target.tags.push(tag);
+            }
+        }
+
+        // Concatenate instructions.
+        if !source.instructions.is_empty() {
+            if target.instructions.is_empty() {
+                target.instructions = source.instructions;
+            } else {
+                target.instructions = format!("{}\n\n{}", target.instructions, source.instructions);
+            }
+        }
+
+        // Sum counts and recompute confidence.
+        target.success_count += source.success_count;
+        target.failure_count += source.failure_count;
+        target.recompute_confidence();
+        target.updated_at = Utc::now();
+        Ok(())
+    }
+
+    /// Update the instructions on an existing skill and refresh `updated_at`.
+    pub fn update_instructions(&mut self, id: &str, instructions: &str) -> Result<(), SkillError> {
+        let skill = self
+            .skills
+            .get_mut(id)
+            .ok_or_else(|| SkillError::NotFound(id.to_string()))?;
+        skill.instructions = instructions.to_string();
+        skill.updated_at = Utc::now();
+        Ok(())
+    }
+
     /// Remove skills whose confidence is below `min_confidence`.
     ///
     /// Returns the ids of the pruned skills.
@@ -281,22 +436,112 @@ impl SkillEngine {
     }
 
     /// Load all skills from disk into the engine, replacing in-memory state.
+    ///
+    /// Scans the primary `skills_dir` and any `extra_dirs` for both `.json`
+    /// skill files and `SKILL.md` files (with YAML frontmatter). Directory-based
+    /// skills (`{name}/SKILL.md`) are also discovered.
     pub fn load(&mut self) -> Result<(), SkillError> {
-        if !self.skills_dir.exists() {
-            return Ok(());
-        }
         self.skills.clear();
-        for entry in std::fs::read_dir(&self.skills_dir)? {
-            let entry = entry?;
-            let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) != Some("json") {
+        let mut dirs = vec![self.skills_dir.clone()];
+        dirs.extend(self.extra_dirs.iter().cloned());
+        for dir in &dirs {
+            if !dir.exists() {
                 continue;
             }
-            let data = std::fs::read_to_string(&path)?;
-            let skill: Skill = serde_json::from_str(&data)?;
-            self.skills.insert(skill.id.clone(), skill);
+            self.load_dir(dir)?;
         }
         Ok(())
+    }
+
+    fn load_dir(&mut self, dir: &Path) -> Result<(), SkillError> {
+        for entry in std::fs::read_dir(dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.is_dir() {
+                let skill_md = path.join("SKILL.md");
+                if skill_md.exists() {
+                    let skill = self.import_markdown_file(&skill_md)?;
+                    self.skills.insert(skill.id.clone(), skill);
+                }
+                continue;
+            }
+            let ext = path.extension().and_then(|e| e.to_str());
+            match ext {
+                Some("json") => {
+                    let data = std::fs::read_to_string(&path)?;
+                    let skill: Skill = serde_json::from_str(&data)?;
+                    self.skills.insert(skill.id.clone(), skill);
+                }
+                Some("md") => {
+                    let skill = self.import_markdown_file(&path)?;
+                    self.skills.insert(skill.id.clone(), skill);
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    /// Import a SKILL.md file (YAML frontmatter + markdown body) into a `Skill`.
+    pub fn import_markdown_file(&self, path: &Path) -> Result<Skill, SkillError> {
+        let content = std::fs::read_to_string(path)?;
+        Self::parse_skill_markdown(&content)
+    }
+
+    /// Parse SKILL.md content into a `Skill` struct.
+    pub fn parse_skill_markdown(content: &str) -> Result<Skill, SkillError> {
+        let (frontmatter_text, body) = split_frontmatter(content)?;
+        let mut fm: SkillFrontmatter = if frontmatter_text.trim().is_empty() {
+            SkillFrontmatter::default()
+        } else {
+            #[cfg(feature = "pi-compat")]
+            {
+                serde_yaml::from_str(&frontmatter_text)?
+            }
+            #[cfg(not(feature = "pi-compat"))]
+            {
+                parse_frontmatter_simple(&frontmatter_text)
+            }
+        };
+
+        let id = fm
+            .id
+            .take()
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        let now = Utc::now();
+        let created_at = fm
+            .created_at
+            .as_deref()
+            .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+            .map(|dt| dt.with_timezone(&Utc))
+            .unwrap_or(now);
+        let updated_at = fm
+            .updated_at
+            .as_deref()
+            .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+            .map(|dt| dt.with_timezone(&Utc))
+            .unwrap_or(created_at);
+
+        let (name, description, instructions, trigger_patterns) = parse_markdown_body(&body, &fm);
+
+        let mut skill = Skill {
+            id,
+            name,
+            description,
+            trigger_patterns,
+            instructions,
+            created_at,
+            updated_at,
+            success_count: fm.success_count.unwrap_or(0),
+            failure_count: fm.failure_count.unwrap_or(0),
+            confidence: fm.confidence.unwrap_or(0.5),
+            tags: fm.tags.take().unwrap_or_default(),
+            source_conversation: None,
+            pinned: false,
+            state: SkillState::Active,
+        };
+        skill.recompute_confidence();
+        Ok(skill)
     }
 
     /// Export a skill as a SKILL.md document with YAML frontmatter.
@@ -488,6 +733,154 @@ fn truncate(s: &str, max: usize) -> String {
     }
     let cut: String = s.chars().take(max.saturating_sub(1)).collect();
     format!("{}…", cut)
+}
+
+/// Split a SKILL.md document into (frontmatter_text, body_text).
+/// Frontmatter is delimited by `---` lines at the start of the file.
+fn split_frontmatter(content: &str) -> Result<(String, String), SkillError> {
+    let trimmed = content.trim_start();
+    if !trimmed.starts_with("---") {
+        return Ok((String::new(), content.to_string()));
+    }
+    let after_first = &trimmed[3..];
+    let end = after_first
+        .find("\n---")
+        .ok_or_else(|| SkillError::Parse("frontmatter not closed".into()))?;
+    let frontmatter = after_first[..end].trim().to_string();
+    let rest_start = end + 4;
+    let body = if rest_start < after_first.len() {
+        after_first[rest_start..].trim_start().to_string()
+    } else {
+        String::new()
+    };
+    Ok((frontmatter, body))
+}
+
+/// Parse the markdown body to extract name, description, instructions, and triggers.
+fn parse_markdown_body(body: &str, fm: &SkillFrontmatter) -> (String, String, String, Vec<String>) {
+    let name = fm.name.clone().unwrap_or_else(|| {
+        let h1 = body
+            .lines()
+            .find(|l| l.starts_with("# "))
+            .map(|l| l[2..].trim().to_string())
+            .unwrap_or_else(|| "unnamed_skill".to_string());
+        h1
+    });
+
+    let description = fm.description.clone().unwrap_or_else(|| {
+        body.lines()
+            .filter(|l| !l.starts_with('#') && !l.trim().is_empty())
+            .next()
+            .map(|l| l.trim().to_string())
+            .unwrap_or_default()
+    });
+
+    let trigger_patterns = fm
+        .trigger_patterns
+        .clone()
+        .unwrap_or_else(|| extract_section_items(body, "Triggers"));
+
+    let instructions = extract_section_body(body, "Instructions").unwrap_or_default();
+    let instructions = if instructions.is_empty() {
+        body.to_string()
+    } else {
+        instructions
+    };
+
+    (name, description, instructions, trigger_patterns)
+}
+
+/// Extract bullet items from a `## Section` in the markdown body.
+fn extract_section_items(body: &str, section: &str) -> Vec<String> {
+    let mut items = Vec::new();
+    let mut in_section = false;
+    for line in body.lines() {
+        if line.starts_with("## ") {
+            in_section = line[3..].trim().eq_ignore_ascii_case(section);
+            continue;
+        }
+        if in_section && line.starts_with("- ") {
+            items.push(line[2..].trim().to_string());
+        }
+    }
+    items
+}
+
+/// Extract the text content under a `## Section` until the next section.
+fn extract_section_body(body: &str, section: &str) -> Option<String> {
+    let mut in_section = false;
+    let mut collected: Vec<&str> = Vec::new();
+    for line in body.lines() {
+        if line.starts_with("## ") {
+            if in_section {
+                break;
+            }
+            in_section = line[3..].trim().eq_ignore_ascii_case(section);
+            continue;
+        }
+        if in_section {
+            collected.push(line);
+        }
+    }
+    if collected.is_empty() {
+        None
+    } else {
+        let text = collected
+            .join("\n")
+            .trim()
+            .trim_start_matches(|c| c == '-' || c == ' ')
+            .to_string();
+        if text.is_empty() {
+            None
+        } else {
+            Some(text)
+        }
+    }
+}
+
+/// Minimal frontmatter parser for when `serde_yaml` is not available.
+/// Handles simple `key: value` and `key: [a, b, c]` lines.
+fn parse_frontmatter_simple(text: &str) -> Result<SkillFrontmatter, SkillError> {
+    let mut fm = SkillFrontmatter::default();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let (key, val) = match line.split_once(':') {
+            Some((k, v)) => (k.trim(), v.trim()),
+            None => continue,
+        };
+        match key {
+            "id" => fm.id = Some(val.to_string()),
+            "name" => fm.name = Some(val.to_string()),
+            "description" => fm.description = Some(val.to_string()),
+            "confidence" => {
+                fm.confidence = val.parse().ok();
+            }
+            "success_count" => fm.success_count = val.parse().ok(),
+            "failure_count" => fm.failure_count = val.parse().ok(),
+            "tags" => fm.tags = Some(parse_yaml_list(val)),
+            "trigger_patterns" => fm.trigger_patterns = Some(parse_yaml_list(val)),
+            "category" => fm.category = Some(val.to_string()),
+            "related_skills" => fm.related_skills = Some(parse_yaml_list(val)),
+            _ => {}
+        }
+    }
+    Ok(fm)
+}
+
+/// Parse a YAML inline list like `[a, b, c]` or `a, b, c`.
+fn parse_yaml_list(val: &str) -> Vec<String> {
+    let inner = val
+        .strip_prefix('[')
+        .and_then(|v| v.strip_suffix(']'))
+        .unwrap_or(val);
+    inner
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect()
 }
 
 /// A simpler wrapper for auto-activating skills based on a prompt.
@@ -749,6 +1142,8 @@ mod tests {
             confidence: 0.1,
             tags: vec![],
             source_conversation: None,
+            pinned: false,
+            state: SkillState::Active,
         };
         low.recompute_confidence();
         let mut high = Skill {
@@ -764,6 +1159,8 @@ mod tests {
             confidence: 0.9,
             tags: vec![],
             source_conversation: None,
+            pinned: false,
+            state: SkillState::Active,
         };
         high.recompute_confidence();
         registry.register(low);
@@ -814,5 +1211,139 @@ mod tests {
             serde_json::from_str(&serde_json::to_string(&SkillOutcome::Failure).expect("ser"))
                 .expect("round");
         assert_eq!(round, SkillOutcome::Failure);
+    }
+
+    #[test]
+    fn test_parse_skill_markdown_with_frontmatter() {
+        let md = "---\n\
+                  name: deploy_skill\n\
+                  description: Deploy the app\n\
+                  tags: [deploy, prod]\n\
+                  trigger_patterns: [deploy, release]\n\
+                  ---\n\
+                  # deploy_skill\n\n\
+                  ## Triggers\n\n\
+                  - deploy\n\
+                  - release\n\n\
+                  ## Instructions\n\n\
+                  1. Build\n\
+                  2. Ship\n";
+        let skill = SkillEngine::parse_skill_markdown(md).expect("parse");
+        assert_eq!(skill.name, "deploy_skill");
+        assert_eq!(skill.description, "Deploy the app");
+        assert!(skill.tags.contains(&"deploy".to_string()));
+        assert!(skill.trigger_patterns.contains(&"deploy".to_string()));
+        assert!(skill.instructions.contains("Build"));
+        assert!(skill.instructions.contains("Ship"));
+    }
+
+    #[test]
+    fn test_parse_skill_markdown_no_frontmatter() {
+        let md = "# my_skill\n\nDo the thing.\n";
+        let skill = SkillEngine::parse_skill_markdown(md).expect("parse");
+        assert_eq!(skill.name, "my_skill");
+        assert!(!skill.id.is_empty());
+    }
+
+    #[test]
+    fn test_export_then_import_roundtrip() {
+        let mut engine = SkillEngine::new(PathBuf::from("/tmp/rx4-skills-test"));
+        let skill = engine
+            .create_from_pattern(
+                "roundtrip",
+                "A skill for roundtrip testing",
+                "1. Do thing\n2. Done",
+                vec!["roundtrip".into()],
+            )
+            .expect("create");
+        let md = engine.export_markdown(&skill.id).expect("export");
+        let parsed = SkillEngine::parse_skill_markdown(&md).expect("import");
+        assert_eq!(parsed.name, skill.name);
+        assert_eq!(parsed.description, skill.description);
+        assert_eq!(parsed.trigger_patterns, skill.trigger_patterns);
+        assert_eq!(parsed.instructions, skill.instructions);
+    }
+
+    #[test]
+    fn test_load_mixed_json_and_md() {
+        let dir = tempdir().expect("tempdir");
+
+        let json_skill = Skill {
+            id: "json-1".to_string(),
+            name: "json_skill".to_string(),
+            description: "from json".to_string(),
+            trigger_patterns: vec!["json".to_string()],
+            instructions: "json instructions".to_string(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            success_count: 1,
+            failure_count: 0,
+            confidence: 0.67,
+            tags: vec!["json".to_string()],
+            source_conversation: None,
+            pinned: false,
+            state: SkillState::Active,
+        };
+        let json_path = dir.path().join("json-1.json");
+        std::fs::write(
+            &json_path,
+            serde_json::to_string_pretty(&json_skill).unwrap(),
+        )
+        .unwrap();
+
+        let md_content = "---\n\
+                          name: md_skill\n\
+                          description: from markdown\n\
+                          ---\n\
+                          # md_skill\n\n\
+                          ## Instructions\n\n\
+                          md instructions\n";
+        std::fs::write(dir.path().join("md_skill.md"), md_content).unwrap();
+
+        let mut engine = SkillEngine::new(dir.path().to_path_buf());
+        engine.load().expect("load");
+        assert_eq!(engine.list().len(), 2);
+        assert!(engine.get("json-1").is_some());
+        assert!(engine.list().iter().any(|s| s.name == "md_skill"));
+    }
+
+    #[test]
+    fn test_load_directory_based_skill() {
+        let dir = tempdir().expect("tempdir");
+        let skill_dir = dir.path().join("my_dir_skill");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        let md_content = "---\n\
+                          name: dir_skill\n\
+                          description: A directory-based skill\n\
+                          ---\n\
+                          # dir_skill\n\n\
+                          ## Instructions\n\n\
+                          Run from directory.\n";
+        std::fs::write(skill_dir.join("SKILL.md"), md_content).unwrap();
+
+        let mut engine = SkillEngine::new(dir.path().to_path_buf());
+        engine.load().expect("load");
+        assert_eq!(engine.list().len(), 1);
+        assert_eq!(engine.list()[0].name, "dir_skill");
+    }
+
+    #[test]
+    fn test_load_from_extra_dir() {
+        let primary = tempdir().expect("primary");
+        let extra = tempdir().expect("extra");
+
+        let md_content = "---\n\
+                          name: extra_skill\n\
+                          description: From extra dir\n\
+                          ---\n\
+                          # extra_skill\n\n\
+                          Extra body.\n";
+        std::fs::write(extra.path().join("extra.md"), md_content).unwrap();
+
+        let mut engine = SkillEngine::new(primary.path().to_path_buf());
+        engine.add_extra_dir(extra.path().to_path_buf());
+        engine.load().expect("load");
+        assert_eq!(engine.list().len(), 1);
+        assert_eq!(engine.list()[0].name, "extra_skill");
     }
 }

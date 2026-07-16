@@ -51,6 +51,7 @@ pub mod sandbox;
 pub mod secrets;
 pub mod session;
 pub mod skill_engine;
+pub mod skill_curator;
 pub mod slash;
 pub mod sse;
 pub mod subagent;
@@ -91,7 +92,7 @@ pub use compaction::{compact_messages, CompactionConfig, CompactionMarker, Compa
 pub use cost::{CostEntry, ModelPricing, PricingRegistry, SessionCost, TokenUsage};
 pub use dream_scheduler::{DreamReport, DreamScheduleConfig, DreamScheduler};
 pub use embeddings::{
-    cosine_similarity, EmbeddingClient, EmbeddingConfig, EmbeddingProvider, EmbedError,
+    cosine_similarity, EmbedError, EmbeddingClient, EmbeddingConfig, EmbeddingProvider,
     SemanticSearch,
 };
 pub use graph_memory::{
@@ -124,7 +125,8 @@ pub use secrets::{
     filter_env_vars, is_sensitive_env_var, RedactionConfig, Redactor, SecretMatch, SecretPattern,
 };
 pub use session::Session;
-pub use skill_engine::{Skill, SkillEngine, SkillError, SkillFrontmatter, SkillOutcome};
+pub use skill_engine::{Skill, SkillEngine, SkillError, SkillFrontmatter, SkillOutcome, SkillState};
+pub use skill_curator::{CuratorConfig, CuratorSuggestion, SkillCurator, SuggestionKind};
 pub use sse::{SseError, SseEvent, SseParser};
 pub use tools::register_builtin_tools;
 

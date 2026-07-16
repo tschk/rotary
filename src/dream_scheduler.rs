@@ -134,8 +134,7 @@ impl DreamScheduler {
         let consolidator = DreamConsolidator::new();
 
         tokio::spawn(async move {
-            let mut ticker =
-                tokio::time::interval(tokio::time::Duration::from_secs(interval_secs));
+            let mut ticker = tokio::time::interval(tokio::time::Duration::from_secs(interval_secs));
             // Skip the immediate first tick so the first cycle waits a full interval.
             ticker.tick().await;
 
