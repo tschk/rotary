@@ -761,8 +761,7 @@ fn parse_markdown_body(body: &str, fm: &SkillFrontmatter) -> (String, String, St
 
     let description = fm.description.clone().unwrap_or_else(|| {
         body.lines()
-            .filter(|l| !l.starts_with('#') && !l.trim().is_empty())
-            .next()
+            .find(|l| !l.starts_with('#') && !l.trim().is_empty())
             .map(|l| l.trim().to_string())
             .unwrap_or_default()
     });
@@ -787,8 +786,8 @@ fn extract_section_items(body: &str, section: &str) -> Vec<String> {
     let mut items = Vec::new();
     let mut in_section = false;
     for line in body.lines() {
-        if line.starts_with("## ") {
-            in_section = line[3..].trim().eq_ignore_ascii_case(section);
+        if let Some(heading) = line.strip_prefix("## ") {
+            in_section = heading.trim().eq_ignore_ascii_case(section);
             continue;
         }
         if in_section && line.starts_with("- ") {
@@ -803,11 +802,11 @@ fn extract_section_body(body: &str, section: &str) -> Option<String> {
     let mut in_section = false;
     let mut collected: Vec<&str> = Vec::new();
     for line in body.lines() {
-        if line.starts_with("## ") {
+        if let Some(heading) = line.strip_prefix("## ") {
             if in_section {
                 break;
             }
-            in_section = line[3..].trim().eq_ignore_ascii_case(section);
+            in_section = heading.trim().eq_ignore_ascii_case(section);
             continue;
         }
         if in_section {
@@ -820,7 +819,7 @@ fn extract_section_body(body: &str, section: &str) -> Option<String> {
         let text = collected
             .join("\n")
             .trim()
-            .trim_start_matches(|c| c == '-' || c == ' ')
+            .trim_start_matches(['-', ' '])
             .to_string();
         if text.is_empty() {
             None

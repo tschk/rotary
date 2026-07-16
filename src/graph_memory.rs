@@ -1249,7 +1249,8 @@ mod tests {
             relation: EdgeRelation::RelatedTo,
             confidence: 0.1,
             source_file: None,
-        });
+        })
+        .unwrap();
         let consolidator = DreamConsolidator::new();
         let result = consolidator.consolidate(&mut g);
         assert_eq!(result.pruned_count, 1);
