@@ -44,6 +44,9 @@ pub mod slash;
 pub mod sse;
 pub mod tools;
 
+#[cfg(feature = "providers")]
+pub mod http;
+
 #[cfg(feature = "computer-use")]
 pub mod computer_use;
 
@@ -81,6 +84,9 @@ pub use secrets::{
 pub use session::Session;
 pub use sse::{SseError, SseEvent, SseParser};
 pub use tools::register_builtin_tools;
+
+#[cfg(feature = "providers")]
+pub use http::{global_client, is_local_provider, HttpClient, TimeoutConfig};
 
 pub const VERSION: &str = "0.3.0";
 
