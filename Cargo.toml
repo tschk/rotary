@@ -7,8 +7,8 @@ license = "MPL-2.0"
 description = "The agent harness engine — loop, tools, providers, sessions, permissions, computer-use, with full pi protocol compatibility"
 repository = "https://github.com/tschk/rotary"
 homepage = "https://github.com/tschk/rotary"
-keywords = ["agent", "harness", "coding", "llm", "pi"]
-categories = ["development-tools", "api-bindings", "asynchronous"]
+keywords = ["agent", "harness", "coding", "llm", "ai", "computer-use", "mcp", "pi", "rx4"]
+categories = ["development-tools", "api-bindings", "asynchronous", "command-line-utilities"]
 
 [[bin]]
 name = "rx4"

@@ -106,12 +106,13 @@ pub fn register_tools(registry: &mut ToolRegistry) {
     });
     registry.register(ToolDefinition {
         name: "cu_doctor".into(),
-        description: "Health report for computer-use readiness (permissions, tools, capabilities).".into(),
+        description: "Health report for computer-use readiness (permissions, tools, capabilities)."
+            .into(),
         parameters_json: r#"{"type":"object","properties":{}}"#.into(),
         execute: |_ctx, _args| Box::pin(async { json_result(peekaboo().doctor()) }),
         effect: ToolEffect::Process,
     });
-        tracing::info!("computer_use: registered rs_peekaboo tools (crates.io dep)");
+    tracing::info!("computer_use: registered rs_peekaboo tools (crates.io dep)");
 }
 
 fn parse_args(args: &str) -> Value {
@@ -178,12 +179,18 @@ async fn exec_click(args: String) -> ToolResult {
     let target = if let Some(index) = v.get("index").and_then(|i| i.as_u64()) {
         Target::Query {
             query: format!("index={index}"),
-            snapshot: v.get("snapshot").and_then(|s| s.as_str()).map(str::to_string),
+            snapshot: v
+                .get("snapshot")
+                .and_then(|s| s.as_str())
+                .map(str::to_string),
         }
     } else if let Some(on) = v.get("on").and_then(|s| s.as_str()) {
         Target::Query {
             query: on.to_string(),
-            snapshot: v.get("snapshot").and_then(|s| s.as_str()).map(str::to_string),
+            snapshot: v
+                .get("snapshot")
+                .and_then(|s| s.as_str())
+                .map(str::to_string),
         }
     } else if let Some(coords) = v.get("coords").and_then(|c| c.as_str()) {
         match parse_point(coords) {

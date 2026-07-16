@@ -1,16 +1,21 @@
 # rotary vs other harnesses
 
-rotary = **engine only**. Telekinesis = product CLI/TUI on top.
+rotary = **engine only**. Telekinesis (CLI/TUI) and omi desktop are product hosts on top.
 
 | | rotary | Codex | OpenCode | t3code | Crush | pi |
 |---|---|---|---|---|---|---|
 | Role | harness library | product agent | product agent | multi-provider GUI shell | terminal agent | coding harness |
-| Language | Zig | Rust/TS | TS | TS | Go | TS |
+| Language | Rust | Rust/TS | TS | TS | Go | TS |
 | Embeddable | yes | limited | limited | no (host) | limited | package-level |
 | Loop + tools | yes | yes | yes | wraps providers | yes | yes |
 | Permissions | modes + approver | sandbox + approvals | permissions | via provider | hooks | extensions |
 | Sessions | tree fork/merge | threads/rollouts | sessions | multi-session UX | sessions | session tree |
 | Computer-use | rs_peekaboo embed | OS features | plugins | N/A | N/A | N/A |
+| MCP client | yes | yes | yes | no | yes | no |
+| Memory | graph + SQLite | context window | sessions | via provider | sessions | session tree |
+| Skill engine | bayesian | skill packages | no | no | no | no |
+| Cost tracking | per-model registry | no | no | no | no | no |
+| Pi compat | yes | no | no | no | no | native |
 | Host protocol | JSON-RPC IPC | app-server | SDK/HTTP | WebSocket contracts | TUI-native | RPC |
 
 ## Taken from Codex specifically
@@ -31,10 +36,9 @@ rotary = **engine only**. Telekinesis = product CLI/TUI on top.
 
 1. Multi-provider model switching mid-session (`set_model`)
 2. Durable local sessions
-3. Extensibility (plugins / MCP on roadmap)
+3. Extensibility (plugins / MCP)
 
 ## Deferred (intentionally host or later)
 
-- Full MCP client (Codex/OpenCode/Crush) — rotary P0 roadmap
 - OS sandbox process jail (Codex seatbelt/bwrap) — telekinesis policy later
 - Web/desktop multi-client pairing (t3code) — telekinesis product

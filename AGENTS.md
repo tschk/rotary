@@ -39,15 +39,39 @@ rotary 是**纯代理框架引擎**。负责 agent loop、tools、providers、se
 | `plugin.rs` | 插件注册表 |
 | `acp.rs` | ACP host |
 | `lsp.rs` | LSP 管理器 |
+| `compaction.rs` | 上下文压缩（auto-compact） |
+| `cost.rs` | 成本追踪（per-model pricing） |
+| `graph_memory.rs` | 知识图谱（pagerank、community detection） |
+| `http.rs` | reqwest HTTP 客户端（providers feature） |
+| `marketplace.rs` | 插件市场索引 + 安装器 |
+| `mcp.rs` | MCP 客户端（JSON-RPC 2.0 over stdio） |
+| `memory.rs` | SQLite 持久化记忆存储 |
+| `model_router.rs` | 分层模型路由（lite/standard/heavy/subagent） |
+| `models.rs` | 模型注册表 + 兼容配置 |
+| `multiagent.rs` | 多 agent 协调（coordinator/worker/reviewer/researcher） |
+| `prompt_cache.rs` | Anthropic ephemeral cache_control |
+| `repomap.rs` | pagerank 排序符号提取 |
+| `rollout.rs` | rollout 追踪 + trace writer |
+| `routing.rs` | 智能路由（turn complexity、agent route） |
+| `sandbox.rs` | 沙箱配置 + 违规检测 |
+| `secrets.rs` | 密钥脱敏（pattern redaction） |
+| `skill_engine.rs` | 自改进技能引擎（bayesian confidence） |
+| `sse.rs` | SSE 流解析 |
+| `subagent.rs` | 子 agent 管理（git worktree 隔离） |
 
 ## Feature flags
 
 ```toml
-default = ["ipc"]
+default = ["ipc", "builtin-tools", "pi-compat"]
 computer-use = ["dep:rs_peekaboo"]
-ipc = ["dep:tokio"]
-providers = ["dep:reqwest"]
-builtin-tools = []
+ipc = ["dep:tokio", "tokio/net", "tokio/io-util", "tokio/sync", "tokio/process", "tokio/rt-multi-thread", "tokio/macros", "dep:cancellation-token"]
+providers = ["dep:reqwest", "dep:eventsource-stream", "dep:futures"]
+builtin-tools = ["dep:rayon", "dep:glob", "dep:ignore", "dep:regex"]
+memory = ["dep:rusqlite"]
+mcp = ["dep:rmcp", "dep:tokio", "tokio/process", "tokio/io-util", "tokio/sync"]
+sqlite-sessions = ["dep:rusqlite"]
+pi-compat = ["dep:serde_yaml", "dep:dirs"]
+pi-extensions = ["pi-compat", "dep:rquickjs", "dep:regex"]
 ```
 
 ## 规则
