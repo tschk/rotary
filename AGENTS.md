@@ -43,9 +43,9 @@ graph TD
     Hooks["hooks.rs<br/>lifecycle hooks"]
   end
 
-  Loop --> Persist["session.rs · memory.rs · graph_memory.rs"]
-  Loop --> Skills["skill_engine.rs · skill_curator.rs · background_review.rs"]
-  Loop --> Dream["dream_scheduler.rs · embeddings.rs"]
+  Loop --> Persist["session.rs · memory.rs · graph_memory.rs (graph-memory)"]
+  Loop --> Skills["skill_engine.rs · skill_curator.rs · background_review.rs (skills)"]
+  Loop --> Dream["dream_scheduler.rs (graph-memory) · embeddings.rs (skills)"]
   Loop --> Ctrl["ipc.rs · acp.rs · lsp.rs · mcp.rs · marketplace.rs"]
 ```
 
@@ -112,12 +112,12 @@ graph LR
 | `plugin.rs` | plugin registry |
 | `acp.rs` | ACP host |
 | `lsp.rs` | LSP manager (diagnostics, references, definition) |
-| `skill_engine.rs` | self-improving skill engine (bayesian confidence) |
-| `background_review.rs` | background review loop — observe turns, distill learning signals |
-| `skill_curator.rs` | skill lifecycle curator — Active→Stale→Archived, consolidation |
-| `dream_scheduler.rs` | dream cycle runner — graph consolidation capability (host schedules) |
-| `embeddings.rs` | vector embeddings for semantic skill matching (Gemini / Ollama) |
-| `graph_memory.rs` | knowledge graph (pagerank, community detection, dream consolidation) |
+| `skill_engine.rs` | self-improving skill engine (bayesian confidence) — `skills` feature |
+| `background_review.rs` | background review loop — observe turns, distill learning signals — `skills` feature |
+| `skill_curator.rs` | skill lifecycle curator — Active→Stale→Archived, consolidation — `skills` feature |
+| `dream_scheduler.rs` | dream cycle runner — graph consolidation capability (host schedules) — `graph-memory` feature |
+| `embeddings.rs` | vector embeddings for semantic skill matching (Gemini / Ollama) — `skills` feature |
+| `graph_memory.rs` | knowledge graph (pagerank, community detection, dream consolidation) — `graph-memory` feature |
 | `memory.rs` | SQLite persistent memory store |
 | `compaction.rs` | context compaction (auto-compact) |
 | `cost.rs` | cost tracking (per-model pricing) |
@@ -218,8 +218,8 @@ graph TD
 | `memory` | no | SQLite-backed memory store |
 | `mcp` | no | MCP client (rmcp, JSON-RPC 2.0 over stdio) |
 | `sqlite-sessions` | no | SQLite session persistence |
-| `graph-memory` | no | knowledge graph (PageRank, community detection, dream consolidation) + dream scheduler |
-| `skills` | no | self-improving skill engine (bayesian confidence, SKILL.md parsing), background review, curator, embeddings |
+| `skills` | no | skill engine, skill curator, background review, embeddings (serde_yaml + dirs) |
+| `graph-memory` | no | graph memory (pagerank, community detection), dream scheduler |
 
 > `pi-compat` and `pi-extensions` have been **removed** — pi protocol
 > compatibility (JSONL v3 sessions, RPC, extensions, QuickJS) now lives in
