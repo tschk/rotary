@@ -1,4 +1,4 @@
-//! Plugin registry: pi-compatible extensions (stub for now).
+//! Plugin registry: host extension points (stub for now).
 
 pub struct PluginRegistry {
     pub plugins: Vec<Plugin>,

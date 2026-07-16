@@ -4,7 +4,7 @@
 
 ## 定位
 
-rotary 是**纯代理框架引擎**。负责 agent loop、tools、providers、sessions、permissions、computer-use、IPC。不含产品 UI。
+rotary 是**纯代理框架引擎**。负责 agent loop、tools、providers、sessions、permissions、computer-use、IPC。不含产品 UI，不含 pi 协议兼容层（pi 协议兼容由宿主 telekinesis 拥有）。
 
 宿主（telekinesis CLI/TUI、omi desktop）通过 `cargo add rotary` 嵌入或通过 JSON-RPC IPC 连接 `rotary serve`。
 
@@ -62,7 +62,7 @@ rotary 是**纯代理框架引擎**。负责 agent loop、tools、providers、se
 ## Feature flags
 
 ```toml
-default = ["ipc", "builtin-tools", "pi-compat"]
+default = ["ipc", "builtin-tools"]
 computer-use = ["dep:rs_peekaboo"]
 ipc = ["dep:tokio", "tokio/net", "tokio/io-util", "tokio/sync", "tokio/process", "tokio/rt-multi-thread", "tokio/macros", "dep:cancellation-token"]
 providers = ["dep:reqwest", "dep:eventsource-stream", "dep:futures"]
@@ -70,8 +70,6 @@ builtin-tools = ["dep:rayon", "dep:glob", "dep:ignore", "dep:regex"]
 memory = ["dep:rusqlite"]
 mcp = ["dep:rmcp", "dep:tokio", "tokio/process", "tokio/io-util", "tokio/sync"]
 sqlite-sessions = ["dep:rusqlite"]
-pi-compat = ["dep:serde_yaml", "dep:dirs"]
-pi-extensions = ["pi-compat", "dep:rquickjs", "dep:regex"]
 ```
 
 ## 规则

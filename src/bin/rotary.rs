@@ -590,20 +590,6 @@ fn cfg_feature(name: &str) -> &'static str {
                 "disabled"
             }
         }
-        "pi-compat" => {
-            if cfg!(feature = "pi-compat") {
-                "enabled"
-            } else {
-                "disabled"
-            }
-        }
-        "pi-extensions" => {
-            if cfg!(feature = "pi-extensions") {
-                "enabled"
-            } else {
-                "disabled"
-            }
-        }
         "computer-use" => {
             if cfg!(feature = "computer-use") {
                 "enabled"
@@ -702,7 +688,6 @@ fn run_doctor() {
     println!();
     println!("providers feature: {}", cfg_feature("providers"));
     println!("ipc feature:       {}", cfg_feature("ipc"));
-    println!("pi-compat feature: {}", cfg_feature("pi-compat"));
 }
 
 fn print_status(label: &str, value: &str, ok: bool) {
