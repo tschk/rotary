@@ -1,6 +1,7 @@
 # rotary vs other harnesses
 
-rotary = **engine only**. Telekinesis (CLI/TUI) and omi desktop are product hosts on top.
+rotary = **engine only**. Telekinesis (CLI/TUI) and omi desktop are product
+hosts on top.
 
 | | rotary | Codex | OpenCode | t3code | Crush | pi |
 |---|---|---|---|---|---|---|
@@ -13,9 +14,9 @@ rotary = **engine only**. Telekinesis (CLI/TUI) and omi desktop are product host
 | Computer-use | rs_peekaboo embed | OS features | plugins | N/A | N/A | N/A |
 | MCP client | yes | yes | yes | no | yes | no |
 | Memory | graph + SQLite | context window | sessions | via provider | sessions | session tree |
-| Skill engine | bayesian | skill packages | no | no | no | no |
+| Skill engine | bayesian + curator | skill packages | no | no | no | no |
 | Cost tracking | per-model registry | no | no | no | no | no |
-| Pi compat | yes | no | no | no | no | native |
+| Pi compat | moved to host | no | no | no | no | native |
 | Host protocol | JSON-RPC IPC | app-server | SDK/HTTP | WebSocket contracts | TUI-native | RPC |
 
 ## Taken from Codex specifically
@@ -40,5 +41,6 @@ rotary = **engine only**. Telekinesis (CLI/TUI) and omi desktop are product host
 
 ## Deferred (intentionally host or later)
 
-- OS sandbox process jail (Codex seatbelt/bwrap) — telekinesis policy later
+- OS sandbox process jail (Codex seatbelt/bwrap) — host policy
 - Web/desktop multi-client pairing (t3code) — telekinesis product
+- Pi protocol compat (JSONL v3, RPC, extensions) — telekinesis host

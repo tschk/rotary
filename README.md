@@ -1,28 +1,50 @@
-# rotary (rx4) — The agent harness engine
+# rotary (rx4) — the agent harness engine
 
 [![crates.io](https://img.shields.io/crates/v/rotary.svg)](https://crates.io/crates/rotary)
 [![License: MPL-2.0](https://img.shields.io/badge/License-MPL--2.0-blue.svg)](LICENSE)
 [![MSRV: 1.75](https://img.shields.io/badge/MSRV-1.75-blue.svg)](https://blog.rust-lang.org/2023/12/28/Rust-1.75.0.html)
 
-Pure agent harness engine. Models write; rotary gives them tools, memory, loops, permissions, sessions, and control planes. Hosts (CLIs, TUIs, IDEs, desktop apps) embed rotary.
+Pure agent harness engine. Models write; rotary gives them tools, memory,
+loops, permissions, sessions, and control planes. **No product UI, no
+scheduling policy, no pi protocol** — hosts own those.
+
+rotary exposes **capabilities, not policy**. Scheduling, enabled flags, and
+lifecycle decisions are the host's job.
+
+## Architecture
+
+```mermaid
+graph TD
+  Host["Hosts<br/>telekinesis CLI/TUI · omi desktop · IDEs · CI"]
+  Host -->|cargo add rx4| Embed["in-process embed"]
+  Host -->|JSON-RPC| Serve["rotary serve (IPC)"]
+  Embed --> Engine["rx4 agent harness engine"]
+  Serve --> Engine
+  Engine --> Loop["agent loop + streaming events"]
+  Engine --> Tools["tools + computer-use + MCP"]
+  Engine --> Prov["providers (OpenAI/Anthropic/Ollama)"]
+  Engine --> Sess["sessions + memory + graph memory"]
+  Engine --> Skills["skill engine + curator + background review"]
+  Engine --> Ctrl["permissions · hooks · scopes · guardrails"]
+```
 
 ## Install
 
 ```toml
 [dependencies]
-rotary = { version = "0.3", features = ["ipc", "builtin-tools", "pi-compat", "providers", "computer-use"] }
+rx4 = { version = "0.3", features = ["ipc", "builtin-tools", "providers", "computer-use"] }
 ```
 
 Or via the CLI:
 
 ```bash
-cargo add rotary --features ipc,builtin-tools,pi-compat,providers,computer-use
+cargo add rx4 --features ipc,builtin-tools,providers,computer-use
 ```
 
 ## Quick start
 
 ```rust
-use rotary::{Agent, Scope, ToolRegistry, register_builtin_tools};
+use rx4::{Agent, Scope, ToolRegistry, register_builtin_tools};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -42,24 +64,60 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 rotary serve /tmp/rotary.sock
 ```
 
-JSON-RPC methods: `ping`, `state`, `prompt`, `set_model`, `tools`, `plugins`, `messages`, `session_list`, `session_clear`.
+JSON-RPC methods: `ping`, `state`, `prompt`, `set_model`, `tools`,
+`plugins`, `messages`, `session_list`, `session_clear`.
 
-> `rotary serve` starts the Unix socket JSON-RPC server. Hosts connect to the socket and drive the agent loop remotely — the host never owns agent logic.
+> `rotary serve` starts the Unix socket JSON-RPC server. Hosts connect to
+> the socket and drive the agent loop remotely — the host never owns agent
+> logic.
+
+## Agent loop
+
+```mermaid
+flowchart TD
+  Prompt["host calls prompt()"] --> Before["hooks: before_prompt"]
+  Before --> Compact{"context full?"}
+  Compact -->|yes| Auto["compaction auto-compact"]
+  Compact -->|no| Start["AgentStart"]
+  Auto --> Start
+  Start --> Turn["TurnStart"]
+  Turn --> Stream["provider streams message<br/>MessageStart/Delta/End"]
+  Stream --> TC{"tool calls?"}
+  TC -->|yes| Perm["permissions policy + approver"]
+  Perm --> Scope["scope filter"]
+  Scope --> Exec["execute tool<br/>ToolExecutionStart/End"]
+  Exec --> Guard["guardrails check"]
+  Guard --> Turn
+  TC -->|no| TE["TurnEnd"]
+  TE --> More{"more turns?"}
+  More -->|yes| Turn
+  More -->|no| End["AgentEnd"]
+```
 
 ## Features
 
-- **Agent loop with streaming events** — 11 event types (`AgentStart`, `TurnStart`, `MessageStart`, `MessageDelta`, `MessageEnd`, `ToolCall`, `ToolExecutionStart`, `ToolExecutionEnd`, `TurnEnd`, `AgentEnd`, `Error`).
-- **5 scopes** — `coding`, `research`, `plan`, `ask`, `computer_use` (see table below).
-- **7 builtin tools** — `read`, `write`, `edit`, `bash`, `grep`, `find`, `ls` (rayon parallel search).
-- **13 computer-use tools** (`cu_*`) via [rs_peekaboo](https://crates.io/crates/rs_peekaboo) — native Rust, no FFI.
-- **MCP client** — JSON-RPC 2.0 over stdio; tools prefixed `mcp__{server}__{tool}`.
-- **Pi protocol compatibility** — JSONL v3 sessions, RPC over stdin/stdout, pi tool name mapping, extension protocol via QuickJS, capability policy, SDK surface.
+- **Agent loop with streaming events** — 11 event types (`AgentStart`,
+  `TurnStart`, `MessageStart`, `MessageDelta`, `MessageEnd`, `ToolCall`,
+  `ToolExecutionStart`, `ToolExecutionEnd`, `TurnEnd`, `AgentEnd`, `Error`).
+- **5 scopes** — `coding`, `research`, `plan`, `ask`, `computer_use`.
+- **7 builtin tools** — `read`, `write`, `edit`, `bash`, `grep`, `find`, `ls`
+  (rayon parallel search).
+- **13 computer-use tools** (`cu_*`) via
+  [rs_peekaboo](https://crates.io/crates/rs_peekaboo) — native Rust, no FFI.
+- **MCP client** — JSON-RPC 2.0 over stdio; tools prefixed
+  `mcp__{server}__{tool}`.
 - **Session tree** — fork/merge with JSONL and SQLite persistence.
 - **Permission system** — `Policy` + `Approver`, allow/deny/ask decisions.
 - **Lifecycle hooks** — pluggable hook registry around the agent loop.
 - **Context compaction** — auto-compact when the context window fills.
 - **Skill engine** — self-improving skills with bayesian confidence scoring.
+- **Background review** — observes turns, distills learning signals, updates
+  skills.
+- **Skill curator** — lifecycle management (Active→Stale→Archived),
+  consolidation.
+- **Embeddings** — semantic skill matching (Gemini / Ollama).
 - **Graph memory** — knowledge graph with pagerank and community detection.
+- **Dream scheduler** — graph consolidation capability (host schedules).
 - **Model router** — tiered routing (`lite`, `standard`, `heavy`, `subagent`).
 - **Multi-agent coordination** — coordinator/worker/reviewer/researcher roles.
 - **Cost tracking** — per-model pricing registry and session cost accounting.
@@ -90,22 +148,40 @@ JSON-RPC methods: `ping`, `state`, `prompt`, `set_model`, `tools`, `plugins`, `m
 |---|---|---|
 | `ipc` | yes | tokio runtime, Unix socket JSON-RPC server, LSP client |
 | `builtin-tools` | yes | read/write/edit/bash/grep/find/ls with rayon parallel search |
-| `pi-compat` | yes | pi JSONL v3 sessions, RPC, tool name mapping, capability policy |
 | `computer-use` | no | rs_peekaboo `cu_*` tools (13 tools) |
 | `providers` | no | reqwest SSE streaming for OpenAI/Anthropic/Ollama/custom |
 | `memory` | no | SQLite-backed memory store |
 | `mcp` | no | MCP client (rmcp, JSON-RPC 2.0 over stdio) |
 | `sqlite-sessions` | no | SQLite session persistence |
-| `pi-extensions` | no | pi extension protocol with QuickJS runtime |
+
+> `pi-compat` and `pi-extensions` have been **removed** — pi protocol
+> compatibility now lives in the host (telekinesis).
 
 ## Providers
 
-rotary ships a provider abstraction over OpenAI-compatible chat completions endpoints:
+rotary ships a provider abstraction over OpenAI-compatible chat completions
+endpoints:
 
 - **OpenAI** — `gpt-4o`, `gpt-4o-mini`, etc.
 - **Anthropic** — Claude models via the Anthropic API.
 - **Ollama** — local models via `http://localhost:11434`.
-- **Custom OpenAI-compatible endpoints** — any server implementing the `/v1/chat/completions` schema.
+- **Custom OpenAI-compatible endpoints** — any server implementing the
+  `/v1/chat/completions` schema.
+
+```mermaid
+graph TD
+  Reg["ProviderRegistry"] --> OpenAI["OpenAI"]
+  Reg --> Anthropic["Anthropic (cache_control)"]
+  Reg --> Ollama["Ollama (local)"]
+  Reg --> Custom["Custom /v1/chat/completions"]
+  OpenAI --> SSE["sse.rs stream parser"]
+  Anthropic --> SSE
+  Ollama --> SSE
+  Custom --> SSE
+  SSE --> Events["AgentEvent stream"]
+  Router["model_router.rs"] --> Reg
+  Models["models.rs compat"] --> Reg
+```
 
 Use `with_base_url` to point at a custom endpoint:
 
@@ -119,10 +195,11 @@ registry.register("custom", "my-model", "sk-...")
 
 ## Computer-use
 
-Powered by [rs_peekaboo](https://crates.io/crates/rs_peekaboo) — native Rust, no FFI:
+Powered by [rs_peekaboo](https://crates.io/crates/rs_peekaboo) — native
+Rust, no FFI:
 
 ```toml
-rotary = { version = "0.3", features = ["computer-use"] }
+rx4 = { version = "0.3", features = ["computer-use"] }
 ```
 
 13 tools:
@@ -161,32 +238,15 @@ The agent loop emits 11 streaming event types:
 | `AgentEnd` | The agent loop has finished |
 | `Error` | An error occurred (with message) |
 
-## Comparison
-
-| | rotary | Codex | OpenCode | t3code | Crush | pi |
-|---|---|---|---|---|---|---|
-| Role | harness library | product agent | product agent | multi-provider GUI shell | terminal agent | coding harness |
-| Language | Rust | Rust/TS | TS | TS | Go | TS |
-| Embeddable | yes | limited | limited | no (host) | limited | package-level |
-| Loop + tools | yes | yes | yes | wraps providers | yes | yes |
-| Permissions | modes + approver | sandbox + approvals | permissions | via provider | hooks | extensions |
-| Sessions | tree fork/merge | threads/rollouts | sessions | multi-session UX | sessions | session tree |
-| Computer-use | rs_peekaboo embed | OS features | plugins | N/A | N/A | N/A |
-| MCP client | yes | yes | yes | no | yes | no |
-| Memory | graph + SQLite | context window | sessions | via provider | sessions | session tree |
-| Skill engine | bayesian | skill packages | no | no | no | no |
-| Cost tracking | per-model registry | no | no | no | no | no |
-| Pi compat | yes | no | no | no | no | native |
-| Host protocol | JSON-RPC IPC | app-server | SDK/HTTP | WebSocket contracts | TUI-native | RPC |
-
-See [docs/COMPARISON.md](docs/COMPARISON.md) for the full breakdown.
-
 ## Hosts
 
 Current hosts built on rotary:
 
-- **[telekinesis](https://github.com/tschk/telekinesis)** — CLI/TUI product on top of rotary.
+- **[telekinesis](https://github.com/tschk/telekinesis)** — CLI/TUI product
+  on top of rotary. Owns pi protocol compat.
 - **omi desktop** — desktop application embedding rotary.
+
+See [docs/HOSTS.md](docs/HOSTS.md) for the hosting guide.
 
 ## License
 

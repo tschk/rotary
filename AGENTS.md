@@ -1,86 +1,238 @@
-# rotary — 代理框架引擎
+# rotary (rx4) — agent harness engine
 
-**所有回复必须用英文。** 本文件用中文以节省 token。
+All responses must be in English.
 
-## 定位
+## Position
 
-rotary 是**纯代理框架引擎**。负责 agent loop、tools、providers、sessions、permissions、computer-use、IPC。不含产品 UI，不含 pi 协议兼容层（pi 协议兼容由宿主 telekinesis 拥有）。
+rotary is a **pure agent harness engine**. It owns the agent loop, tools,
+providers, sessions, permissions, computer-use, and IPC. It contains **no
+product UI**, **no scheduling policy**, and **no pi protocol compat** (that
+moved to the host — telekinesis).
 
-宿主（telekinesis CLI/TUI、omi desktop）通过 `cargo add rotary` 嵌入或通过 JSON-RPC IPC 连接 `rotary serve`。
+Hosts (telekinesis CLI/TUI, omi desktop, IDEs, CI) embed it via
+`cargo add rx4` or connect to `rotary serve` over JSON-RPC IPC.
 
-## 技术栈
+**Key principle: rotary exposes CAPABILITIES, not POLICY.** Scheduling,
+enabled flags, and lifecycle decisions are the host's job. Modules like
+`dream_scheduler` and `skill_curator` provide the *capability* to run a
+cycle or audit; the host decides *when*.
 
-- Rust 2021（MSRV 1.75）
-- tokio（async runtime，feature-gated）
+## Stack
+
+- Rust 2021 (MSRV 1.75), `#![forbid(unsafe_code)]`
+- tokio (async runtime, feature-gated)
 - serde / serde_json
-- rs_peekaboo 0.3.2（crates.io，computer-use，feature-gated）
-- reqwest（providers，feature-gated）
-- MPL-2.0 许可证
+- rs_peekaboo 0.3.2 (crates.io, computer-use, feature-gated)
+- reqwest (providers, feature-gated)
+- MPL-2.0
 
-## 模块
+## Architecture
 
-| 文件 | 职责 |
+```mermaid
+graph TD
+  Host["Hosts<br/>telekinesis · omi · IDEs · CI"]
+  Host -->|cargo add rx4 / IPC| Loop
+
+  subgraph Loop["agent loop (agent.rs)"]
+    direction TB
+    Ctx["context.rs<br/>AGENTS.md + system prompt"]
+    Mode["mode.rs<br/>scope selection"]
+    Prov["provider.rs<br/>OpenAI-compatible SSE"]
+    Tools["tools.rs / computer_use.rs<br/>permission-gated, scope-filtered"]
+    Guard["guardrails.rs<br/>empty-turn / repeat-failure"]
+    Hooks["hooks.rs<br/>lifecycle hooks"]
+  end
+
+  Loop --> Persist["session.rs · memory.rs · graph_memory.rs"]
+  Loop --> Skills["skill_engine.rs · skill_curator.rs · background_review.rs"]
+  Loop --> Dream["dream_scheduler.rs · embeddings.rs"]
+  Loop --> Ctrl["ipc.rs · acp.rs · lsp.rs · mcp.rs · marketplace.rs"]
+```
+
+## Module dependency graph
+
+```mermaid
+graph LR
+  agent --> provider
+  agent --> tools
+  agent --> session
+  agent --> permissions
+  agent --> hooks
+  agent --> mode
+  agent --> context
+  agent --> guardrails
+  agent --> slash
+  agent --> compaction
+  agent --> cost
+  agent --> secrets
+  agent --> skill_engine
+  agent --> model_router
+  agent --> multiagent
+  agent --> subagent
+  agent --> routing
+  agent --> rollout
+
+  skill_engine --> embeddings
+  skill_engine --> background_review
+  skill_curator --> skill_engine
+  background_review --> skill_engine
+  dream_scheduler --> graph_memory
+  graph_memory --> memory
+
+  provider --> sse
+  provider --> http
+  provider --> models
+  provider --> prompt_cache
+  tools --> computer_use
+  ipc --> lsp
+  plugin --> marketplace
+  context --> repomap
+  extract --> ranking
+```
+
+## Modules
+
+| File | Responsibility |
 |---|---|
-| `agent.rs` | 事件驱动 loop、tool registry、streaming |
-| `provider.rs` | 多 provider OpenAI 兼容客户端 |
-| `tools.rs` | 内置 FS/shell/find 工具 |
-| `session.rs` | 会话树（fork/merge）+ JSONL 持久化 |
-| `permissions.rs` | 策略模式、allow/deny、approver |
-| `hooks.rs` | 生命周期钩子 |
-| `mode.rs` | scope（coding/research/plan/ask/computer_use） |
-| `context.rs` | AGENTS.md 加载、system prompt 组合 |
-| `slash.rs` | slash 命令解析 |
-| `guardrails.rs` | 空轮次检测、重复失败检测 |
-| `extract.rs` | 结构化提取（JSON contracts） |
-| `ranking.rs` | 主动排序 |
-| `computer_use.rs` | rs_peekaboo 原生集成（无 FFI） |
-| `ipc.rs` | Unix socket JSON-RPC 服务器 |
-| `config.rs` | 配置文件 + env |
-| `plugin.rs` | 插件注册表 |
+| `agent.rs` | event-driven loop, tool registry, streaming, parallel tool execution |
+| `provider.rs` | multi-provider OpenAI-compatible client, websocket prewarming |
+| `tools.rs` | built-in FS/shell/find tools (7) |
+| `session.rs` | session tree (fork/merge) + JSONL persistence |
+| `permissions.rs` | policy pattern, allow/deny, host approver |
+| `hooks.rs` | lifecycle hooks |
+| `mode.rs` | scopes (coding/research/plan/ask/computer_use) |
+| `context.rs` | AGENTS.md loading, system prompt assembly |
+| `slash.rs` | slash command parser |
+| `guardrails.rs` | empty-turn detection, repeated-failure detection |
+| `extract.rs` | structured extraction (JSON contracts) |
+| `ranking.rs` | proactive ranking |
+| `computer_use.rs` | rs_peekaboo native integration (no FFI), 13 `cu_*` tools |
+| `ipc.rs` | Unix socket JSON-RPC server |
+| `config.rs` | config file + env |
+| `plugin.rs` | plugin registry |
 | `acp.rs` | ACP host |
-| `lsp.rs` | LSP 管理器 |
-| `compaction.rs` | 上下文压缩（auto-compact） |
-| `cost.rs` | 成本追踪（per-model pricing） |
-| `graph_memory.rs` | 知识图谱（pagerank、community detection） |
-| `http.rs` | reqwest HTTP 客户端（providers feature） |
-| `marketplace.rs` | 插件市场索引 + 安装器 |
-| `mcp.rs` | MCP 客户端（JSON-RPC 2.0 over stdio） |
-| `memory.rs` | SQLite 持久化记忆存储 |
-| `model_router.rs` | 分层模型路由（lite/standard/heavy/subagent） |
-| `models.rs` | 模型注册表 + 兼容配置 |
-| `multiagent.rs` | 多 agent 协调（coordinator/worker/reviewer/researcher） |
+| `lsp.rs` | LSP manager (diagnostics, references, definition) |
+| `skill_engine.rs` | self-improving skill engine (bayesian confidence) |
+| `background_review.rs` | background review loop — observe turns, distill learning signals |
+| `skill_curator.rs` | skill lifecycle curator — Active→Stale→Archived, consolidation |
+| `dream_scheduler.rs` | dream cycle runner — graph consolidation capability (host schedules) |
+| `embeddings.rs` | vector embeddings for semantic skill matching (Gemini / Ollama) |
+| `graph_memory.rs` | knowledge graph (pagerank, community detection, dream consolidation) |
+| `memory.rs` | SQLite persistent memory store |
+| `compaction.rs` | context compaction (auto-compact) |
+| `cost.rs` | cost tracking (per-model pricing) |
+| `secrets.rs` | secret redaction (pattern-based) |
+| `sse.rs` | SSE stream parser |
+| `marketplace.rs` | plugin marketplace index + installer |
+| `http.rs` | reqwest HTTP client (providers feature) |
+| `mcp.rs` | MCP client (JSON-RPC 2.0 over stdio) |
+| `model_router.rs` | tiered model routing (lite/standard/heavy/subagent) |
+| `models.rs` | model registry + compat config |
+| `multiagent.rs` | multi-agent coordination (coordinator/worker/reviewer/researcher) |
 | `prompt_cache.rs` | Anthropic ephemeral cache_control |
-| `repomap.rs` | pagerank 排序符号提取 |
-| `rollout.rs` | rollout 追踪 + trace writer |
-| `routing.rs` | 智能路由（turn complexity、agent route） |
-| `sandbox.rs` | 沙箱配置 + 违规检测 |
-| `secrets.rs` | 密钥脱敏（pattern redaction） |
-| `skill_engine.rs` | 自改进技能引擎（bayesian confidence） |
-| `sse.rs` | SSE 流解析 |
-| `subagent.rs` | 子 agent 管理（git worktree 隔离） |
+| `repomap.rs` | pagerank-ranked symbol extraction |
+| `rollout.rs` | rollout tracking + trace writer |
+| `routing.rs` | smart routing (turn complexity, agent route) |
+| `sandbox.rs` | sandbox config + violation detection |
+| `subagent.rs` | subagent management (git worktree isolation) |
+
+## Agent loop
+
+```mermaid
+flowchart TD
+  Prompt["host calls prompt()"] --> Before["hooks: before_prompt"]
+  Before --> Compact{"context full?"}
+  Compact -->|yes| AutoCompact["compaction.rs auto-compact"]
+  Compact -->|no| Start["event: AgentStart"]
+  AutoCompact --> Start
+  Start --> Turn["event: TurnStart"]
+  Turn --> Msg["provider.rs streams message<br/>event: MessageStart/Delta/End"]
+  Msg --> ToolCall{"tool calls?"}
+  ToolCall -->|yes| Perm["permissions.rs policy + approver"]
+  Perm --> Scope["mode.rs scope filter"]
+  Scope --> Exec["execute tool<br/>event: ToolExecutionStart/End"]
+  Exec --> Guard["guardrails.rs check"]
+  Guard --> Turn
+  ToolCall -->|no| TurnEnd["event: TurnEnd"]
+  TurnEnd --> More{"more turns?"}
+  More -->|yes| Turn
+  More -->|no| End["event: AgentEnd"]
+```
+
+## Skill lifecycle
+
+```mermaid
+flowchart LR
+  Create["skill_engine.rs<br/>create from conversation"] --> Active[("Active")]
+  Active -->|background_review detects gap/outdated| Update["update instructions<br/>adjust confidence"]
+  Update --> Active
+  Active -->|idle 30d| Curator["skill_curator.rs audit"]
+  Curator -->|stale| Stale[("Stale")]
+  Stale -->|idle 90d| Archived[("Archived")]
+  Curator -->|consolidate| Merge["merge into umbrella skill"]
+  Pinned["pinned skill"] -.bypass.-> Active
+```
+
+## Session tree
+
+```mermaid
+graph TD
+  Root["session root"] --> A["turn 1"]
+  A --> B["turn 2"]
+  B -->|fork| C["branch A · turn 3"]
+  B -->|fork| D["branch B · turn 3"]
+  C --> E["turn 4"]
+  D -->|merge back| B
+  Root -->|compact| Summary["compaction summary<br/>subtree re-parented"]
+```
+
+## Provider abstraction
+
+```mermaid
+graph TD
+  subgraph Provider["provider.rs"]
+    Reg["ProviderRegistry"]
+    Reg --> OpenAI["OpenAI<br/>gpt-4o, gpt-4o-mini"]
+    Reg --> Anthropic["Anthropic<br/>Claude (cache_control)"]
+    Reg --> Ollama["Ollama<br/>local models"]
+    Reg --> Custom["Custom<br/>any /v1/chat/completions"]
+  end
+  OpenAI --> SSE["sse.rs stream parser"]
+  Anthropic --> SSE
+  Ollama --> SSE
+  Custom --> SSE
+  SSE --> Events["AgentEvent stream"]
+  Models["models.rs<br/>compat config"] --> Reg
+  Router["model_router.rs<br/>lite/standard/heavy/subagent"] --> Reg
+  Cache["prompt_cache.rs<br/>ephemeral cache_control"] --> Anthropic
+```
 
 ## Feature flags
 
-```toml
-default = ["ipc", "builtin-tools"]
-computer-use = ["dep:rs_peekaboo"]
-ipc = ["dep:tokio", "tokio/net", "tokio/io-util", "tokio/sync", "tokio/process", "tokio/rt-multi-thread", "tokio/macros", "dep:cancellation-token"]
-providers = ["dep:reqwest", "dep:eventsource-stream", "dep:futures"]
-builtin-tools = ["dep:rayon", "dep:glob", "dep:ignore", "dep:regex"]
-memory = ["dep:rusqlite"]
-mcp = ["dep:rmcp", "dep:tokio", "tokio/process", "tokio/io-util", "tokio/sync"]
-sqlite-sessions = ["dep:rusqlite"]
-```
+| Feature | Default | Enables |
+|---|---|---|
+| `ipc` | yes | tokio runtime, Unix socket JSON-RPC server, LSP client |
+| `builtin-tools` | yes | read/write/edit/bash/grep/find/ls with rayon parallel search |
+| `computer-use` | no | rs_peekaboo `cu_*` tools (13 tools) |
+| `providers` | no | reqwest SSE streaming for OpenAI/Anthropic/Ollama/custom |
+| `memory` | no | SQLite-backed memory store |
+| `mcp` | no | MCP client (rmcp, JSON-RPC 2.0 over stdio) |
+| `sqlite-sessions` | no | SQLite session persistence |
 
-## 规则
+> `pi-compat` and `pi-extensions` have been **removed** — pi protocol
+> compatibility (JSONL v3 sessions, RPC, extensions, QuickJS) now lives in
+> the host (telekinesis).
 
-- 不硬编码 API key，不加遥测。
-- 新 agent 功能先落 rotary，再通过 IPC/slash 暴露给宿主。
-- computer-use 通过 crates.io `rs_peekaboo` 依赖，不 vendor，不做 FFI。
-- scope 不是 agent 名——是工作模式。
-- 保持 MPL-2.0。
+## Rules
 
-## 验证
+- No hard-coded API keys, no telemetry.
+- New agent features land in rotary first, then surface to hosts via IPC/slash.
+- computer-use uses the crates.io `rs_peekaboo` dependency — no vendoring, no FFI.
+- A scope is a work mode, not an agent name.
+- rotary exposes capabilities, not policy — scheduling and lifecycle decisions belong to the host.
+- Keep MPL-2.0.
+
+## Validation
 
 ```bash
 cargo build
@@ -90,6 +242,6 @@ cargo clippy --all-features
 cargo fmt --check
 ```
 
-## 提交
+## Commits
 
-英文 Conventional Commits，例：`feat(agent): stream tool call deltas`。
+English Conventional Commits, e.g. `feat(agent): stream tool call deltas`.
