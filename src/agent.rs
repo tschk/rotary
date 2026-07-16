@@ -285,6 +285,9 @@ impl Agent {
     }
 
     fn emit(&self, event: Event) {
+        if self.subscribers.is_empty() {
+            return;
+        }
         for sub in &self.subscribers {
             sub(&event);
         }
@@ -301,8 +304,6 @@ impl Agent {
     /// Run a prompt through the agent loop.
     /// Streams events to subscribers, executes tools, cycles turns.
     pub async fn prompt(&mut self, text: &str) -> Result<(), AgentError> {
-        let turn_id = uuid::Uuid::new_v4().to_string();
-
         if self.message_count() >= self.auto_compact_after {
             self.compact("auto-compact before prompt");
         }
@@ -397,7 +398,6 @@ impl Agent {
         }
 
         self.emit(Event::AgentEnd);
-        let _ = turn_id;
         Ok(())
     }
 

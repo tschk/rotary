@@ -3,6 +3,12 @@
 //! Models write. rx4 gives them tools, memory, loops, permissions, sessions,
 //! and control planes. Hosts (CLIs, TUIs, IDEs) embed rx4.
 //!
+//! # Safety
+//!
+//! This crate is `#![forbid(unsafe_code)]` — no unsafe code is allowed anywhere.
+
+#![forbid(unsafe_code)]
+//!
 //! Pi-compatible: JSONL v3 sessions, RPC over stdin/stdout, pi tool names,
 //! extension protocol with capability policy, SDK surface.
 //!
@@ -31,6 +37,8 @@ pub mod plugin;
 pub mod provider;
 pub mod ranking;
 pub mod rollout;
+pub mod sandbox;
+pub mod secrets;
 pub mod session;
 pub mod slash;
 pub mod sse;
@@ -66,6 +74,10 @@ pub use models::{CompatConfig, ModelInfo, ModelRegistry};
 pub use permissions::{Approver, Decision, PermissionMode, Policy};
 pub use provider::{Message, Provider, ProviderRegistry, Role, StreamEvent};
 pub use rollout::{RolloutEntry, RolloutManager, TraceWriter};
+pub use sandbox::{SandboxConfig, SandboxError, SandboxManager, SandboxProfile, SandboxViolation};
+pub use secrets::{
+    filter_env_vars, is_sensitive_env_var, RedactionConfig, Redactor, SecretMatch, SecretPattern,
+};
 pub use session::Session;
 pub use sse::{SseError, SseEvent, SseParser};
 pub use tools::register_builtin_tools;
