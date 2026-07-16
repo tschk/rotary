@@ -145,10 +145,22 @@ mod duration_secs {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum CoordinatorEvent {
-    AgentSpawned { id: String, name: String },
-    AgentCompleted { id: String, name: String },
-    AgentFailed { id: String, name: String, error: String },
-    MessageBroadcast { message: String },
+    AgentSpawned {
+        id: String,
+        name: String,
+    },
+    AgentCompleted {
+        id: String,
+        name: String,
+    },
+    AgentFailed {
+        id: String,
+        name: String,
+        error: String,
+    },
+    MessageBroadcast {
+        message: String,
+    },
 }
 
 /// Coordinates multi-agent workflows over a shared [`SubagentManager`].
@@ -233,7 +245,8 @@ impl MultiAgentCoordinator {
                 name: handle.name().to_string(),
             });
         }
-        self.spawned.push((handle.name().to_string(), handle.clone(), start));
+        self.spawned
+            .push((handle.name().to_string(), handle.clone(), start));
         Ok(handle)
     }
 
@@ -353,9 +366,7 @@ mod tests {
     #[test]
     fn spawn_named_missing_profile_errors() {
         let mut coord = MultiAgentCoordinator::new();
-        let err = coord
-            .spawn_named("nope", "p", Path::new("."))
-            .unwrap_err();
+        let err = coord.spawn_named("nope", "p", Path::new(".")).unwrap_err();
         assert!(matches!(err, MultiAgentError::ProfileNotFound(_)));
     }
 

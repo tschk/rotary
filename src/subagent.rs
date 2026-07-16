@@ -126,11 +126,14 @@ impl SubagentResult {
 /// Internal shared state for a single subagent.
 #[derive(Debug)]
 struct SubagentState {
+    #[allow(dead_code)]
     id: String,
+    #[allow(dead_code)]
     name: String,
     status: SubagentStatus,
     result: Option<SubagentResult>,
     worktree_path: Option<PathBuf>,
+    #[allow(dead_code)]
     spawned_at: DateTime<Utc>,
 }
 
@@ -181,9 +184,7 @@ impl SubagentHandle {
                 let guard = self.state.lock();
                 if matches!(
                     guard.status,
-                    SubagentStatus::Completed
-                        | SubagentStatus::Failed
-                        | SubagentStatus::Cancelled
+                    SubagentStatus::Completed | SubagentStatus::Failed | SubagentStatus::Cancelled
                 ) {
                     return guard.result.clone().unwrap_or_else(|| SubagentResult {
                         output: String::new(),
@@ -294,7 +295,10 @@ impl SubagentManager {
             .ok_or_else(|| SubagentError::NotFound(id.to_string()))?;
         {
             let guard = handle.state.lock();
-            if matches!(guard.status, SubagentStatus::Completed | SubagentStatus::Failed) {
+            if matches!(
+                guard.status,
+                SubagentStatus::Completed | SubagentStatus::Failed
+            ) {
                 return Ok(());
             }
             if matches!(guard.status, SubagentStatus::Cancelled) {
@@ -318,10 +322,7 @@ impl SubagentManager {
 
     /// Synchronous variant of [`wait_all`](Self::wait_all).
     pub fn wait_all_sync(&self) -> Vec<SubagentResult> {
-        self.subagents
-            .values()
-            .map(|h| h.wait_sync())
-            .collect()
+        self.subagents.values().map(|h| h.wait_sync()).collect()
     }
 
     fn create_worktree(&self, id: &str, parent_workspace: &Path) -> Result<PathBuf, SubagentError> {
@@ -408,7 +409,10 @@ mod tests {
         mgr.cancel(handle.id()).expect("cancel");
         let status = handle.status();
         assert!(
-            matches!(status, SubagentStatus::Cancelled | SubagentStatus::Completed),
+            matches!(
+                status,
+                SubagentStatus::Cancelled | SubagentStatus::Completed
+            ),
             "got {status:?}"
         );
     }

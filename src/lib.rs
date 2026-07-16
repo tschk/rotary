@@ -30,9 +30,12 @@ pub mod config;
 pub mod context;
 pub mod cost;
 pub mod extract;
+pub mod graph_memory;
 pub mod guardrails;
 pub mod hooks;
 pub mod mode;
+pub mod model_router;
+pub mod multiagent;
 pub mod permissions;
 pub mod plugin;
 pub mod prompt_cache;
@@ -44,8 +47,10 @@ pub mod routing;
 pub mod sandbox;
 pub mod secrets;
 pub mod session;
+pub mod skill_engine;
 pub mod slash;
 pub mod sse;
+pub mod subagent;
 pub mod tools;
 
 #[cfg(feature = "providers")]
@@ -78,8 +83,16 @@ pub use agent::{
 };
 pub use compaction::{compact_messages, CompactionConfig, CompactionMarker, CompactionResult};
 pub use cost::{CostEntry, ModelPricing, PricingRegistry, SessionCost, TokenUsage};
+pub use graph_memory::{
+    ConversationExtractor, EdgeRelation, ExtractionResult, GraphMemory, GraphMemoryError,
+    MemoryEdge as GraphMemoryEdge, MemoryNode as GraphMemoryNode, NodeType as GraphNodeType,
+};
 pub use hooks::HookRegistry;
 pub use mode::{Profile, Scope};
+pub use model_router::{
+    ModelRouter, ModelRouterError, ModelTier, ProactiveMonitor, RouterConfig, SkillSuggestion,
+    SubagentModelSelector, TaskTier, TaskType,
+};
 pub use models::{CompatConfig, ModelInfo, ModelRegistry};
 pub use permissions::{Approver, Decision, PermissionMode, Policy};
 pub use prompt_cache::{
@@ -97,6 +110,7 @@ pub use secrets::{
     filter_env_vars, is_sensitive_env_var, RedactionConfig, Redactor, SecretMatch, SecretPattern,
 };
 pub use session::Session;
+pub use skill_engine::{Skill, SkillEngine, SkillError, SkillOutcome};
 pub use sse::{SseError, SseEvent, SseParser};
 pub use tools::register_builtin_tools;
 
