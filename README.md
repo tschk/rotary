@@ -1,71 +1,62 @@
 # rotary
 
-**General-purpose agent harness in Zig.**
+**The agent harness engine.** Models write; rotary gives them tools, memory, loops, permissions, sessions, and control planes. Hosts (CLIs, TUIs, IDEs) embed rotary.
 
-`Agent = Model + Harness.` The model writes; the harness gives it tools, memory, loops, skills, plugins, permissions, and control surfaces. **rotary** is the harness.
+[![crates.io](https://img.shields.io/crates/v/rotary.svg)](https://crates.io/crates/rotary)
+[![License: MPL-2.0](https://img.shields.io/badge/License-MPL--2.0-blue.svg)](LICENSE)
 
-## Why rotary
+## Install
 
-- **Event-driven agent loop** (pi-compatible lifecycle) with **hooks**
-- **Permission modes** (full / read-only / workspace-write / deny-all)
-- **Built-in coding tools** + registry
-- **Provider gateway** with OpenAI-compatible HTTP + SSE
-- **Session trees** (fork / merge)
-- **Pi plugins** (Bun + JSONL) and **SKILL.md** skills
-- **Context packing**: `AGENTS.md` loading + auto-compact
-- **Slash commands** + headless `exec`
-- **Omi-inspired extraction + ranking** helpers
-- **ACP host**, **LSP manager**, **JSON-RPC IPC**
-- **Zig 0.16** — explicit allocators, `std.Io`, single binary friendly
+```toml
+[dependencies]
+rotary = { version = "0.3", features = ["ipc", "computer-use"] }
+```
 
 ## Quick start
 
+```rust
+use rotary::{Agent, Scope, ToolRegistry, register_builtin_tools};
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mut agent = Agent::new();
+    let mut tools = ToolRegistry::new();
+    register_builtin_tools(&mut tools);
+    agent.set_tools(tools);
+    agent.set_scope(Scope::Coding);
+    agent.prompt("fix the failing test").await?;
+    Ok(())
+}
+```
+
+## IPC server
+
 ```bash
-zig build
-zig build test
-zig build run -- agent
-zig build run -- exec /help
-zig build run -- serve
+rotary serve /tmp/rotary.sock
 ```
 
-Library:
+JSON-RPC methods: `ping`, `state`, `prompt`, `set_model`, `tools`, `plugins`, `messages`, `session_list`, `session_clear`.
 
-```zig
-const rotary = @import("rotary");
+## Scopes
 
-var agent = rotary.Agent.init(allocator, io);
-defer agent.deinit();
-agent.setPolicy(.{ .mode = .workspace_write });
+| Scope | Tools | Policy |
+|---|---|---|
+| `coding` | FS + shell + find | workspace_write |
+| `research` | read-only | read_only |
+| `plan` | read-only | read_only |
+| `ask` | none | deny_all |
+| `computer_use` | rs_peekaboo `cu_*` | full_access |
 
-var tools = rotary.ToolRegistry.init(allocator);
-defer tools.deinit();
-try rotary.tools.registerBuiltins(&tools);
-agent.setTools(&tools);
+## Computer-use
 
-try agent.prompt("Summarize this repository");
+Powered by [rs_peekaboo](https://crates.io/crates/rs_peekaboo) — native Rust, no FFI:
+
+```toml
+rotary = { version = "0.3", features = ["computer-use"] }
 ```
 
-## Product integration
-
-telekinesis includes rotary as a **git submodule** at `vendor/rotary` and should import the harness rather than re-implementing the loop.
-
-See:
-- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
-- [docs/COMPARISON.md](docs/COMPARISON.md) — vs codex, zero, crush, grok-build, dot, pi_agent_rust, openclaude, mods
-- [docs/ROADMAP.md](docs/ROADMAP.md)
-
-## Status
-
-| Area | State |
-|---|---|
-| agent loop + permissions + hooks | solid |
-| providers + streaming | solid |
-| tools / sessions / plugins | solid |
-| extract / ranking / slash / context | solid |
-| IPC / LSP | solid |
-| ACP | scaffolding |
-| MCP | planned |
+Tools: `cu_call`, `cu_see`, `cu_image`, `cu_click`, `cu_type`, `cu_hotkey`, `cu_scroll`, `cu_window`, `cu_app`, `cu_list`, `cu_open`, `cu_clipboard`.
 
 ## License
 
-MIT
+MPL-2.0

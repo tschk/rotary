@@ -1,0 +1,88 @@
+[package]
+name = "rx4"
+version = "0.3.0"
+edition = "2021"
+rust-version = "1.75"
+license = "MPL-2.0"
+description = "The agent harness engine — loop, tools, providers, sessions, permissions, computer-use, with full pi protocol compatibility"
+repository = "https://github.com/tschk/rotary"
+homepage = "https://github.com/tschk/rotary"
+keywords = ["agent", "harness", "coding", "llm", "pi"]
+categories = ["development-tools", "api-bindings", "asynchronous"]
+
+[[bin]]
+name = "rx4"
+path = "src/bin/rotary.rs"
+
+[lib]
+name = "rx4"
+path = "src/lib.rs"
+
+[features]
+default = ["ipc", "builtin-tools", "pi-compat"]
+computer-use = ["dep:rs_peekaboo"]
+ipc = ["dep:tokio", "tokio/net", "tokio/io-util", "tokio/sync", "tokio/process", "tokio/rt-multi-thread", "tokio/macros", "dep:cancellation-token"]
+providers = ["dep:reqwest", "dep:eventsource-stream", "dep:futures"]
+builtin-tools = ["dep:rayon", "dep:glob", "dep:ignore", "dep:regex"]
+memory = ["dep:rusqlite"]
+mcp = ["dep:rmcp", "dep:tokio"]
+sqlite-sessions = ["dep:rusqlite"]
+
+# Pi protocol compatibility — JSONL v3 sessions, RPC over stdin/stdout,
+# pi tool names, extension protocol with QuickJS, capability policy, SDK surface.
+pi-compat = ["dep:serde_yaml", "dep:dirs"]
+pi-extensions = ["pi-compat", "dep:rquickjs"]
+
+[dependencies]
+serde = { version = "1", features = ["derive", "rc"] }
+serde_json = { version = "1", features = ["raw_value"] }
+async-trait = "0.1"
+thiserror = "2"
+tracing = "0.1"
+parking_lot = "0.12"
+dashmap = "6"
+moka = { version = "0.12", features = ["future"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+
+# Optional — ipc
+tokio = { version = "1", features = ["rt", "time"], optional = true }
+cancellation-token = { version = "0.1", optional = true }
+
+# Optional — providers
+reqwest = { version = "0.12", features = ["json", "stream"], default-features = false, optional = true }
+eventsource-stream = { version = "0.2", optional = true }
+futures = { version = "0.3", optional = true }
+
+# Optional — builtin-tools
+rayon = { version = "1", optional = true }
+glob = { version = "0.3", optional = true }
+ignore = { version = "0.4", optional = true }
+regex = { version = "1", optional = true }
+
+# Optional — computer-use
+rs_peekaboo = { version = "0.3", optional = true }
+
+# Optional — memory / sqlite-sessions
+rusqlite = { version = "0.37", features = ["bundled"], optional = true }
+
+# Optional — mcp
+rmcp = { version = "0.6", optional = true }
+
+# Optional — pi-compat
+serde_yaml = { version = "0.9", optional = true }
+dirs = { version = "6", optional = true }
+
+# Optional — pi-extensions (QuickJS runtime for pi extension execution)
+rquickjs = { version = "0.7", features = ["loader", "allocator"], optional = true }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }
+tokio-test = "0.4"
+tempfile = "3"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true

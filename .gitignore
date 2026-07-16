@@ -5,3 +5,7 @@ zig-pkg/
 *.sock
 .DS_Store
 node_modules/
+native/peekaboo_ffi/target/
+vendor/rs_peekaboo/target/
+
+target/

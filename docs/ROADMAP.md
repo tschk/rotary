@@ -1,35 +1,30 @@
-# rotary roadmap
+# Roadmap — agent harness engine
 
-## Done in 0.2
+## 0.3
 
-- Permission policy + approver callback
-- Hooks registry (before_prompt/tool/after_tool/compact/error)
-- Auto-compact + manual `Agent.compact`
-- Project instruction loading (`AGENTS.md` / `CLAUDE.md` / `ROTARY.md`)
-- Slash command parser
-- Headless `rotary exec`
-- Omi-style extraction + ranking helpers
-- Guardrails state machine
+- [x] Scopes (coding / research / plan / ask / computer_use)
+- [x] Permissions + hooks + compact + slash parser
+- [x] Embedded computer-use path (rs_peekaboo + C ABI)
+- [x] equilibrium-oriented FFI header + generation docs
 
 ## Next
 
 ### P0
-1. **MCP client (stdio)** — standard tool servers, like crush/zero/dot
-2. **Tool effects + parallel tool batches** — pi_agent_rust style non-barrier parallel
-3. **Stream-JSON protocol** on IPC for CI (`exec` structured output)
+1. **MCP client (stdio)** — Codex/OpenCode/Crush parity for external tools
+2. **Stream-JSON / noninteractive protocol** — Codex noninteractive + CI
+3. **Approval UX hooks for hosts** — richer `ask` payloads (Codex approvals)
 
 ### P1
-4. **Specialists** — markdown manifests with tool scopes (zero)
-5. **Snapshot/revert** for file writes (dot)
-6. **Memory store** with FTS archival (dot/Omi gbrain patterns)
+4. Tool effects + parallel tool batches  
+5. Session export/import (Codex rollout-friendly JSONL)  
+6. equilibrium CI: auto-regenerate `src/generated/peekaboo.zig` on header change  
 
 ### P2
-7. **Shell-hook executor** for external lifecycle scripts
-8. **Permission grant store** (session + persistent prefixes)
-9. **QuickJS or similar in-process plugins** only if Bun overhead becomes an issue
+7. Process sandbox backends (seatbelt/bwrap) exposed as policy plugins  
+8. Specialist work packs as data (markdown), not named hard-coded agents  
 
 ## Non-goals
 
-- Becoming a full TUI product
-- P2P multi-device mesh
-- Hosted billing/gateway
+- Shipping a TUI (telekinesis)
+- Cloud billing / hosted gateway
+- Multi-device P2P product features

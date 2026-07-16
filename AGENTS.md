@@ -1,56 +1,73 @@
-# rotary agent guide
+# rotary — 代理框架引擎
 
-## Purpose
+**所有回复必须用英文。** 本文件用中文以节省 token。
 
-rotary is a **general-purpose coding agent harness** implemented in Zig 0.16. It owns the agent loop, tools, providers, sessions, plugins, permissions, hooks, ACP, LSP, and IPC. Product UIs and multi-device meshes live elsewhere (e.g. telekinesis).
+## 定位
 
-## Stack
+rotary 是**纯代理框架引擎**。负责 agent loop、tools、providers、sessions、permissions、computer-use、IPC。不含产品 UI。
 
-- Zig 0.16 (`std.Io`, juicy main, explicit allocators)
-- `httpx` for provider HTTP
-- Optional Bun for pi-compatible TypeScript extensions
-- Optional language servers via `lsp.zig`
+宿主（telekinesis CLI/TUI、omi desktop）通过 `cargo add rotary` 嵌入或通过 JSON-RPC IPC 连接 `rotary serve`。
 
-## Module map
+## 技术栈
 
-| File | Role |
+- Rust 2021（MSRV 1.75）
+- tokio（async runtime，feature-gated）
+- serde / serde_json
+- rs_peekaboo 0.3（crates.io，computer-use，feature-gated）
+- reqwest（providers，feature-gated）
+- MPL-2.0 许可证
+
+## 模块
+
+| 文件 | 职责 |
 |---|---|
-| `agent.zig` | Event-driven loop, tools, permissions, hooks, compact |
-| `provider.zig` | Multi-provider OpenAI-compatible client |
-| `tools.zig` | Built-in FS/shell/subagent/code_intel tools |
-| `session.zig` | Session tree + store |
-| `plugin.zig` | Pi extensions + skills |
-| `permissions.zig` | Policy modes + approver gate |
-| `hooks.zig` | Lifecycle hooks |
-| `context.zig` | AGENTS.md load + compaction |
-| `slash.zig` | Slash command parser |
-| `extract.zig` | Structured extraction (Omi-style) |
-| `ranking.zig` | Proactive ranking (Omi-style) |
-| `guardrails.zig` | Empty-turn / failure tripwires |
-| `lsp.zig` / `acp.zig` / `ipc.zig` | Language servers, external agents, daemon |
-| `config.zig` / `db.zig` | Config + optional SQLite helper |
+| `agent.rs` | 事件驱动 loop、tool registry、streaming |
+| `provider.rs` | 多 provider OpenAI 兼容客户端 |
+| `tools.rs` | 内置 FS/shell/find 工具 |
+| `session.rs` | 会话树（fork/merge）+ JSONL 持久化 |
+| `permissions.rs` | 策略模式、allow/deny、approver |
+| `hooks.rs` | 生命周期钩子 |
+| `mode.rs` | scope（coding/research/plan/ask/computer_use） |
+| `context.rs` | AGENTS.md 加载、system prompt 组合 |
+| `slash.rs` | slash 命令解析 |
+| `guardrails.rs` | 空轮次检测、重复失败检测 |
+| `extract.rs` | 结构化提取（JSON contracts） |
+| `ranking.rs` | 主动排序 |
+| `computer_use.rs` | rs_peekaboo 原生集成（无 FFI） |
+| `ipc.rs` | Unix socket JSON-RPC 服务器 |
+| `config.rs` | 配置文件 + env |
+| `plugin.rs` | 插件注册表 |
+| `acp.rs` | ACP host |
+| `lsp.rs` | LSP 管理器 |
 
-## Rules
+## Feature flags
 
-- Pass allocators explicitly. No global allocator.
-- Use `std.log.scoped(.module)` per file.
-- Prefer explicit error sets.
-- Keep plugins as Bun subprocesses (pi compatibility).
-- ACP = external agents; `plugin.zig` = extensions. Do not merge.
-- Data dir default: `~/.rotary`. Socket: `/tmp/rotary.sock`.
-- No hardcoded API keys, no telemetry.
-- Prefer stdlib; deps must be mature and pure-Zig when possible.
-
-## Verification
-
-```bash
-zig build
-zig build test
-zig build run -- agent
-zig build run -- exec /help
-zig build run -- provider
+```toml
+default = ["ipc"]
+computer-use = ["dep:rs_peekaboo"]
+ipc = ["dep:tokio"]
+providers = ["dep:reqwest"]
+builtin-tools = []
 ```
 
-## Commits
+## 规则
 
-English Conventional Commits, e.g. `feat(agent): gate tools through permission policy`.
+- 不硬编码 API key，不加遥测。
+- 新 agent 功能先落 rotary，再通过 IPC/slash 暴露给宿主。
+- computer-use 通过 crates.io `rs_peekaboo` 依赖，不 vendor，不做 FFI。
+- scope 不是 agent 名——是工作模式。
+- 保持 MPL-2.0。
+
+## 验证
+
+```bash
+cargo build
+cargo build --all-features
+cargo test --all-features
+cargo clippy --all-features
+cargo fmt --check
+```
+
+## 提交
+
+英文 Conventional Commits，例：`feat(agent): stream tool call deltas`。
