@@ -13,7 +13,7 @@ rotary 是**纯代理框架引擎**。负责 agent loop、tools、providers、se
 - Rust 2021（MSRV 1.75）
 - tokio（async runtime，feature-gated）
 - serde / serde_json
-- rs_peekaboo 0.3（crates.io，computer-use，feature-gated）
+- rs_peekaboo 0.3.2（crates.io，computer-use，feature-gated）
 - reqwest（providers，feature-gated）
 - MPL-2.0 许可证
 

@@ -2,14 +2,19 @@
 
 use crate::agent::{ToolDefinition, ToolEffect, ToolRegistry, ToolResult};
 use rs_peekaboo::automation::{parse_point, Target};
-use rs_peekaboo::{Direction, ImageMode, Peekaboo, Point};
+use rs_peekaboo::{Direction, ImageMode, Peekaboo, PeekabooConfig, Point};
 use serde_json::Value;
 use std::sync::OnceLock;
 
 static PEEKABOO: OnceLock<Peekaboo> = OnceLock::new();
 
 fn peekaboo() -> &'static Peekaboo {
-    PEEKABOO.get_or_init(Peekaboo::new)
+    PEEKABOO.get_or_init(|| {
+        Peekaboo::with_config(PeekabooConfig {
+            background: true,
+            ..PeekabooConfig::default()
+        })
+    })
 }
 
 pub fn register_tools(registry: &mut ToolRegistry) {
@@ -30,14 +35,14 @@ pub fn register_tools(registry: &mut ToolRegistry) {
     registry.register(ToolDefinition {
         name: "cu_image".into(),
         description: "Screenshot screen/window/menu to path.".into(),
-        parameters_json: r#"{"type":"object","properties":{"mode":{"type":"string"},"path":{"type":"string"},"retina":{"type":"boolean"}}}"#.into(),
+        parameters_json: r#"{"type":"object","properties":{"mode":{"type":"string"},"path":{"type":"string"},"retina":{"type":"boolean"},"app":{"type":"string"}}}"#.into(),
         execute: |_ctx, args| Box::pin(exec_image(args)),
         effect: ToolEffect::Process,
     });
     registry.register(ToolDefinition {
         name: "cu_click".into(),
         description: "Click at coords \"x,y\" or {x,y}. Optional button, count.".into(),
-        parameters_json: r#"{"type":"object","properties":{"coords":{"type":"string"},"x":{"type":"integer"},"y":{"type":"integer"},"button":{"type":"string"},"count":{"type":"integer"}}}"#.into(),
+        parameters_json: r#"{"type":"object","properties":{"coords":{"type":"string"},"x":{"type":"integer"},"y":{"type":"integer"},"index":{"type":"integer"},"snapshot":{"type":"string"},"on":{"type":"string"},"button":{"type":"string"},"count":{"type":"integer"},"background":{"type":"boolean"}}}"#.into(),
         execute: |_ctx, args| Box::pin(exec_click(args)),
         effect: ToolEffect::Process,
     });
@@ -99,7 +104,14 @@ pub fn register_tools(registry: &mut ToolRegistry) {
         execute: |_ctx, args| Box::pin(exec_clipboard(args)),
         effect: ToolEffect::Process,
     });
-    tracing::info!("computer_use: registered rs_peekaboo tools (crates.io dep)");
+    registry.register(ToolDefinition {
+        name: "cu_doctor".into(),
+        description: "Health report for computer-use readiness (permissions, tools, capabilities).".into(),
+        parameters_json: r#"{"type":"object","properties":{}}"#.into(),
+        execute: |_ctx, _args| Box::pin(async { json_result(peekaboo().doctor()) }),
+        effect: ToolEffect::Process,
+    });
+        tracing::info!("computer_use: registered rs_peekaboo tools (crates.io dep)");
 }
 
 fn parse_args(args: &str) -> Value {
@@ -141,12 +153,19 @@ async fn exec_see(args: String) -> ToolResult {
 
 async fn exec_image(args: String) -> ToolResult {
     let v = parse_args(&args);
-    let mode = ImageMode::parse(v.get("mode").and_then(|m| m.as_str()).unwrap_or("screen"));
     let path = v
         .get("path")
         .and_then(|p| p.as_str())
         .map(std::path::PathBuf::from);
     let retina = v.get("retina").and_then(|r| r.as_bool()).unwrap_or(true);
+    if let Some(app) = v.get("app").and_then(|a| a.as_str()) {
+        return json_result(
+            peekaboo()
+                .image_app(app, path, retina)
+                .map(|i| serde_json::to_value(&i).unwrap_or(Value::Null)),
+        );
+    }
+    let mode = ImageMode::parse(v.get("mode").and_then(|m| m.as_str()).unwrap_or("screen"));
     json_result(
         peekaboo()
             .image(mode, path, retina)
@@ -156,7 +175,17 @@ async fn exec_image(args: String) -> ToolResult {
 
 async fn exec_click(args: String) -> ToolResult {
     let v = parse_args(&args);
-    let target = if let Some(coords) = v.get("coords").and_then(|c| c.as_str()) {
+    let target = if let Some(index) = v.get("index").and_then(|i| i.as_u64()) {
+        Target::Query {
+            query: format!("index={index}"),
+            snapshot: v.get("snapshot").and_then(|s| s.as_str()).map(str::to_string),
+        }
+    } else if let Some(on) = v.get("on").and_then(|s| s.as_str()) {
+        Target::Query {
+            query: on.to_string(),
+            snapshot: v.get("snapshot").and_then(|s| s.as_str()).map(str::to_string),
+        }
+    } else if let Some(coords) = v.get("coords").and_then(|c| c.as_str()) {
         match parse_point(coords) {
             Ok(p) => Target::Point(p),
             Err(e) => return ToolResult::err("cu_click", format!("{e}")),
@@ -168,7 +197,11 @@ async fn exec_click(args: String) -> ToolResult {
     };
     let button = v.get("button").and_then(|b| b.as_str()).unwrap_or("left");
     let count = v.get("count").and_then(|c| c.as_u64()).unwrap_or(1) as u32;
-    json_result(peekaboo().click(target, button, count))
+    let background = v
+        .get("background")
+        .and_then(|b| b.as_bool())
+        .unwrap_or(true);
+    json_result(peekaboo().click_with_options(target, button, count, background))
 }
 
 async fn exec_type(args: String) -> ToolResult {
@@ -275,21 +308,42 @@ fn dispatch(method: &str, args: &Value) -> ToolResult {
             )
         }
         "image" => {
-            let mode = ImageMode::parse(
-                args.get("mode")
-                    .and_then(|m| m.as_str())
-                    .unwrap_or("screen"),
-            );
             let path = args
                 .get("path")
                 .and_then(|p| p.as_str())
                 .map(std::path::PathBuf::from);
             let retina = args.get("retina").and_then(|r| r.as_bool()).unwrap_or(true);
-            p.image(mode, path, retina)
-                .map(|i| serde_json::to_value(&i).unwrap_or(Value::Null))
+            if let Some(app) = args.get("app").and_then(|a| a.as_str()) {
+                p.image_app(app, path, retina)
+                    .map(|i| serde_json::to_value(&i).unwrap_or(Value::Null))
+            } else {
+                let mode = ImageMode::parse(
+                    args.get("mode")
+                        .and_then(|m| m.as_str())
+                        .unwrap_or("screen"),
+                );
+                p.image(mode, path, retina)
+                    .map(|i| serde_json::to_value(&i).unwrap_or(Value::Null))
+            }
         }
         "click" => {
-            let target = if let Some(coords) = args.get("coords").and_then(|c| c.as_str()) {
+            let target = if let Some(index) = args.get("index").and_then(|i| i.as_u64()) {
+                Target::Query {
+                    query: format!("index={index}"),
+                    snapshot: args
+                        .get("snapshot")
+                        .and_then(|s| s.as_str())
+                        .map(str::to_string),
+                }
+            } else if let Some(on) = args.get("on").and_then(|s| s.as_str()) {
+                Target::Query {
+                    query: on.to_string(),
+                    snapshot: args
+                        .get("snapshot")
+                        .and_then(|s| s.as_str())
+                        .map(str::to_string),
+                }
+            } else if let Some(coords) = args.get("coords").and_then(|c| c.as_str()) {
                 match parse_point(coords) {
                     Ok(pt) => Target::Point(pt),
                     Err(e) => return ToolResult::err("cu_call", format!("{e}")),
@@ -304,8 +358,13 @@ fn dispatch(method: &str, args: &Value) -> ToolResult {
                 .and_then(|b| b.as_str())
                 .unwrap_or("left");
             let count = args.get("count").and_then(|c| c.as_u64()).unwrap_or(1) as u32;
-            p.click(target, button, count)
+            let background = args
+                .get("background")
+                .and_then(|b| b.as_bool())
+                .unwrap_or(true);
+            p.click_with_options(target, button, count, background)
         }
+        "doctor" => p.doctor(),
         "type" => {
             let text = args.get("text").and_then(|t| t.as_str()).unwrap_or("");
             let clear = args.get("clear").and_then(|c| c.as_bool()).unwrap_or(false);
