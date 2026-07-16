@@ -22,7 +22,7 @@ hosts on top.
 ## Taken from Codex specifically
 
 1. **Approvals / sandbox modes** → `permissions.Policy` + host `Approver`
-2. **Non-interactive exec** → host `telekinesis exec` / rotary `exec` demo surface
+2. **Non-interactive exec** → `rx4 exec` demo surface; hosts can expose their own non-interactive command
 3. **Skills packages** → `plugin` skill loader (SKILL.md)
 4. **Bounded context** → compact + auto-compact
 5. **Tool failure hygiene** → `guardrails` (empty turns, repeated tool failures)

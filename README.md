@@ -1,6 +1,6 @@
 # rotary (rx4) — the agent harness engine
 
-[![crates.io](https://img.shields.io/crates/v/rotary.svg)](https://crates.io/crates/rotary)
+[![crates.io](https://img.shields.io/crates/v/rx4.svg)](https://crates.io/crates/rx4)
 [![License: MPL-2.0](https://img.shields.io/badge/License-MPL--2.0-blue.svg)](LICENSE)
 [![MSRV: 1.75](https://img.shields.io/badge/MSRV-1.75-blue.svg)](https://blog.rust-lang.org/2023/12/28/Rust-1.75.0.html)
 
@@ -17,7 +17,7 @@ lifecycle decisions are the host's job.
 graph TD
   Host["Hosts<br/>telekinesis CLI/TUI · omi desktop · IDEs · CI"]
   Host -->|cargo add rx4| Embed["in-process embed"]
-  Host -->|JSON-RPC| Serve["rotary serve (IPC)"]
+  Host -->|JSON-RPC| Serve["rx4 serve (IPC)"]
   Embed --> Engine["rx4 agent harness engine"]
   Serve --> Engine
   Engine --> Loop["agent loop + streaming events"]
@@ -61,13 +61,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ## IPC server
 
 ```bash
-rotary serve /tmp/rotary.sock
+rx4 serve /tmp/rx4.sock
 ```
 
 JSON-RPC methods: `ping`, `state`, `prompt`, `set_model`, `tools`,
 `plugins`, `messages`, `session_list`, `session_clear`.
 
-> `rotary serve` starts the Unix socket JSON-RPC server. Hosts connect to
+> `rx4 serve` starts the Unix socket JSON-RPC server. Hosts connect to
 > the socket and drive the agent loop remotely — the host never owns agent
 > logic.
 
@@ -247,6 +247,8 @@ Current hosts built on rotary:
 - **omi desktop** — desktop application embedding rotary.
 
 See [docs/HOSTS.md](docs/HOSTS.md) for the hosting guide.
+
+See [docs/README.md](docs/README.md) for the documentation index and command contract.
 
 ## License
 

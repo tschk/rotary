@@ -4,7 +4,7 @@
 
 ```mermaid
 graph TD
-  subgraph Host["telekinesis (CLI + crepuscularity-tui)"]
+  subgraph Host["Hosts: telekinesis and Omi Desktop"]
     UX["product UX · slash palette · streaming UI<br/>pi protocol compat (JSONL v3, RPC, extensions)"]
   end
   Host -->|tokio channels (in-process)<br/>or JSON-RPC IPC| Engine
@@ -20,10 +20,8 @@ graph TD
 Primary host. One CLI, one TUI.
 
 ```bash
-telekinesis serve          # rotary-backed IPC daemon
-telekinesis                # default: launch TUI (after serve)
-telekinesis exec "prompt"  # non-interactive (Codex/OpenCode-style)
-telekinesis agent|provider|session|…
+tk                          # launch the telekinesis TUI
+rx4 serve /tmp/rx4.sock     # optional Rotary IPC daemon
 ```
 
 Wire:
@@ -48,7 +46,7 @@ agent.set_tools(tools);
 agent.set_scope(Scope::Coding);
 ```
 
-Or attach as IPC-only: start rotary's server surface through `rotary serve`.
+Or attach as IPC-only: start Rotary's server surface through `rx4 serve`.
 
 ## Computer-use
 
