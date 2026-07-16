@@ -22,14 +22,18 @@
 //! ```
 
 pub mod agent;
+#[cfg(feature = "skills")]
 pub mod background_review;
 pub mod compaction;
 pub mod config;
 pub mod context;
 pub mod cost;
+#[cfg(feature = "graph-memory")]
 pub mod dream_scheduler;
+#[cfg(feature = "skills")]
 pub mod embeddings;
 pub mod extract;
+#[cfg(feature = "graph-memory")]
 pub mod graph_memory;
 pub mod guardrails;
 pub mod hooks;
@@ -47,7 +51,9 @@ pub mod routing;
 pub mod sandbox;
 pub mod secrets;
 pub mod session;
+#[cfg(feature = "skills")]
 pub mod skill_engine;
+#[cfg(feature = "skills")]
 pub mod skill_curator;
 pub mod slash;
 pub mod sse;
@@ -80,16 +86,20 @@ pub use agent::{
     Agent, Event, ToolCall, ToolContext, ToolDefinition, ToolEffect, ToolExecuteBox,
     ToolExecuteFn, ToolExecutor, ToolFuture, ToolRegistry, ToolResult, normalize_tool_name,
 };
+#[cfg(feature = "skills")]
 pub use background_review::{
     BackgroundReviewConfig, BackgroundReviewer, ReviewResult, ReviewSignal,
 };
 pub use compaction::{compact_messages, CompactionConfig, CompactionMarker, CompactionResult};
 pub use cost::{CostEntry, ModelPricing, PricingRegistry, SessionCost, TokenUsage};
+#[cfg(feature = "graph-memory")]
 pub use dream_scheduler::{DreamReport, DreamScheduler};
+#[cfg(feature = "skills")]
 pub use embeddings::{
     cosine_similarity, EmbedError, EmbeddingClient, EmbeddingConfig, EmbeddingProvider,
     SemanticSearch,
 };
+#[cfg(feature = "graph-memory")]
 pub use graph_memory::{
     ConversationExtractor, EdgeRelation, ExtractionResult, GraphMemory, GraphMemoryError,
     MemoryEdge as GraphMemoryEdge, MemoryNode as GraphMemoryNode, NodeType as GraphNodeType,
@@ -120,7 +130,9 @@ pub use secrets::{
     filter_env_vars, is_sensitive_env_var, RedactionConfig, Redactor, SecretMatch, SecretPattern,
 };
 pub use session::Session;
+#[cfg(feature = "skills")]
 pub use skill_engine::{Skill, SkillEngine, SkillError, SkillFrontmatter, SkillOutcome, SkillState};
+#[cfg(feature = "skills")]
 pub use skill_curator::{CuratorConfig, CuratorSuggestion, SkillCurator, SuggestionKind};
 pub use sse::{SseError, SseEvent, SseParser};
 pub use tools::register_builtin_tools;

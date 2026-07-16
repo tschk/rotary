@@ -218,6 +218,8 @@ graph TD
 | `memory` | no | SQLite-backed memory store |
 | `mcp` | no | MCP client (rmcp, JSON-RPC 2.0 over stdio) |
 | `sqlite-sessions` | no | SQLite session persistence |
+| `graph-memory` | no | knowledge graph (PageRank, community detection, dream consolidation) + dream scheduler |
+| `skills` | no | self-improving skill engine (bayesian confidence, SKILL.md parsing), background review, curator, embeddings |
 
 > `pi-compat` and `pi-extensions` have been **removed** — pi protocol
 > compatibility (JSONL v3 sessions, RPC, extensions, QuickJS) now lives in

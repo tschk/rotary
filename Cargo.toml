@@ -27,6 +27,8 @@ builtin-tools = ["dep:rayon", "dep:glob", "dep:ignore", "dep:regex"]
 memory = ["dep:rusqlite"]
 mcp = ["dep:rmcp", "dep:tokio", "tokio/process", "tokio/io-util", "tokio/sync"]
 sqlite-sessions = ["dep:rusqlite"]
+graph-memory = []
+skills = ["dep:serde_yaml", "dep:dirs"]
 
 [dependencies]
 serde = { version = "1", features = ["derive", "rc"] }
@@ -66,8 +68,8 @@ rusqlite = { version = "0.37", features = ["bundled"], optional = true }
 rmcp = { version = "0.6", optional = true }
 
 # Skill frontmatter parsing (skill_engine) and home-dir resolution.
-serde_yaml = "0.9"
-dirs = "6"
+serde_yaml = { version = "0.9", optional = true }
+dirs = { version = "6", optional = true }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }
