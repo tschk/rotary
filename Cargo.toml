@@ -27,6 +27,7 @@ builtin-tools = ["dep:rayon", "dep:glob", "dep:ignore", "dep:regex"]
 memory = ["dep:rusqlite"]
 mcp = ["dep:rmcp", "dep:tokio", "tokio/process", "tokio/io-util", "tokio/sync"]
 sqlite-sessions = ["dep:rusqlite"]
+oauth = ["dep:rs_ai_oauth"]
 
 # Pi protocol compatibility — JSONL v3 sessions, RPC over stdin/stdout,
 # pi tool names, extension protocol with QuickJS, capability policy, SDK surface.
@@ -76,6 +77,9 @@ dirs = { version = "6", optional = true }
 
 # Optional — pi-extensions (QuickJS runtime for pi extension execution)
 rquickjs = { version = "0.7", features = ["loader", "allocator", "parallel"], optional = true }
+
+# Optional — oauth (xAI Grok + OpenAI ChatGPT OAuth via rs_ai_oauth)
+rs_ai_oauth = { version = "0.2", optional = true }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }

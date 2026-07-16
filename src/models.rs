@@ -131,10 +131,17 @@ impl ModelRegistry {
 }
 
 fn is_xhigh_model(id: &str) -> bool {
-    if id == "o1" || id.starts_with("o3") {
+    if id.starts_with("gpt-5.6-sol")
+        || id.starts_with("gpt-5.5")
+        || id.starts_with("gpt-5.4")
+        || id.starts_with("gpt-5.2")
+    {
         return true;
     }
     if id.starts_with("o1") && !id.contains("mini") {
+        return true;
+    }
+    if id.starts_with("o3") {
         return true;
     }
     id == "claude-3-5-sonnet" || id == "claude-3-7-sonnet" || id == "claude-sonnet-4"
@@ -143,48 +150,57 @@ fn is_xhigh_model(id: &str) -> bool {
 fn builtin_models() -> Vec<ModelInfo> {
     vec![
         ModelInfo {
-            id: "gpt-4o".into(),
+            id: "gpt-5.6-sol".into(),
             provider: "openai".into(),
-            context_window: 128_000,
+            context_window: 200_000,
+            max_output_tokens: 16_384,
+            supports_tools: true,
+            supports_vision: true,
+            supports_reasoning: true,
+        },
+        ModelInfo {
+            id: "gpt-5.6-terra".into(),
+            provider: "openai".into(),
+            context_window: 200_000,
+            max_output_tokens: 16_384,
+            supports_tools: true,
+            supports_vision: true,
+            supports_reasoning: true,
+        },
+        ModelInfo {
+            id: "gpt-5.6-luna".into(),
+            provider: "openai".into(),
+            context_window: 200_000,
             max_output_tokens: 16_384,
             supports_tools: true,
             supports_vision: true,
             supports_reasoning: false,
         },
         ModelInfo {
-            id: "gpt-4o-mini".into(),
+            id: "gpt-5.4".into(),
             provider: "openai".into(),
-            context_window: 128_000,
+            context_window: 200_000,
+            max_output_tokens: 16_384,
+            supports_tools: true,
+            supports_vision: true,
+            supports_reasoning: true,
+        },
+        ModelInfo {
+            id: "gpt-5.4-mini".into(),
+            provider: "openai".into(),
+            context_window: 200_000,
             max_output_tokens: 16_384,
             supports_tools: true,
             supports_vision: true,
             supports_reasoning: false,
         },
         ModelInfo {
-            id: "o1".into(),
+            id: "gpt-5.2".into(),
             provider: "openai".into(),
             context_window: 200_000,
-            max_output_tokens: 100_000,
+            max_output_tokens: 16_384,
             supports_tools: true,
             supports_vision: true,
-            supports_reasoning: true,
-        },
-        ModelInfo {
-            id: "o1-mini".into(),
-            provider: "openai".into(),
-            context_window: 128_000,
-            max_output_tokens: 65_536,
-            supports_tools: false,
-            supports_vision: false,
-            supports_reasoning: true,
-        },
-        ModelInfo {
-            id: "o3-mini".into(),
-            provider: "openai".into(),
-            context_window: 200_000,
-            max_output_tokens: 100_000,
-            supports_tools: true,
-            supports_vision: false,
             supports_reasoning: true,
         },
         ModelInfo {
@@ -248,6 +264,60 @@ fn builtin_models() -> Vec<ModelInfo> {
             max_output_tokens: 16_384,
             supports_tools: true,
             supports_vision: false,
+            supports_reasoning: true,
+        },
+        ModelInfo {
+            id: "grok-4.5".into(),
+            provider: "xai".into(),
+            context_window: 256_000,
+            max_output_tokens: 16_384,
+            supports_tools: true,
+            supports_vision: true,
+            supports_reasoning: true,
+        },
+        ModelInfo {
+            id: "grok-4.3".into(),
+            provider: "xai".into(),
+            context_window: 256_000,
+            max_output_tokens: 16_384,
+            supports_tools: true,
+            supports_vision: true,
+            supports_reasoning: true,
+        },
+        ModelInfo {
+            id: "grok-build-0.1".into(),
+            provider: "xai".into(),
+            context_window: 256_000,
+            max_output_tokens: 16_384,
+            supports_tools: true,
+            supports_vision: true,
+            supports_reasoning: true,
+        },
+        ModelInfo {
+            id: "grok-4.20-0309-reasoning".into(),
+            provider: "xai".into(),
+            context_window: 256_000,
+            max_output_tokens: 16_384,
+            supports_tools: true,
+            supports_vision: true,
+            supports_reasoning: true,
+        },
+        ModelInfo {
+            id: "grok-4.20-0309-non-reasoning".into(),
+            provider: "xai".into(),
+            context_window: 256_000,
+            max_output_tokens: 16_384,
+            supports_tools: true,
+            supports_vision: true,
+            supports_reasoning: false,
+        },
+        ModelInfo {
+            id: "grok-4.20-multi-agent-0309".into(),
+            provider: "xai".into(),
+            context_window: 256_000,
+            max_output_tokens: 16_384,
+            supports_tools: true,
+            supports_vision: true,
             supports_reasoning: true,
         },
         ModelInfo {
@@ -368,12 +438,14 @@ mod tests {
     #[test]
     fn builtin_model_lookup() {
         let reg = fresh();
-        let gpt = reg.get("gpt-4o").expect("gpt-4o should be registered");
+        let gpt = reg
+            .get("gpt-5.6-sol")
+            .expect("gpt-5.6-sol should be registered");
         assert_eq!(gpt.provider, "openai");
-        assert_eq!(gpt.context_window, 128_000);
+        assert_eq!(gpt.context_window, 200_000);
         assert!(gpt.supports_tools);
         assert!(gpt.supports_vision);
-        assert!(!gpt.supports_reasoning);
+        assert!(gpt.supports_reasoning);
 
         let sonnet = reg
             .get("claude-3-5-sonnet")
@@ -391,32 +463,32 @@ mod tests {
     #[test]
     fn reasoning_model_detection() {
         let reg = fresh();
-        assert!(reg.is_reasoning_model("o1"));
-        assert!(reg.is_reasoning_model("o3-mini"));
+        assert!(reg.is_reasoning_model("gpt-5.6-sol"));
+        assert!(reg.is_reasoning_model("gpt-5.4"));
         assert!(reg.is_reasoning_model("claude-3-5-sonnet"));
-        assert!(!reg.is_reasoning_model("gpt-4o"));
-        assert!(!reg.is_reasoning_model("gpt-4o-mini"));
+        assert!(!reg.is_reasoning_model("gpt-5.6-luna"));
+        assert!(!reg.is_reasoning_model("gpt-5.4-mini"));
         assert!(!reg.is_reasoning_model("claude-3-5-haiku"));
     }
 
     #[test]
     fn xhigh_support() {
         let reg = fresh();
-        assert!(reg.supports_xhigh("o1"));
-        assert!(reg.supports_xhigh("o3-mini"));
+        assert!(reg.supports_xhigh("gpt-5.6-sol"));
+        assert!(reg.supports_xhigh("gpt-5.4"));
         assert!(reg.supports_xhigh("claude-3-5-sonnet"));
-        assert!(!reg.supports_xhigh("o1-mini"));
-        assert!(!reg.supports_xhigh("gpt-4o"));
+        assert!(!reg.supports_xhigh("gpt-5.6-luna"));
+        assert!(!reg.supports_xhigh("gpt-5.4-mini"));
     }
 
     #[test]
     fn thinking_level_clamping() {
         let reg = fresh();
-        assert_eq!(reg.thinking_level_clamp("gpt-4o", "xhigh"), "low");
-        assert_eq!(reg.thinking_level_clamp("o1-mini", "xhigh"), "high");
-        assert_eq!(reg.thinking_level_clamp("o1", "xhigh"), "xhigh");
-        assert_eq!(reg.thinking_level_clamp("o1", "low"), "low");
-        assert_eq!(reg.thinking_level_clamp("o3-mini", "medium"), "medium");
+        assert_eq!(reg.thinking_level_clamp("gpt-5.6-luna", "xhigh"), "low");
+        assert_eq!(reg.thinking_level_clamp("gpt-5.4", "xhigh"), "xhigh");
+        assert_eq!(reg.thinking_level_clamp("gpt-5.6-sol", "xhigh"), "xhigh");
+        assert_eq!(reg.thinking_level_clamp("gpt-5.6-sol", "low"), "low");
+        assert_eq!(reg.thinking_level_clamp("gpt-5.4", "medium"), "medium");
         assert_eq!(
             reg.thinking_level_clamp("claude-3-5-sonnet", "xhigh"),
             "xhigh"

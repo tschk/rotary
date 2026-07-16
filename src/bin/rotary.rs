@@ -45,6 +45,11 @@ enum Commands {
     Models,
     /// List all built-in tools
     Tools,
+    /// Login to a provider via OAuth (xAI Grok, OpenAI ChatGPT)
+    Login {
+        /// Provider to login with (grok, openai)
+        provider: String,
+    },
 }
 
 fn main() {
@@ -61,6 +66,7 @@ fn main() {
         Commands::Doctor => run_doctor(),
         Commands::Models => run_models(),
         Commands::Tools => run_tools(),
+        Commands::Login { provider } => run_login(&provider),
     }
 }
 
@@ -99,6 +105,16 @@ fn setup_provider() -> Option<Arc<dyn rx4::Provider>> {
             return Some(Arc::new(OpenAIProvider::anthropic(key)));
         }
     }
+    if let Ok(key) = std::env::var("XAI_API_KEY") {
+        if !key.is_empty() {
+            return Some(Arc::new(OpenAIProvider::with_base_url(
+                "https://api.x.ai/v1",
+                key,
+                "xai",
+                "xAI",
+            )));
+        }
+    }
     if let Ok(key) = std::env::var("OPENAI_API_KEY") {
         if !key.is_empty() {
             return Some(Arc::new(OpenAIProvider::new(key)));
@@ -124,7 +140,9 @@ fn run_chat(model: Option<String>, scope: Option<String>) {
     #[cfg(feature = "providers")]
     {
         if setup_provider().is_none() {
-            eprintln!("warning: no API key found (set OPENAI_API_KEY or ANTHROPIC_API_KEY)");
+            eprintln!(
+                "warning: no API key found (set ANTHROPIC_API_KEY, XAI_API_KEY, or OPENAI_API_KEY)"
+            );
         }
 
         let mut agent = build_agent(model.as_deref(), scope.as_deref());
@@ -341,7 +359,9 @@ fn run_exec(prompt: &str, json: bool, model: Option<String>, scope: Option<Strin
     #[cfg(feature = "providers")]
     {
         if setup_provider().is_none() {
-            eprintln!("error: no API key found (set OPENAI_API_KEY or ANTHROPIC_API_KEY)");
+            eprintln!(
+                "error: no API key found (set ANTHROPIC_API_KEY, XAI_API_KEY, or OPENAI_API_KEY)"
+            );
             std::process::exit(1);
         }
         let mut agent = build_agent(model.as_deref(), scope.as_deref());
@@ -456,6 +476,7 @@ fn run_version() {
     println!("  memory:       {}", cfg_feature("memory"));
     println!("  mcp:          {}", cfg_feature("mcp"));
     println!("  sqlite-sessions: {}", cfg_feature("sqlite-sessions"));
+    println!("  oauth:        {}", cfg_feature("oauth"));
     println!("modules: agent, compaction, config, context, cost, extract, guardrails, hooks, mode, permissions, plugin, prompt_cache, provider, ranking, repomap, rollout, routing, sandbox, secrets, session, slash, sse, tools, models, acp, marketplace");
 }
 
@@ -524,6 +545,13 @@ fn cfg_feature(name: &str) -> &'static str {
                 "disabled"
             }
         }
+        "oauth" => {
+            if cfg!(feature = "oauth") {
+                "enabled"
+            } else {
+                "disabled"
+            }
+        }
         _ => "unknown",
     }
 }
@@ -538,6 +566,7 @@ fn run_doctor() {
     let anthropic_key = std::env::var("ANTHROPIC_API_KEY")
         .ok()
         .filter(|k| !k.is_empty());
+    let xai_key = std::env::var("XAI_API_KEY").ok().filter(|k| !k.is_empty());
     print_status(
         "OPENAI_API_KEY",
         if openai_key.is_some() {
@@ -555,6 +584,11 @@ fn run_doctor() {
             "not set"
         },
         anthropic_key.is_some(),
+    );
+    print_status(
+        "XAI_API_KEY",
+        if xai_key.is_some() { "set" } else { "not set" },
+        xai_key.is_some(),
     );
 
     let home = home_dir();
@@ -623,4 +657,78 @@ fn run_tools() {
         println!("{name:<16} {desc}");
     }
     println!("\n{} tools registered", tools.count());
+}
+
+#[cfg(feature = "oauth")]
+fn run_login(provider: &str) {
+    use rs_ai_oauth::{fetch_models, start_oauth_flow, OAuthProvider};
+
+    let oauth_provider = match OAuthProvider::parse(provider) {
+        Some(p) => p,
+        None => {
+            eprintln!("unknown provider '{provider}'. supported: grok (xAI), openai (ChatGPT)");
+            std::process::exit(1);
+        }
+    };
+
+    eprintln!("starting OAuth flow for {}...", oauth_provider.name());
+    eprintln!("opening browser — sign in and authorize, then return here");
+
+    let tokens = match start_oauth_flow(oauth_provider) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("oauth failed: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    eprintln!("\noauth successful!");
+    eprintln!("access token expires at: {}", tokens.expires_at);
+
+    let home = home_dir();
+    let data_dir = home.join(".rx4");
+    let _ = std::fs::create_dir_all(&data_dir);
+    let token_path = data_dir.join(format!("oauth_{}.json", oauth_provider.name()));
+
+    let token_json = serde_json::json!({
+        "access_token": tokens.access_token,
+        "refresh_token": tokens.refresh_token,
+        "expires_at": tokens.expires_at,
+        "provider": oauth_provider.name(),
+    });
+
+    if let Err(e) = std::fs::write(&token_path, serde_json::to_vec_pretty(&token_json).unwrap()) {
+        eprintln!(
+            "warning: could not save tokens to {}: {e}",
+            token_path.display()
+        );
+    } else {
+        eprintln!("tokens saved to {}", token_path.display());
+    }
+
+    eprintln!("\nfetching available models...");
+    match fetch_models(oauth_provider, &tokens.access_token) {
+        Ok(models) => {
+            eprintln!("\n{} models available:", models.len());
+            for m in &models {
+                eprintln!("  {}", m.id);
+            }
+            eprintln!(
+                "\nset {}=your-token to use with rx4",
+                match oauth_provider {
+                    OAuthProvider::Xai => "XAI_API_KEY",
+                    OAuthProvider::ChatGpt => "OPENAI_API_KEY",
+                }
+            );
+        }
+        Err(e) => {
+            eprintln!("could not fetch models: {e}");
+        }
+    }
+}
+
+#[cfg(not(feature = "oauth"))]
+fn run_login(_provider: &str) {
+    eprintln!("login requires the `oauth` feature (build with --features oauth)");
+    std::process::exit(1);
 }
