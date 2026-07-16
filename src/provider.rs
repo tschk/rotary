@@ -189,12 +189,63 @@ impl OpenAIProvider {
         provider_name: impl Into<String>,
     ) -> Self {
         Self {
-            client: reqwest::Client::new(),
+            client: reqwest::Client::builder()
+                .pool_idle_timeout(std::time::Duration::from_secs(90))
+                .tcp_keepalive(std::time::Duration::from_secs(60))
+                .build()
+                .unwrap_or_else(|_| reqwest::Client::new()),
             base_url: base_url.into(),
             api_key: api_key.into(),
             provider_id: provider_id.into(),
             provider_name: provider_name.into(),
         }
+    }
+
+    /// Prewarm the connection pool by sending a lightweight HEAD request.
+    /// This establishes TCP/TLS connections before the first real request,
+    /// reducing first-request latency (codex-rs preconnect pattern).
+    pub async fn prewarm(&self) -> Result<(), ProviderError> {
+        let url = format!("{}/models", self.base_url);
+        let mut req = self.client.head(&url);
+        if !self.api_key.is_empty() {
+            if self.provider_id == "anthropic" {
+                req = req
+                    .header("x-api-key", &self.api_key)
+                    .header("anthropic-version", "2023-06-01");
+            } else {
+                req = req.bearer_auth(&self.api_key);
+            }
+        }
+        let _ = req.send().await;
+        Ok(())
+    }
+
+    /// Create a session-scoped client that preserves connection state across retries.
+    pub fn new_session(&self) -> ModelClientSession {
+        ModelClientSession {
+            provider_id: self.provider_id.clone(),
+            connection_reused: false,
+        }
+    }
+}
+
+/// Session-scoped client state — preserves connection and routing info
+/// across retries within a single turn (codex-rs ModelClientSession pattern).
+#[cfg(feature = "providers")]
+pub struct ModelClientSession {
+    #[allow(dead_code)]
+    provider_id: String,
+    connection_reused: bool,
+}
+
+#[cfg(feature = "providers")]
+impl ModelClientSession {
+    pub fn was_connection_reused(&self) -> bool {
+        self.connection_reused
+    }
+
+    pub fn set_connection_reused(&mut self, reused: bool) {
+        self.connection_reused = reused;
     }
 }
 

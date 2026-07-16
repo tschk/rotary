@@ -30,8 +30,10 @@ pub mod permissions;
 pub mod plugin;
 pub mod provider;
 pub mod ranking;
+pub mod rollout;
 pub mod session;
 pub mod slash;
+pub mod sse;
 pub mod tools;
 
 #[cfg(feature = "computer-use")]
@@ -63,7 +65,9 @@ pub use mode::{Profile, Scope};
 pub use models::{CompatConfig, ModelInfo, ModelRegistry};
 pub use permissions::{Approver, Decision, PermissionMode, Policy};
 pub use provider::{Message, Provider, ProviderRegistry, Role, StreamEvent};
+pub use rollout::{RolloutEntry, RolloutManager, TraceWriter};
 pub use session::Session;
+pub use sse::{SseError, SseEvent, SseParser};
 pub use tools::register_builtin_tools;
 
 pub const VERSION: &str = "0.3.0";
