@@ -136,9 +136,13 @@ graph LR
 | `sandbox.rs` | userspace SandboxManager + optional OsSandboxRunner (seatbelt/bwrap) |
 | `subagent.rs` | subagent management (git worktree isolation) |
 
-Host opt-in on `Agent` (0.3.5+): `set_skill_registry`, `set_graph_memory`,
-`enable_os_sandbox` / `set_os_sandbox`, `set_sandbox`. Model router / multiagent
-/ cost are library APIs — hosts choose when to call them. |
+Host opt-in on `Agent` (0.3.5+ / 0.3.6+):
+`set_skill_registry`, `set_skill_engine` (post-prompt review),
+`set_graph_memory`, `enable_auto_dream`,
+`enable_os_sandbox` / `set_os_sandbox`, `set_sandbox`,
+`load_project_context`.
+Model router / multiagent / cost / rollout / repomap are library APIs — hosts
+choose when to call them. `Policy::default()` is `workspace_write`.
 
 ## Agent loop
 

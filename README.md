@@ -67,6 +67,10 @@ rx4 serve /tmp/rx4.sock
 JSON-RPC methods: `ping`, `state`, `prompt`, `set_model`, `tools`,
 `plugins`, `messages`, `session_list`, `session_clear`.
 
+Socket mode is `0o600`. Optional auth: set `RX4_IPC_TOKEN` and pass
+`"token"` in each JSON-RPC `params` object (fail-open when unset — local
+socket only).
+
 > `rx4 serve` starts the Unix socket JSON-RPC server. Hosts connect to
 > the socket and drive the agent loop remotely — the host never owns agent
 > logic.
@@ -108,8 +112,8 @@ flowchart TD
   `mcp__{server}__{tool}`.
 - **Session tree** — fork/merge with JSONL persistence; optional SQLite via
   `sqlite-sessions` (`save_sqlite` / `load_sqlite`).
-- **Permission system** — `Policy` + `Approver`; default mode is
-  `workspace_write` (process tools require approval).
+- **Permission system** — `Policy` + `Approver`; `Policy::default()` and
+  `Agent::new` use `workspace_write` (process tools require approval).
 - **Lifecycle hooks** — pluggable hook registry around the agent loop.
 - **Context compaction** — token-estimate auto-compact via
   `estimate_messages` + `apply_compaction`.
@@ -117,13 +121,15 @@ flowchart TD
 - **Skill engine** (`skills`) — Beta-Binomial confidence; keyword + optional
   embedding activation. Host opt-in: `Agent::set_skill_registry` injects
   matching skill instructions into the system prompt each turn.
-- **Background review** (`skills`) — heuristic learning signals; host calls
-  `BackgroundReviewer` (not auto-scheduled).
+- **Background review** (`skills`) — heuristic learning signals. Host opt-in:
+  `Agent::set_skill_engine` runs `BackgroundReviewer` after each `prompt`.
+  (Manual `BackgroundReviewer` still available for custom schedules.)
 - **Skill curator** (`skills`) — Active→Stale→Archived; host schedules audits.
 - **Embeddings** (`skills` + `providers`) — Gemini / Ollama semantic matching.
 - **Graph memory** (`graph-memory`) — pagerank + community detection. Host
   opt-in: `Agent::set_graph_memory` extracts nodes/edges after each run.
-- **Dream scheduler** (`graph-memory`) — consolidation capability (host runs).
+- **Dream scheduler** (`graph-memory`) — consolidation capability; host opt-in
+  `Agent::enable_auto_dream(true)` runs one cycle after graph extract.
 - **Model router / multi-agent / cost / repo map / rollout** — library APIs for
   hosts; not auto-selected inside `Agent::prompt`.
 - **Secret redaction** — pattern-based redaction applied to tool results.

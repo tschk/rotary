@@ -52,6 +52,13 @@ impl Policy {
     }
 }
 
+impl Default for Policy {
+    /// Secure default matches `Agent::new` — not full access.
+    fn default() -> Self {
+        Self::workspace_write()
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Decision {
     Allow,
@@ -166,6 +173,15 @@ mod tests {
         assert_eq!(
             authorize(&Policy::full_access(), "write", "{}", None),
             Decision::Allow
+        );
+    }
+
+    #[test]
+    fn default_is_workspace_write() {
+        assert_eq!(Policy::default().mode, PermissionMode::WorkspaceWrite);
+        assert_eq!(
+            authorize(&Policy::default(), "bash", "{}", None),
+            Decision::Ask
         );
     }
 

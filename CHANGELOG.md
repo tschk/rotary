@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.3.7] — 2026-07-17
+
+### Changed
+- `Policy::default()` is `workspace_write` (matches `Agent::new`; not full access)
+
+### Fixed
+- Docs: `set_skill_engine` / `enable_auto_dream` honesty; IPC `RX4_IPC_TOKEN` docs
+
 ## [0.3.6] — 2026-07-17
 
 ### Added

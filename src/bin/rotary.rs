@@ -92,6 +92,7 @@ fn build_agent(model: Option<&str>, scope: Option<&str>) -> Agent {
 
     let scope = scope.and_then(Scope::parse_scope).unwrap_or(Scope::Coding);
     agent.set_scope(scope);
+    agent.load_project_context();
 
     #[cfg(feature = "providers")]
     if let Some(provider) = setup_provider() {
