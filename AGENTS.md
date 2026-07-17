@@ -129,12 +129,16 @@ graph LR
 | `model_router.rs` | tiered model routing (lite/standard/heavy/subagent) |
 | `models.rs` | model registry + compat config |
 | `multiagent.rs` | multi-agent coordination (coordinator/worker/reviewer/researcher) |
-| `prompt_cache.rs` | Anthropic ephemeral cache_control |
-| `repomap.rs` | pagerank-ranked symbol extraction |
-| `rollout.rs` | rollout tracking + trace writer |
-| `routing.rs` | smart routing (turn complexity, agent route) |
-| `sandbox.rs` | sandbox config + violation detection |
+| `prompt_cache.rs` | Anthropic ephemeral cache_control (auto on Anthropic provider stream) |
+| `repomap.rs` | pagerank-ranked symbol extraction (host API) |
+| `rollout.rs` | rollout tracking + trace writer (host API) |
+| `routing.rs` | smart routing (host API; not auto inside Agent loop) |
+| `sandbox.rs` | userspace SandboxManager + optional OsSandboxRunner (seatbelt/bwrap) |
 | `subagent.rs` | subagent management (git worktree isolation) |
+
+Host opt-in on `Agent` (0.3.5+): `set_skill_registry`, `set_graph_memory`,
+`enable_os_sandbox` / `set_os_sandbox`, `set_sandbox`. Model router / multiagent
+/ cost are library APIs — hosts choose when to call them. |
 
 ## Agent loop
 

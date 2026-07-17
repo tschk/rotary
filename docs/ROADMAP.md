@@ -21,10 +21,14 @@
 3. [x] Tool effects + parallel tool batches (`JoinSet`, 0.3.3+)
 4. Session export/import (Codex rollout-friendly JSONL)
 5. Consolidation auto-run wiring (host-driven, capability already exists)
+6. [x] Skills/graph host hooks on `Agent` (`set_skill_registry` / `set_graph_memory`, 0.3.5)
+7. [x] Prompt-cache on Anthropic stream path (0.3.5)
+8. [x] OS sandbox wrap for bash (`enable_os_sandbox` seatbelt/bwrap, 0.3.5)
 
 ### P2
-6. Process sandbox backends (seatbelt/bwrap) exposed as policy plugins
-7. Specialist work packs as data (markdown), not named hard-coded agents
+9. OS sandbox as policy-plugin surface (today: explicit `enable_os_sandbox`)
+10. Specialist work packs as data (markdown), not named hard-coded agents
+11. Hosts that reimplement `Provider` (e.g. custom SSE) must call `apply_cache_control` themselves
 
 ## Non-goals
 

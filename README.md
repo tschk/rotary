@@ -114,22 +114,23 @@ flowchart TD
 - **Context compaction** — token-estimate auto-compact via
   `estimate_messages` + `apply_compaction`.
 - **Parallel tool batches** — `JoinSet` for Read/Network; Write/Process serial.
-- **Skill engine** (`skills`) — skills with Beta-Binomial confidence priors;
-  keyword + optional embedding activation.
-- **Background review** (`skills`) — heuristic learning signals (phrase/tool
-  patterns), updates skill confidence/instructions.
-- **Skill curator** (`skills`) — lifecycle Active→Stale→Archived, consolidation.
+- **Skill engine** (`skills`) — Beta-Binomial confidence; keyword + optional
+  embedding activation. Host opt-in: `Agent::set_skill_registry` injects
+  matching skill instructions into the system prompt each turn.
+- **Background review** (`skills`) — heuristic learning signals; host calls
+  `BackgroundReviewer` (not auto-scheduled).
+- **Skill curator** (`skills`) — Active→Stale→Archived; host schedules audits.
 - **Embeddings** (`skills` + `providers`) — Gemini / Ollama semantic matching.
-- **Graph memory** (`graph-memory`) — knowledge graph with pagerank and
-  community detection (keyword extraction + line-prefix code scan).
-- **Dream scheduler** (`graph-memory`) — graph consolidation capability (host
-  schedules).
-- **Model router** — tiered routing (`lite`, `standard`, `heavy`, `subagent`).
-- **Multi-agent coordination** — coordinator/worker/reviewer/researcher roles.
-- **Cost tracking** — per-model pricing registry and session cost accounting.
+- **Graph memory** (`graph-memory`) — pagerank + community detection. Host
+  opt-in: `Agent::set_graph_memory` extracts nodes/edges after each run.
+- **Dream scheduler** (`graph-memory`) — consolidation capability (host runs).
+- **Model router / multi-agent / cost / repo map / rollout** — library APIs for
+  hosts; not auto-selected inside `Agent::prompt`.
 - **Secret redaction** — pattern-based redaction applied to tool results.
-- **Repo map** — pagerank-ranked symbol extraction for codebase context.
-- **Prompt caching** — Anthropic ephemeral `cache_control` helpers.
+- **Prompt caching** — Anthropic `cache_control` applied automatically on
+  `OpenAIProvider` stream bodies when `provider_id == "anthropic"`.
+- **OS sandbox** — optional seatbelt/bwrap wrap for bash via
+  `Agent::enable_os_sandbox` (userspace `SandboxManager` still separate).
 - **Slash command parsing** — `/command` parsing for host UIs.
 - **Guardrails** — empty turn detection, repeated failure detection, tool-effect
   batch planning.

@@ -127,7 +127,10 @@ pub use rollout::{RolloutEntry, RolloutManager, TraceWriter};
 pub use routing::{
     AgentRoute, AgentRouter, RoutingConfig, RoutingStats, SmartRouter, TurnComplexity,
 };
-pub use sandbox::{SandboxConfig, SandboxError, SandboxManager, SandboxProfile, SandboxViolation};
+pub use sandbox::{
+    detect_sandbox, OsSandbox, OsSandboxConfig, OsSandboxRunner, SandboxConfig, SandboxError,
+    SandboxManager, SandboxProfile, SandboxViolation,
+};
 pub use secrets::{
     filter_env_vars, is_sensitive_env_var, RedactionConfig, Redactor, SecretMatch, SecretPattern,
 };
