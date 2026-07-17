@@ -430,3 +430,29 @@ pub enum ProviderError {
     #[error("stream error: {0}")]
     Stream(String),
 }
+
+impl ProviderError {
+    pub fn is_transient(&self) -> bool {
+        match self {
+            Self::Http(_) => true,
+            Self::Api(message) => matches!(
+                message.split_whitespace().next(),
+                Some("408" | "409" | "429" | "500" | "502" | "503" | "504")
+            ),
+            Self::Stream(_) => true,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ProviderError;
+
+    #[test]
+    fn transient_errors_are_retryable() {
+        assert!(ProviderError::Http("reset".into()).is_transient());
+        assert!(ProviderError::Api("429 busy".into()).is_transient());
+        assert!(ProviderError::Api("503 unavailable".into()).is_transient());
+        assert!(!ProviderError::Api("401 unauthorized".into()).is_transient());
+    }
+}

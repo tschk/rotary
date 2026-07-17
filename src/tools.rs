@@ -265,6 +265,12 @@ fn exec_bash(ctx: Arc<ToolContext>, args: String) -> ToolFuture {
 
         let deadline = Instant::now() + Duration::from_secs(timeout_secs);
         loop {
+            #[cfg(feature = "ipc")]
+            if ctx.cancellation.is_canceled() {
+                let _ = child.kill();
+                let _ = child.wait();
+                return ToolResult::err("bash", "command cancelled");
+            }
             match child.try_wait() {
                 Ok(Some(_)) => break,
                 Ok(None) => {
@@ -574,5 +580,17 @@ mod tests {
         let result = exec_bash(ctx, r#"{"command":"sleep 2","timeout":1}"#.to_string()).await;
         assert!(result.is_error);
         assert!(result.content.contains("timed out"));
+    }
+
+    #[cfg(feature = "ipc")]
+    #[tokio::test]
+    async fn test_bash_cancellation() {
+        let source = cancellation_token::CancellationTokenSource::new();
+        let mut ctx = ToolContext::new(".");
+        ctx.cancellation = source.token();
+        source.cancel();
+        let result = exec_bash(Arc::new(ctx), r#"{"command":"sleep 5"}"#.to_string()).await;
+        assert!(result.is_error);
+        assert_eq!(result.content, "command cancelled");
     }
 }

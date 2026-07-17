@@ -22,7 +22,7 @@ use tracing::error;
 use tracing::{debug, info, warn};
 
 #[cfg(feature = "ipc")]
-use cancellation_token::CancellationToken;
+use cancellation_token::{CancellationToken, CancellationTokenSource};
 
 /// Normalize a tool name, translating common pi-style aliases to rx4 native
 /// names. Unknown names pass through unchanged.
@@ -41,6 +41,32 @@ pub fn normalize_tool_name(name: &str) -> &str {
 }
 
 pub type ToolFuture = Pin<Box<dyn Future<Output = ToolResult> + Send>>;
+
+#[cfg(feature = "ipc")]
+#[derive(Clone)]
+pub struct CancellationHandle {
+    source: Arc<RwLock<CancellationTokenSource>>,
+}
+
+#[cfg(feature = "ipc")]
+impl CancellationHandle {
+    fn new() -> Self {
+        Self {
+            source: Arc::new(RwLock::new(CancellationTokenSource::new())),
+        }
+    }
+
+    pub fn cancel(&self) {
+        self.source.read().cancel();
+    }
+
+    fn reset(&self) -> CancellationToken {
+        let source = CancellationTokenSource::new();
+        let token = source.token();
+        *self.source.write() = source;
+        token
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCall {
@@ -300,6 +326,8 @@ pub struct Agent {
     /// When true and graph_memory is set, run one dream consolidation after each prompt.
     #[cfg(feature = "graph-memory")]
     pub auto_dream: bool,
+    #[cfg(feature = "ipc")]
+    turn_cancellation: CancellationHandle,
     subscribers: Vec<Subscriber>,
     pub messages: RwLock<Vec<Message>>,
     tool_cache: Cache<String, ToolResult>,
@@ -330,6 +358,8 @@ impl Agent {
             graph_memory: None,
             #[cfg(feature = "graph-memory")]
             auto_dream: false,
+            #[cfg(feature = "ipc")]
+            turn_cancellation: CancellationHandle::new(),
             subscribers: Vec::new(),
             messages: RwLock::new(Vec::new()),
             tool_cache: Cache::builder()
@@ -387,6 +417,16 @@ impl Agent {
 
     pub fn set_workspace_root(&mut self, path: impl Into<std::path::PathBuf>) {
         self.workspace_root = path.into();
+    }
+
+    #[cfg(feature = "ipc")]
+    pub fn cancel(&self) {
+        self.turn_cancellation.cancel();
+    }
+
+    #[cfg(feature = "ipc")]
+    pub fn cancellation_handle(&self) -> CancellationHandle {
+        self.turn_cancellation.clone()
     }
 
     /// Load project instruction files (AGENTS.md / CLAUDE.md / .cursor/rules)
@@ -488,6 +528,10 @@ impl Agent {
 
         let provider = self.provider.clone().ok_or(AgentError::NoProvider)?;
         let mut tool_ctx = ToolContext::new(self.workspace_root.clone());
+        #[cfg(feature = "ipc")]
+        {
+            tool_ctx.cancellation = self.turn_cancellation.reset();
+        }
         if let Some(sb) = self.sandbox.clone() {
             tool_ctx = tool_ctx.with_sandbox(sb);
         }
@@ -515,17 +559,61 @@ impl Agent {
             {
                 use crate::provider::StreamEvent;
                 use futures::StreamExt;
-                let stream = provider
-                    .stream(&messages, &system, &self.model, &self.tools.definitions())
-                    .await
-                    .map_err(|e| {
-                        error!("provider stream error: {e}");
-                        self.emit(Event::Error(e.to_string()));
-                        AgentError::Provider(e.to_string())
-                    })?;
+                let mut attempts = 0;
+                let stream = loop {
+                    #[cfg(feature = "ipc")]
+                    let result = ctx
+                        .cancellation
+                        .run(provider.stream(
+                            &messages,
+                            &system,
+                            &self.model,
+                            &self.tools.definitions(),
+                        ))
+                        .await
+                        .map_err(|_| AgentError::Cancelled)?;
+                    #[cfg(not(feature = "ipc"))]
+                    let result = provider
+                        .stream(&messages, &system, &self.model, &self.tools.definitions())
+                        .await;
+                    match result {
+                        Ok(stream) => break stream,
+                        Err(e) if e.is_transient() && attempts < 2 => {
+                            attempts += 1;
+                            #[cfg(feature = "ipc")]
+                            ctx.cancellation
+                                .run(tokio::time::sleep(std::time::Duration::from_millis(
+                                    250 * (1 << attempts),
+                                )))
+                                .await
+                                .map_err(|_| AgentError::Cancelled)?;
+                            #[cfg(not(feature = "ipc"))]
+                            tokio::time::sleep(std::time::Duration::from_millis(
+                                250 * (1 << attempts),
+                            ))
+                            .await;
+                        }
+                        Err(e) => {
+                            error!("provider stream error: {e}");
+                            self.emit(Event::Error(e.to_string()));
+                            return Err(AgentError::Provider(e.to_string()));
+                        }
+                    }
+                };
 
                 let mut stream = stream;
-                while let Some(event_result) = stream.next().await {
+                loop {
+                    #[cfg(feature = "ipc")]
+                    let next = ctx
+                        .cancellation
+                        .run(stream.next())
+                        .await
+                        .map_err(|_| AgentError::Cancelled)?;
+                    #[cfg(not(feature = "ipc"))]
+                    let next = stream.next().await;
+                    let Some(event_result) = next else {
+                        break;
+                    };
                     match event_result {
                         Ok(StreamEvent::Delta(delta)) => {
                             assistant_content.push_str(&delta);
@@ -958,6 +1046,16 @@ mod tests {
         assert!(msgs.iter().any(|m| m.content.contains("context compacted")));
         assert!(msgs.iter().any(|m| m.content.contains("recent tail")));
     }
+
+    #[cfg(feature = "ipc")]
+    #[test]
+    fn cancellation_handle_cancels_reset_turn() {
+        let handle = CancellationHandle::new();
+        let external = handle.clone();
+        let token = handle.reset();
+        external.cancel();
+        assert!(token.is_canceled());
+    }
 }
 
 impl Default for Agent {
@@ -974,4 +1072,6 @@ pub enum AgentError {
     Tool(String),
     #[error("no provider configured")]
     NoProvider,
+    #[error("agent cancelled")]
+    Cancelled,
 }
