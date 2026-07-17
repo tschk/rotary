@@ -105,7 +105,14 @@ pub fn authorize(
                 Decision::Ask
             }
         }
-        PermissionMode::WorkspaceWrite => Decision::Allow,
+        PermissionMode::WorkspaceWrite => {
+            // Read + workspace write tools auto-allow; bash/process and other tools Ask.
+            if is_read_only_tool(tool_name) || is_write_tool(tool_name) {
+                Decision::Allow
+            } else {
+                Decision::Ask
+            }
+        }
     };
     if mode_decision == Decision::Ask {
         if let Some(app) = approver {
@@ -135,6 +142,19 @@ fn is_read_only_tool(name: &str) -> bool {
             | "cu_image"
             | "cu_list"
     )
+}
+
+/// Returns true when the tool mutates workspace files (write/edit family).
+pub fn is_write_tool(name: &str) -> bool {
+    matches!(
+        name,
+        "write" | "write_file" | "edit" | "hashline_edit" | "search_replace" | "apply_patch"
+    )
+}
+
+/// Returns true when the tool is a shell/process executor.
+pub fn is_process_tool(name: &str) -> bool {
+    matches!(name, "bash" | "run_command")
 }
 
 #[cfg(test)]
@@ -188,6 +208,30 @@ mod tests {
         assert_eq!(
             authorize(&Policy::read_only(), "write", "{}", Some(&AlwaysDeny)),
             Decision::Deny
+        );
+    }
+
+    #[test]
+    fn workspace_write_allows_edit_asks_bash() {
+        assert_eq!(
+            authorize(&Policy::workspace_write(), "read", "{}", None),
+            Decision::Allow
+        );
+        assert_eq!(
+            authorize(&Policy::workspace_write(), "edit", "{}", None),
+            Decision::Allow
+        );
+        assert_eq!(
+            authorize(&Policy::workspace_write(), "write", "{}", None),
+            Decision::Allow
+        );
+        assert_eq!(
+            authorize(&Policy::workspace_write(), "bash", "{}", None),
+            Decision::Ask
+        );
+        assert_eq!(
+            authorize(&Policy::workspace_write(), "unknown_tool", "{}", None),
+            Decision::Ask
         );
     }
 }

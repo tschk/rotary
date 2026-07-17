@@ -200,9 +200,7 @@ impl Session {
                 };
                 Ok(Entry {
                     id: row.get::<_, i64>(0)? as u64,
-                    parent_id: row
-                        .get::<_, Option<i64>>(1)?
-                        .map(|p| p as u64),
+                    parent_id: row.get::<_, Option<i64>>(1)?.map(|p| p as u64),
                     role,
                     content: row.get(3)?,
                 })

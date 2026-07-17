@@ -5,12 +5,13 @@
 //! parent agent or host. Each subagent has its own config (model, tools,
 //! permissions) and produces a [`SubagentResult`] when it completes.
 //!
-//! The execution itself is mocked in this implementation — `spawn` records the
-//! subagent and immediately transitions it to [`SubagentStatus::Completed`]
-//! with a stub result. A real implementation would wire into `Agent::prompt`
-//! and drive the loop to completion on a background task.
+//! When a [`Provider`] is attached to the manager, spawn drives a real
+//! [`crate::agent::Agent`] loop. Without a provider, the subagent still
+//! records a completed run (prompt accepted, no LLM turns).
 
-use crate::permissions::PermissionMode;
+use crate::agent::{Agent, ToolRegistry};
+use crate::permissions::{PermissionMode, Policy};
+use crate::provider::Provider;
 use chrono::{DateTime, Utc};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
@@ -55,25 +56,19 @@ pub struct SubagentConfig {
     /// Human-readable name for the subagent.
     pub name: String,
     /// Optional system prompt override.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub system_prompt: Option<String>,
-    /// Optional model override.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Optional model id override.
     pub model: Option<String>,
-    /// Maximum agent loop steps before stopping.
+    /// Maximum tool iterations / turns.
     #[serde(default = "default_max_steps")]
     pub max_steps: usize,
-    /// Tool allowlist — if set, only these tools are available.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Optional allowlist of tool names.
     pub allowed_tools: Option<Vec<String>>,
-    /// Tool denylist — these tools are always unavailable.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Optional denylist of tool names.
     pub denied_tools: Option<Vec<String>>,
-    /// Permission mode override.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Optional permission mode for the child agent.
     pub permission_mode: Option<PermissionMode>,
-    /// When true, the subagent runs inside a git worktree at
-    /// `.rx4/worktrees/{id}` instead of the parent workspace.
+    /// When true, create an isolated work directory under `.rx4/worktrees/`.
     #[serde(default)]
     pub workspace_isolation: bool,
 }
@@ -113,9 +108,9 @@ pub struct SubagentResult {
 }
 
 impl SubagentResult {
-    fn mock(prompt: &str) -> Self {
+    fn offline(name: &str, prompt: &str) -> Self {
         Self {
-            output: format!("mock subagent output for prompt: {prompt}"),
+            output: format!("subagent {name} completed offline for prompt: {prompt}"),
             files_modified: vec![],
             tool_calls: 0,
             error: None,
@@ -171,14 +166,9 @@ impl SubagentHandle {
         self.state.lock().worktree_path.clone()
     }
 
-    /// Block asynchronously until the subagent completes and return its
-    /// result.
-    ///
-    /// Because the mock execution is synchronous, this yields once and then
-    /// returns the already-populated result.
+    /// Block asynchronously until the subagent completes and return its result.
     #[cfg(feature = "ipc")]
     pub async fn wait(&self) -> SubagentResult {
-        tokio::task::yield_now().await;
         loop {
             {
                 let guard = self.state.lock();
@@ -195,6 +185,7 @@ impl SubagentHandle {
                 }
             }
             tokio::task::yield_now().await;
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
         }
     }
 
@@ -219,9 +210,20 @@ impl SubagentHandle {
 }
 
 /// Manages the lifecycle of a collection of subagents.
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct SubagentManager {
     subagents: HashMap<String, SubagentHandle>,
+    provider: Option<Arc<dyn Provider>>,
+    tools: Option<Arc<ToolRegistry>>,
+}
+
+impl std::fmt::Debug for SubagentManager {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SubagentManager")
+            .field("subagents", &self.subagents.len())
+            .field("has_provider", &self.provider.is_some())
+            .finish()
+    }
 }
 
 impl SubagentManager {
@@ -230,14 +232,26 @@ impl SubagentManager {
         Self::default()
     }
 
+    /// Attach a provider so spawned subagents run a real agent loop.
+    pub fn with_provider(mut self, provider: Arc<dyn Provider>) -> Self {
+        self.provider = Some(provider);
+        self
+    }
+
+    /// Attach a tool registry for child agents.
+    pub fn with_tools(mut self, tools: Arc<ToolRegistry>) -> Self {
+        self.tools = Some(tools);
+        self
+    }
+
     /// Spawn a new subagent with the given config and prompt.
     ///
-    /// If `config.workspace_isolation` is true, a git worktree is created at
-    /// `.rx4/worktrees/{id}` inside `parent_workspace` before the subagent
-    /// starts. The worktree is cleaned up when the subagent completes.
+    /// If `config.workspace_isolation` is true, a work directory is created at
+    /// `.rx4/worktrees/{id}` inside `parent_workspace`.
     ///
-    /// Execution is mocked — the subagent transitions directly to
-    /// [`SubagentStatus::Completed`] with a stub result.
+    /// When a provider is configured, runs [`Agent::prompt`] (blocking the
+    /// current thread via a temporary runtime if needed). Otherwise completes
+    /// offline with the prompt recorded in the result.
     pub fn spawn(
         &mut self,
         config: SubagentConfig,
@@ -250,6 +264,10 @@ impl SubagentManager {
         } else {
             None
         };
+
+        let workspace = worktree_path
+            .clone()
+            .unwrap_or_else(|| parent_workspace.to_path_buf());
 
         let state = Arc::new(Mutex::new(SubagentState {
             id: id.clone(),
@@ -266,8 +284,104 @@ impl SubagentManager {
         };
 
         handle.transition(SubagentStatus::Running, None);
-        let result = SubagentResult::mock(prompt);
-        handle.transition(SubagentStatus::Completed, Some(result));
+
+        let result = if let Some(provider) = self.provider.clone() {
+            match run_agent_subagent(provider, self.tools.clone(), &config, prompt, &workspace) {
+                Ok(r) => {
+                    handle.transition(SubagentStatus::Completed, Some(r.clone()));
+                    r
+                }
+                Err(e) => {
+                    let r = SubagentResult {
+                        output: String::new(),
+                        files_modified: vec![],
+                        tool_calls: 0,
+                        error: Some(e),
+                    };
+                    handle.transition(SubagentStatus::Failed, Some(r.clone()));
+                    r
+                }
+            }
+        } else {
+            let r = SubagentResult::offline(&config.name, prompt);
+            handle.transition(SubagentStatus::Completed, Some(r.clone()));
+            r
+        };
+
+        let _ = result;
+
+        if let Some(path) = worktree_path {
+            let _ = self.cleanup_worktree(&path);
+        }
+
+        self.subagents.insert(id, handle.clone());
+        Ok(handle)
+    }
+
+    /// Async spawn that runs the agent loop on the current runtime.
+    #[cfg(feature = "ipc")]
+    pub async fn spawn_async(
+        &mut self,
+        config: SubagentConfig,
+        prompt: &str,
+        parent_workspace: &Path,
+    ) -> Result<SubagentHandle, SubagentError> {
+        let id = Uuid::new_v4().to_string();
+        let worktree_path = if config.workspace_isolation {
+            Some(self.create_worktree(&id, parent_workspace)?)
+        } else {
+            None
+        };
+        let workspace = worktree_path
+            .clone()
+            .unwrap_or_else(|| parent_workspace.to_path_buf());
+
+        let state = Arc::new(Mutex::new(SubagentState {
+            id: id.clone(),
+            name: config.name.clone(),
+            status: SubagentStatus::Pending,
+            result: None,
+            worktree_path: worktree_path.clone(),
+            spawned_at: Utc::now(),
+        }));
+        let handle = SubagentHandle {
+            id: id.clone(),
+            name: config.name.clone(),
+            state,
+        };
+        handle.transition(SubagentStatus::Running, None);
+
+        let result = if let Some(provider) = self.provider.clone() {
+            match run_agent_subagent_async(
+                provider,
+                self.tools.clone(),
+                &config,
+                prompt,
+                &workspace,
+            )
+            .await
+            {
+                Ok(r) => {
+                    handle.transition(SubagentStatus::Completed, Some(r.clone()));
+                    r
+                }
+                Err(e) => {
+                    let r = SubagentResult {
+                        output: String::new(),
+                        files_modified: vec![],
+                        tool_calls: 0,
+                        error: Some(e),
+                    };
+                    handle.transition(SubagentStatus::Failed, Some(r.clone()));
+                    r
+                }
+            }
+        } else {
+            let r = SubagentResult::offline(&config.name, prompt);
+            handle.transition(SubagentStatus::Completed, Some(r.clone()));
+            r
+        };
+        let _ = result;
 
         if let Some(path) = worktree_path {
             let _ = self.cleanup_worktree(&path);
@@ -297,11 +411,8 @@ impl SubagentManager {
             let guard = handle.state.lock();
             if matches!(
                 guard.status,
-                SubagentStatus::Completed | SubagentStatus::Failed
+                SubagentStatus::Completed | SubagentStatus::Failed | SubagentStatus::Cancelled
             ) {
-                return Ok(());
-            }
-            if matches!(guard.status, SubagentStatus::Cancelled) {
                 return Ok(());
             }
         }
@@ -309,8 +420,7 @@ impl SubagentManager {
         Ok(())
     }
 
-    /// Wait for all subagents to complete and return their results in
-    /// insertion order.
+    /// Wait for all subagents to complete and return their results.
     #[cfg(feature = "ipc")]
     pub async fn wait_all(&self) -> Vec<SubagentResult> {
         let mut results = Vec::with_capacity(self.subagents.len());
@@ -339,6 +449,120 @@ impl SubagentManager {
         std::fs::remove_dir_all(path)
             .map_err(|e| SubagentError::GitError(format!("remove worktree dir: {e}")))
     }
+}
+
+fn policy_from_config(config: &SubagentConfig) -> Policy {
+    let mut policy = match config
+        .permission_mode
+        .unwrap_or(PermissionMode::WorkspaceWrite)
+    {
+        PermissionMode::FullAccess => Policy::full_access(),
+        PermissionMode::ReadOnly => Policy::read_only(),
+        PermissionMode::WorkspaceWrite => Policy::workspace_write(),
+        PermissionMode::DenyAll => Policy::deny_all(),
+    };
+    if let Some(allow) = &config.allowed_tools {
+        policy.allowlist = allow.clone();
+    }
+    if let Some(deny) = &config.denied_tools {
+        policy.denylist = deny.clone();
+    }
+    policy
+}
+
+fn build_child_agent(
+    provider: Arc<dyn Provider>,
+    tools: Option<Arc<ToolRegistry>>,
+    config: &SubagentConfig,
+    workspace: &Path,
+) -> Agent {
+    let mut agent = Agent::new();
+    agent.set_provider(provider);
+    if let Some(model) = &config.model {
+        agent.set_model(model.clone());
+    }
+    if let Some(sys) = &config.system_prompt {
+        agent.set_system_prompt(sys.clone());
+    }
+    agent.max_tool_iterations = config.max_steps.max(1);
+    agent.set_policy(policy_from_config(config));
+    agent.set_workspace_root(workspace);
+    if let Some(tools) = tools {
+        // ToolRegistry is not Clone; rebuild empty and let host pass Arc only.
+        // When Arc tools provided, set via clone of Arc if Agent accepts Arc.
+        agent.tools = tools;
+    }
+    agent
+}
+
+fn run_agent_subagent(
+    provider: Arc<dyn Provider>,
+    tools: Option<Arc<ToolRegistry>>,
+    config: &SubagentConfig,
+    prompt: &str,
+    workspace: &Path,
+) -> Result<SubagentResult, String> {
+    let config = config.clone();
+    let prompt = prompt.to_string();
+    let workspace = workspace.to_path_buf();
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| e.to_string())?;
+        rt.block_on(async move {
+            let mut agent = build_child_agent(provider, tools, &config, &workspace);
+            agent.prompt(&prompt).await.map_err(|e| e.to_string())?;
+            let messages = agent.messages.read().clone();
+            let tool_calls = messages
+                .iter()
+                .filter(|m| m.role == crate::provider::Role::Tool)
+                .count();
+            let output = messages
+                .iter()
+                .rev()
+                .find(|m| m.role == crate::provider::Role::Assistant)
+                .map(|m| m.content.clone())
+                .unwrap_or_default();
+            Ok(SubagentResult {
+                output,
+                files_modified: vec![],
+                tool_calls,
+                error: None,
+            })
+        })
+    })
+    .join()
+    .map_err(|_| "subagent thread panicked".to_string())?
+}
+
+#[cfg(feature = "ipc")]
+async fn run_agent_subagent_async(
+    provider: Arc<dyn Provider>,
+    tools: Option<Arc<ToolRegistry>>,
+    config: &SubagentConfig,
+    prompt: &str,
+    workspace: &Path,
+) -> Result<SubagentResult, String> {
+    let mut agent = build_child_agent(provider, tools, config, workspace);
+    agent.prompt(prompt).await.map_err(|e| e.to_string())?;
+    let messages = agent.messages.read().clone();
+    let tool_calls = messages
+        .iter()
+        .filter(|m| m.role == crate::provider::Role::Tool)
+        .count();
+    let output = messages
+        .iter()
+        .rev()
+        .find(|m| m.role == crate::provider::Role::Assistant)
+        .map(|m| m.content.clone())
+        .unwrap_or_default();
+    Ok(SubagentResult {
+        output,
+        files_modified: vec![],
+        tool_calls,
+        error: None,
+    })
 }
 
 #[cfg(test)]
@@ -444,7 +668,7 @@ mod tests {
         assert_eq!(handle.status(), SubagentStatus::Running);
         handle.transition(
             SubagentStatus::Completed,
-            Some(SubagentResult::mock("done")),
+            Some(SubagentResult::offline("x", "done")),
         );
         assert_eq!(handle.status(), SubagentStatus::Completed);
         assert!(handle.result().is_some());

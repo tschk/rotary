@@ -94,8 +94,8 @@ graph LR
 
 | File | Responsibility |
 |---|---|
-| `agent.rs` | event-driven loop, tool registry, streaming, parallel tool execution |
-| `provider.rs` | multi-provider OpenAI-compatible client, websocket prewarming |
+| `agent.rs` | event-driven loop, tool registry, streaming, JoinSet parallel tool batches |
+| `provider.rs` | multi-provider OpenAI-compatible client, HTTP connection prewarm |
 | `tools.rs` | built-in FS/shell/find tools (7) |
 | `session.rs` | session tree (fork/merge) + JSONL persistence |
 | `permissions.rs` | policy pattern, allow/deny, host approver |
@@ -112,8 +112,8 @@ graph LR
 | `plugin.rs` | plugin registry |
 | `acp.rs` | ACP host |
 | `lsp.rs` | LSP manager (diagnostics, references, definition) |
-| `skill_engine.rs` | self-improving skill engine (bayesian confidence) — `skills` feature |
-| `background_review.rs` | background review loop — observe turns, distill learning signals — `skills` feature |
+| `skill_engine.rs` | skill engine (Beta-Binomial confidence, keyword/semantic activate) — `skills` feature |
+| `background_review.rs` | background review loop — heuristic learning signals from turns — `skills` feature |
 | `skill_curator.rs` | skill lifecycle curator — Active→Stale→Archived, consolidation — `skills` feature |
 | `dream_scheduler.rs` | dream cycle runner — graph consolidation capability (host schedules) — `graph-memory` feature |
 | `embeddings.rs` | vector embeddings for semantic skill matching (Gemini / Ollama) — `skills` feature |

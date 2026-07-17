@@ -18,7 +18,7 @@
 2. **Approval UX hooks for hosts** — richer `ask` payloads (Codex approvals)
 
 ### P1
-3. Tool effects + parallel tool batches
+3. [x] Tool effects + parallel tool batches (`JoinSet`, 0.3.3+)
 4. Session export/import (Codex rollout-friendly JSONL)
 5. Consolidation auto-run wiring (host-driven, capability already exists)
 

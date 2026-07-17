@@ -216,10 +216,7 @@ pub fn sanitize_plugin_name(name: &str) -> Result<&str, MarketplaceError> {
             "invalid plugin name: {name}"
         )));
     }
-    if name.starts_with('/')
-        || name.starts_with('\\')
-        || name.contains('/')
-        || name.contains('\\')
+    if name.starts_with('/') || name.starts_with('\\') || name.contains('/') || name.contains('\\')
     {
         return Err(MarketplaceError::InstallFailed(format!(
             "invalid plugin name: {name}"
@@ -477,7 +474,8 @@ pub fn verify_plugin_integrity(path: &Path, expected_sha256: &str) -> Result<(),
 /// SHA-256 digest. Directory entries are visited in sorted order so the
 /// result is deterministic. Subdirectories named `.git` are skipped so that
 /// a cloned repository's metadata does not affect the content hash.
-fn compute_dir_sha256(path: &Path) -> Result<String, MarketplaceError> {
+/// Compute a stable directory hash used for plugin integrity checks.
+pub fn compute_dir_sha256(path: &Path) -> Result<String, MarketplaceError> {
     let mut hasher = Sha256::new();
     let mut entries: Vec<PathBuf> = std::fs::read_dir(path)
         .map_err(|e| MarketplaceError::InstallFailed(e.to_string()))?
@@ -749,10 +747,7 @@ mod tests {
         let mut manifest = sample_manifest();
         manifest.sha256 = Some("deadbeef".to_string());
         let err = installer
-            .install(
-                &manifest,
-                tmp.path().join("missing").to_str().unwrap(),
-            )
+            .install(&manifest, tmp.path().join("missing").to_str().unwrap())
             .unwrap_err();
         assert!(matches!(err, MarketplaceError::InstallFailed(_)));
     }

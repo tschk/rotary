@@ -2,8 +2,10 @@
 //! Uses rayon for parallel search (grok pattern).
 
 use crate::agent::{ToolContext, ToolDefinition, ToolEffect, ToolFuture, ToolRegistry, ToolResult};
-use std::process::Command;
+use std::io::Read;
+use std::process::{Command, Stdio};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tracing::debug;
 
 #[cfg(feature = "builtin-tools")]
@@ -85,13 +87,17 @@ fn parse_num_field(args: &str, field: &str) -> Option<u64> {
     v.get(field)?.as_u64()
 }
 
-fn resolve_path(ctx: &ToolContext, path: &str) -> std::path::PathBuf {
+fn resolve_path(ctx: &ToolContext, path: &str, write: bool) -> Result<std::path::PathBuf, String> {
     let p = std::path::PathBuf::from(path);
-    if p.is_absolute() {
+    let full = if p.is_absolute() {
         p
     } else {
         ctx.workspace_root.join(p)
+    };
+    if let Some(sb) = ctx.sandbox.as_ref() {
+        sb.validate_path(&full, write).map_err(|e| e.to_string())?;
     }
+    Ok(full)
 }
 
 fn exec_read(ctx: Arc<ToolContext>, args: String) -> ToolFuture {
@@ -103,7 +109,10 @@ fn exec_read(ctx: Arc<ToolContext>, args: String) -> ToolFuture {
         let offset = parse_num_field(&args, "offset").unwrap_or(0) as usize;
         let limit = parse_num_field(&args, "limit").unwrap_or(2000) as usize;
 
-        let full = resolve_path(&ctx, &path);
+        let full = match resolve_path(&ctx, &path, false) {
+            Ok(p) => p,
+            Err(e) => return ToolResult::err("read", e),
+        };
         match std::fs::read_to_string(&full) {
             Ok(content) => {
                 let lines: Vec<&str> = content.lines().collect();
@@ -133,7 +142,10 @@ fn exec_write(ctx: Arc<ToolContext>, args: String) -> ToolFuture {
             Some(c) => c,
             None => return ToolResult::err("write", "content required"),
         };
-        let full = resolve_path(&ctx, &path);
+        let full = match resolve_path(&ctx, &path, true) {
+            Ok(p) => p,
+            Err(e) => return ToolResult::err("write", e),
+        };
         if let Some(parent) = full.parent() {
             if !parent.exists() {
                 if let Err(e) = std::fs::create_dir_all(parent) {
@@ -168,7 +180,10 @@ fn exec_edit(ctx: Arc<ToolContext>, args: String) -> ToolFuture {
             Some(s) => s,
             None => return ToolResult::err("edit", "new_string required"),
         };
-        let full = resolve_path(&ctx, &path);
+        let full = match resolve_path(&ctx, &path, true) {
+            Ok(p) => p,
+            Err(e) => return ToolResult::err("edit", e),
+        };
         let content = match std::fs::read_to_string(&full) {
             Ok(c) => c,
             Err(e) => return ToolResult::err("edit", format!("read failed: {e}")),
@@ -200,6 +215,26 @@ fn exec_bash(ctx: Arc<ToolContext>, args: String) -> ToolFuture {
         let cwd = parse_str_field(&args, "cwd");
         let timeout_secs = parse_num_field(&args, "timeout").unwrap_or(120);
 
+        if let Some(sb) = ctx.sandbox.as_ref() {
+            if let Err(e) = sb.validate_command(&command) {
+                return ToolResult::err("bash", e.to_string());
+            }
+        }
+
+        let working_dir = if let Some(cwd) = cwd {
+            match resolve_path(&ctx, &cwd, false) {
+                Ok(p) => p,
+                Err(e) => return ToolResult::err("bash", e),
+            }
+        } else if let Some(sb) = ctx.sandbox.as_ref() {
+            if let Err(e) = sb.validate_path(&ctx.workspace_root, false) {
+                return ToolResult::err("bash", e.to_string());
+            }
+            ctx.workspace_root.clone()
+        } else {
+            ctx.workspace_root.clone()
+        };
+
         let mut cmd = if cfg!(target_os = "windows") {
             let mut c = Command::new("cmd");
             c.arg("/C").arg(&command);
@@ -210,40 +245,65 @@ fn exec_bash(ctx: Arc<ToolContext>, args: String) -> ToolFuture {
             c
         };
 
-        let working_dir = if let Some(cwd) = cwd {
-            resolve_path(&ctx, &cwd)
-        } else {
-            ctx.workspace_root.clone()
-        };
-        cmd.current_dir(&working_dir);
+        cmd.current_dir(&working_dir)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
 
-        let output = cmd.output();
-        match output {
-            Ok(out) => {
-                let stdout = String::from_utf8_lossy(&out.stdout).to_string();
-                let stderr = String::from_utf8_lossy(&out.stderr).to_string();
-                let exit_code = out.status.code().unwrap_or(-1);
-                let mut result = String::new();
-                if !stdout.is_empty() {
-                    result.push_str(&stdout);
-                }
-                if !stderr.is_empty() {
-                    if !result.is_empty() {
-                        result.push_str("\n--- stderr ---\n");
+        let mut child = match cmd.spawn() {
+            Ok(c) => c,
+            Err(e) => return ToolResult::err("bash", format!("failed to execute: {e}")),
+        };
+
+        let deadline = Instant::now() + Duration::from_secs(timeout_secs);
+        loop {
+            match child.try_wait() {
+                Ok(Some(_)) => break,
+                Ok(None) => {
+                    if Instant::now() >= deadline {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        return ToolResult::err(
+                            "bash",
+                            format!("command timed out after {timeout_secs}s"),
+                        );
                     }
-                    result.push_str(&stderr);
+                    std::thread::sleep(Duration::from_millis(10));
                 }
-                if exit_code != 0 {
-                    result.push_str(&format!("\n(exit code: {exit_code})"));
-                }
-                if result.is_empty() {
-                    result = "(no output)".to_string();
-                }
-                let _ = timeout_secs;
-                ToolResult::ok("bash", result)
+                Err(e) => return ToolResult::err("bash", format!("wait failed: {e}")),
             }
-            Err(e) => ToolResult::err("bash", format!("failed to execute: {e}")),
         }
+
+        let mut stdout = String::new();
+        let mut stderr = String::new();
+        if let Some(mut out) = child.stdout.take() {
+            let mut buf = Vec::new();
+            let _ = out.read_to_end(&mut buf);
+            stdout = String::from_utf8_lossy(&buf).to_string();
+        }
+        if let Some(mut err) = child.stderr.take() {
+            let mut buf = Vec::new();
+            let _ = err.read_to_end(&mut buf);
+            stderr = String::from_utf8_lossy(&buf).to_string();
+        }
+        let exit_code = child.wait().ok().and_then(|s| s.code()).unwrap_or(-1);
+
+        let mut result = String::new();
+        if !stdout.is_empty() {
+            result.push_str(&stdout);
+        }
+        if !stderr.is_empty() {
+            if !result.is_empty() {
+                result.push_str("\n--- stderr ---\n");
+            }
+            result.push_str(&stderr);
+        }
+        if exit_code != 0 {
+            result.push_str(&format!("\n(exit code: {exit_code})"));
+        }
+        if result.is_empty() {
+            result = "(no output)".to_string();
+        }
+        ToolResult::ok("bash", result)
     })
 }
 
@@ -256,7 +316,10 @@ fn exec_grep(ctx: Arc<ToolContext>, args: String) -> ToolFuture {
         let path = parse_str_field(&args, "path").unwrap_or_else(|| ".".to_string());
         let context = parse_num_field(&args, "context").unwrap_or(0) as usize;
 
-        let full = resolve_path(&ctx, &path);
+        let full = match resolve_path(&ctx, &path, false) {
+            Ok(p) => p,
+            Err(e) => return ToolResult::err("grep", e),
+        };
 
         #[cfg(feature = "builtin-tools")]
         {
@@ -326,7 +389,10 @@ fn exec_find(ctx: Arc<ToolContext>, args: String) -> ToolFuture {
             None => return ToolResult::err("find", "pattern required"),
         };
         let path = parse_str_field(&args, "path").unwrap_or_else(|| ".".to_string());
-        let full = resolve_path(&ctx, &path);
+        let full = match resolve_path(&ctx, &path, false) {
+            Ok(p) => p,
+            Err(e) => return ToolResult::err("find", e),
+        };
 
         #[cfg(feature = "builtin-tools")]
         {
@@ -370,7 +436,10 @@ fn exec_ls(ctx: Arc<ToolContext>, args: String) -> ToolFuture {
             Some(p) => p,
             None => return ToolResult::err("ls", "path required"),
         };
-        let full = resolve_path(&ctx, &path);
+        let full = match resolve_path(&ctx, &path, false) {
+            Ok(p) => p,
+            Err(e) => return ToolResult::err("ls", e),
+        };
         match std::fs::read_dir(&full) {
             Ok(entries) => {
                 let mut items: Vec<(String, bool)> = entries
@@ -486,5 +555,15 @@ mod tests {
         let result = exec_bash(ctx, r#"{"command":"echo hello"}"#.to_string()).await;
         assert!(!result.is_error);
         assert!(result.content.contains("hello"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_bash_timeout() {
+        let tmp = TempDir::new().unwrap();
+        let ctx = Arc::new(ToolContext::new(tmp.path()));
+        let result = exec_bash(ctx, r#"{"command":"sleep 2","timeout":1}"#.to_string()).await;
+        assert!(result.is_error);
+        assert!(result.content.contains("timed out"));
     }
 }

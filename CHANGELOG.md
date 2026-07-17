@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.3.4] — 2026-07-17
+
+### Added
+- Tool sandbox wiring on builtin FS/bash paths; real bash timeouts
+- IPC Unix socket mode `0o600` + optional `RX4_IPC_TOKEN` gate
+- Marketplace: name sanitization, install blocklist, required sha256
+- Session SQLite save/load (`sqlite-sessions`)
+- ACP JSON-RPC host (`initialize`, `session/*`)
+- Plugin registry loads marketplace installs / plugin dirs
+- Subagent manager runs real `Agent::prompt` when a provider is attached
+- `Agent::load_project_context` merges AGENTS.md into system prompt
+
+### Changed
+- Default policy is `workspace_write` (process tools Ask)
+- Tool cache only for `ToolEffect::Read`; Write/Process invalidate cache
+- Tool results redacted via `secrets::Redactor`
+
 ## [0.3.3] — 2026-03-16
 
 ### Added
@@ -17,28 +34,26 @@
 ### Added
 - Computer-use tools (13 cu_* tools via rs_peekaboo)
 - MCP client (JSON-RPC 2.0 over stdio, rmcp)
-- Pi protocol compatibility (JSONL v3, RPC, tool mapping, extensions)
 - Memory module (SQLite-backed)
 - Graph memory (knowledge graph with pagerank)
-- Skill engine (self-improving, bayesian confidence)
+- Skill engine (self-improving, Beta-Binomial confidence)
 - Model router (tiered routing)
 - Multi-agent coordination (coordinator/worker/reviewer/researcher)
 - Cost tracking (per-model pricing)
-- Secret redaction
+- Secret redaction module
 - Repo map (pagerank-ranked symbols)
-- Prompt caching (Anthropic ephemeral)
+- Prompt caching helpers (Anthropic ephemeral)
 - Guardrails (empty turn, repeated failure detection)
-- Subagent manager (git worktree isolation)
+- Subagent manager (workspace isolation)
 - LSP client
-- ACP host
-- Plugin registry + marketplace
+- ACP / plugin / marketplace scaffolding (filled out in 0.3.4)
 - Context compaction (auto-compact)
 - Structured extraction (JSON contracts)
 - Slash command parsing
 
 ### Changed
-- Default features now include pi-compat
-- MSRV: 1.75
+- Pi protocol compatibility moved to host (telekinesis); not a rotary feature
+- MSRV: 1.88
 
 ## [0.2.0] — 2024-12
 

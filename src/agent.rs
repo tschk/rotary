@@ -78,6 +78,7 @@ pub struct ToolContext {
     pub workspace_root: std::path::PathBuf,
     #[cfg(feature = "ipc")]
     pub cancellation: CancellationToken,
+    pub sandbox: Option<std::sync::Arc<crate::sandbox::SandboxManager>>,
 }
 
 impl ToolContext {
@@ -86,7 +87,13 @@ impl ToolContext {
             workspace_root: workspace_root.into(),
             #[cfg(feature = "ipc")]
             cancellation: CancellationToken::new(false),
+            sandbox: None,
         }
+    }
+
+    pub fn with_sandbox(mut self, sb: Arc<crate::sandbox::SandboxManager>) -> Self {
+        self.sandbox = Some(sb);
+        self
     }
 }
 
@@ -262,6 +269,7 @@ pub struct Agent {
     pub max_tool_iterations: usize,
     pub auto_compact_after: usize,
     pub workspace_root: std::path::PathBuf,
+    pub sandbox: Option<Arc<crate::sandbox::SandboxManager>>,
     subscribers: Vec<Subscriber>,
     pub messages: RwLock<Vec<Message>>,
     tool_cache: Cache<String, ToolResult>,
@@ -273,7 +281,7 @@ impl Agent {
             model: "gpt-4o".into(),
             system_prompt: None,
             tools: Arc::new(ToolRegistry::new()),
-            policy: Policy::full_access(),
+            policy: Policy::workspace_write(),
             scope: Scope::Coding,
             scope_profile: None,
             hooks: None,
@@ -282,6 +290,7 @@ impl Agent {
             max_tool_iterations: 50,
             auto_compact_after: 80,
             workspace_root: std::env::current_dir().unwrap_or_else(|_| ".".into()),
+            sandbox: None,
             subscribers: Vec::new(),
             messages: RwLock::new(Vec::new()),
             tool_cache: Cache::builder()
@@ -333,6 +342,21 @@ impl Agent {
         self.workspace_root = path.into();
     }
 
+    /// Load project instruction files (AGENTS.md / CLAUDE.md / .cursor/rules)
+    /// from `workspace_root` and merge into the system prompt.
+    pub fn load_project_context(&mut self) {
+        if let Some(instr) = crate::context::load_project_instructions(&self.workspace_root) {
+            self.system_prompt = crate::context::compose_system_prompt(
+                self.system_prompt.as_deref(),
+                &instr.content,
+            );
+        }
+    }
+
+    pub fn set_sandbox(&mut self, sb: Arc<crate::sandbox::SandboxManager>) {
+        self.sandbox = Some(sb);
+    }
+
     pub fn subscribe(&mut self, callback: impl Fn(&Event) + Send + Sync + 'static) {
         self.subscribers.push(Arc::new(callback));
     }
@@ -366,7 +390,11 @@ impl Agent {
         self.emit(Event::AgentStart);
 
         let provider = self.provider.clone().ok_or(AgentError::NoProvider)?;
-        let ctx = Arc::new(ToolContext::new(self.workspace_root.clone()));
+        let mut tool_ctx = ToolContext::new(self.workspace_root.clone());
+        if let Some(sb) = self.sandbox.clone() {
+            tool_ctx = tool_ctx.with_sandbox(sb);
+        }
+        let ctx = Arc::new(tool_ctx);
 
         for iteration in 0..self.max_tool_iterations {
             self.emit(Event::TurnStart { turn: iteration });
@@ -579,19 +607,32 @@ impl Agent {
             Decision::Deny => ToolResult::err(&call.id, "denied by policy"),
             Decision::Ask => ToolResult::err(&call.id, "approval required"),
             Decision::Allow => {
+                let effect = tools.effect_of(&resolved_name);
                 let cache_key = format!("{}:{}", resolved_name, call.arguments);
-                if let Some(cached) = tool_cache.get(&cache_key).await {
-                    debug!("tool cache hit: {}", resolved_name);
-                    return ToolResult::ok(&call.id, cached.content);
+                if effect == ToolEffect::Read {
+                    if let Some(cached) = tool_cache.get(&cache_key).await {
+                        debug!("tool cache hit: {}", resolved_name);
+                        return ToolResult::ok(&call.id, cached.content);
+                    }
                 }
 
-                let result = match tools.execute(&resolved_name, ctx, &call.arguments).await {
+                let mut result = match tools.execute(&resolved_name, ctx, &call.arguments).await {
                     Some(r) => r,
                     None => ToolResult::err(&call.id, format!("unknown tool: {}", call.name)),
                 };
 
+                result.content = crate::secrets::Redactor::new().redact(&result.content);
+
                 if !result.is_error {
-                    tool_cache.insert(cache_key, result.clone()).await;
+                    match effect {
+                        ToolEffect::Read => {
+                            tool_cache.insert(cache_key, result.clone()).await;
+                        }
+                        ToolEffect::Write | ToolEffect::Process => {
+                            tool_cache.invalidate_all();
+                        }
+                        ToolEffect::Network => {}
+                    }
                 }
 
                 result
@@ -668,6 +709,69 @@ mod tests {
         assert!(results.iter().all(|r| !r.is_error));
         assert_eq!(PARALLEL_DELAY_CALLS.load(Ordering::SeqCst), 2);
         assert!(start.elapsed() < Duration::from_millis(70));
+    }
+
+    static CACHE_READ_CALLS: AtomicUsize = AtomicUsize::new(0);
+    static CACHE_WRITE_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+    #[tokio::test]
+    async fn cache_not_used_for_write_effect() {
+        CACHE_READ_CALLS.store(0, Ordering::SeqCst);
+        CACHE_WRITE_CALLS.store(0, Ordering::SeqCst);
+        let mut registry = ToolRegistry::new();
+        registry.register(
+            ToolDefinition::new_boxed(
+                "r",
+                "read",
+                "{}",
+                Box::new(|_ctx, _args| {
+                    Box::pin(async {
+                        CACHE_READ_CALLS.fetch_add(1, Ordering::SeqCst);
+                        ToolResult::ok("id", "data")
+                    })
+                }),
+            )
+            .with_effect(ToolEffect::Read),
+        );
+        registry.register(
+            ToolDefinition::new_boxed(
+                "w",
+                "write",
+                "{}",
+                Box::new(|_ctx, _args| {
+                    Box::pin(async {
+                        CACHE_WRITE_CALLS.fetch_add(1, Ordering::SeqCst);
+                        ToolResult::ok("id", "wrote")
+                    })
+                }),
+            )
+            .with_effect(ToolEffect::Write),
+        );
+        let mut agent = Agent::new();
+        agent.set_tools(registry);
+        agent.set_policy(Policy::full_access());
+        let ctx = Arc::new(ToolContext::new("."));
+        let read_call = ToolCall {
+            id: "1".into(),
+            name: "r".into(),
+            arguments: "{}".into(),
+        };
+        let write_call = ToolCall {
+            id: "2".into(),
+            name: "w".into(),
+            arguments: "{}".into(),
+        };
+
+        agent.execute_single_tool(&read_call, &ctx).await;
+        agent.execute_single_tool(&read_call, &ctx).await;
+        assert_eq!(CACHE_READ_CALLS.load(Ordering::SeqCst), 1);
+
+        agent.execute_single_tool(&write_call, &ctx).await;
+        agent.execute_single_tool(&write_call, &ctx).await;
+        assert_eq!(CACHE_WRITE_CALLS.load(Ordering::SeqCst), 2);
+
+        agent.execute_single_tool(&read_call, &ctx).await;
+        assert_eq!(CACHE_READ_CALLS.load(Ordering::SeqCst), 2);
     }
 
     #[test]

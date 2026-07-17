@@ -106,31 +106,40 @@ flowchart TD
   [rs_peekaboo](https://crates.io/crates/rs_peekaboo) — native Rust, no FFI.
 - **MCP client** — JSON-RPC 2.0 over stdio; tools prefixed
   `mcp__{server}__{tool}`.
-- **Session tree** — fork/merge with JSONL and SQLite persistence.
-- **Permission system** — `Policy` + `Approver`, allow/deny/ask decisions.
+- **Session tree** — fork/merge with JSONL persistence; optional SQLite via
+  `sqlite-sessions` (`save_sqlite` / `load_sqlite`).
+- **Permission system** — `Policy` + `Approver`; default mode is
+  `workspace_write` (process tools require approval).
 - **Lifecycle hooks** — pluggable hook registry around the agent loop.
-- **Context compaction** — auto-compact when the context window fills.
-- **Skill engine** — self-improving skills with bayesian confidence scoring.
-- **Background review** — observes turns, distills learning signals, updates
-  skills.
-- **Skill curator** — lifecycle management (Active→Stale→Archived),
-  consolidation.
-- **Embeddings** — semantic skill matching (Gemini / Ollama).
-- **Graph memory** — knowledge graph with pagerank and community detection.
-- **Dream scheduler** — graph consolidation capability (host schedules).
+- **Context compaction** — token-estimate auto-compact via
+  `estimate_messages` + `apply_compaction`.
+- **Parallel tool batches** — `JoinSet` for Read/Network; Write/Process serial.
+- **Skill engine** (`skills`) — skills with Beta-Binomial confidence priors;
+  keyword + optional embedding activation.
+- **Background review** (`skills`) — heuristic learning signals (phrase/tool
+  patterns), updates skill confidence/instructions.
+- **Skill curator** (`skills`) — lifecycle Active→Stale→Archived, consolidation.
+- **Embeddings** (`skills` + `providers`) — Gemini / Ollama semantic matching.
+- **Graph memory** (`graph-memory`) — knowledge graph with pagerank and
+  community detection (keyword extraction + line-prefix code scan).
+- **Dream scheduler** (`graph-memory`) — graph consolidation capability (host
+  schedules).
 - **Model router** — tiered routing (`lite`, `standard`, `heavy`, `subagent`).
 - **Multi-agent coordination** — coordinator/worker/reviewer/researcher roles.
 - **Cost tracking** — per-model pricing registry and session cost accounting.
-- **Secret redaction** — pattern-based redaction of secrets and sensitive env vars.
+- **Secret redaction** — pattern-based redaction applied to tool results.
 - **Repo map** — pagerank-ranked symbol extraction for codebase context.
-- **Prompt caching** — Anthropic ephemeral `cache_control` support.
+- **Prompt caching** — Anthropic ephemeral `cache_control` helpers.
 - **Slash command parsing** — `/command` parsing for host UIs.
-- **Guardrails** — empty turn detection and repeated failure detection.
+- **Guardrails** — empty turn detection, repeated failure detection, tool-effect
+  batch planning.
 - **Structured extraction** — JSON contracts for typed tool outputs.
-- **Subagent manager** — git worktree isolation for parallel subagents.
+- **Subagent manager** — optional provider-driven `Agent::prompt` runs with
+  workspace isolation directories.
 - **LSP client** — diagnostics, references, definition via Language Server Protocol.
-- **ACP host** — Agent Client Protocol host support.
-- **Plugin registry + marketplace** — installable plugins and an index.
+- **ACP host** — JSON-RPC session/prompt surface over an embedded agent.
+- **Plugin registry + marketplace** — install with required sha256, blocklist,
+  sanitized names; registry loads installed plugins.
 
 ### Scopes
 
@@ -152,7 +161,9 @@ flowchart TD
 | `providers` | no | reqwest SSE streaming for OpenAI/Anthropic/Ollama/custom |
 | `memory` | no | SQLite-backed memory store |
 | `mcp` | no | MCP client (rmcp, JSON-RPC 2.0 over stdio) |
-| `sqlite-sessions` | no | SQLite session persistence |
+| `sqlite-sessions` | no | SQLite session save/load on `Session` |
+| `skills` | no | skill engine, curator, background review, embeddings |
+| `graph-memory` | no | graph memory, dream scheduler |
 
 > `pi-compat` and `pi-extensions` have been **removed** — pi protocol
 > compatibility now lives in the host (telekinesis).
