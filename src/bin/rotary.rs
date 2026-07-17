@@ -73,6 +73,7 @@ fn main() {
     }
 }
 
+#[cfg(feature = "providers")]
 fn build_agent(model: Option<&str>, scope: Option<&str>) -> Agent {
     let mut agent = Agent::new();
     let mut tools = ToolRegistry::new();
@@ -378,6 +379,7 @@ fn run_chat(model: Option<String>, scope: Option<String>) {
     }
 }
 
+#[cfg(feature = "providers")]
 fn handle_slash(input: &str, agent: &mut Agent) -> bool {
     let mut parts = input.split_whitespace();
     let cmd = parts.next().unwrap_or("");
@@ -510,6 +512,7 @@ fn handle_slash(input: &str, agent: &mut Agent) -> bool {
     }
 }
 
+#[cfg(feature = "providers")]
 fn sessions_dir() -> std::path::PathBuf {
     home_dir().join(".agents").join("sessions")
 }
