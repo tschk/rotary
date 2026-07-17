@@ -59,6 +59,7 @@ pub mod slash;
 pub mod sse;
 pub mod subagent;
 pub mod tools;
+pub mod work_pack;
 
 #[cfg(feature = "providers")]
 pub mod http;
@@ -116,7 +117,7 @@ pub use model_router::{
     SubagentModelSelector, TaskTier, TaskType,
 };
 pub use models::{CompatConfig, ModelInfo, ModelRegistry};
-pub use permissions::{Approver, Decision, PermissionMode, Policy};
+pub use permissions::{ApprovalRequest, Approver, Decision, PermissionMode, Policy};
 pub use prompt_cache::{
     apply_cache_control, CachePoint, CachePosition, CacheProvider, CacheStats, CacheStatsTracker,
     CacheTtl, PromptCacheConfig,
@@ -144,6 +145,7 @@ pub use skill_engine::{
 };
 pub use sse::{SseError, SseEvent, SseParser};
 pub use tools::register_builtin_tools;
+pub use work_pack::{WorkPack, WorkPackError};
 
 #[cfg(feature = "mcp")]
 pub use mcp::{McpClient, McpError, McpRegistry, McpResourceInfo, McpToolInfo};

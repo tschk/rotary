@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.3.8] — 2026-07-17
+
+### Added
+- `rx4 exec --stream-json` NDJSON event stream (noninteractive / CI)
+- `Event::ApprovalRequired(ApprovalRequest)` rich approval UX payload
+- `Session::export_codex_jsonl` / `import_codex_jsonl` Codex-friendly session IO
+- `Policy.enable_os_sandbox` policy-plugin flag (`with_os_sandbox`)
+- `WorkPack` — specialist agents as markdown + YAML frontmatter data
+
 ## [0.3.7] — 2026-07-17
 
 ### Changed

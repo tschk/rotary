@@ -248,14 +248,27 @@ impl Default for ToolRegistry {
 #[serde(tag = "type")]
 pub enum Event {
     AgentStart,
-    TurnStart { turn: usize },
-    MessageStart { role: Role },
-    MessageDelta { delta: String },
-    MessageEnd { role: Role, content: String },
+    TurnStart {
+        turn: usize,
+    },
+    MessageStart {
+        role: Role,
+    },
+    MessageDelta {
+        delta: String,
+    },
+    MessageEnd {
+        role: Role,
+        content: String,
+    },
     ToolCall(ToolCall),
+    /// Host UX: tool needs approval (Codex-style ask payload).
+    ApprovalRequired(crate::permissions::ApprovalRequest),
     ToolExecutionStart(ToolCall),
     ToolExecutionEnd(ToolResult),
-    TurnEnd { turn: usize },
+    TurnEnd {
+        turn: usize,
+    },
     AgentEnd,
     Error(String),
 }
@@ -294,7 +307,7 @@ pub struct Agent {
 
 impl Agent {
     pub fn new() -> Self {
-        Self {
+        let mut agent = Self {
             model: "gpt-4o".into(),
             system_prompt: None,
             tools: Arc::new(ToolRegistry::new()),
@@ -324,7 +337,12 @@ impl Agent {
                 .time_to_live(std::time::Duration::from_secs(3600))
                 .time_to_idle(std::time::Duration::from_secs(900))
                 .build(),
+        };
+        // Policy plugin: workspace_write enables OS sandbox by default.
+        if agent.policy.enable_os_sandbox {
+            let _ = agent.enable_os_sandbox();
         }
+        agent
     }
 
     pub fn set_model(&mut self, model: impl Into<String>) {
@@ -341,6 +359,9 @@ impl Agent {
 
     pub fn set_policy(&mut self, policy: Policy) {
         self.policy = policy;
+        if self.policy.enable_os_sandbox && self.os_sandbox.is_none() {
+            let _ = self.enable_os_sandbox();
+        }
     }
 
     pub fn set_scope(&mut self, scope: Scope) {
@@ -628,6 +649,11 @@ impl Agent {
                 let call = &calls[idx];
                 self.emit(Event::ToolExecutionStart(call.clone()));
                 let result = self.execute_single_tool(call, ctx).await;
+                if result.is_error && result.content == "approval required" {
+                    self.emit(Event::ApprovalRequired(
+                        crate::permissions::ApprovalRequest::from_call(call, &self.policy),
+                    ));
+                }
                 self.emit(Event::ToolExecutionEnd(result.clone()));
                 results[idx] = Some(result);
                 continue;
@@ -667,6 +693,16 @@ impl Agent {
             while let Some(joined) = join_set.join_next().await {
                 match joined {
                     Ok((idx, result)) => {
+                        if result.is_error && result.content == "approval required" {
+                            if let Some(call) = calls.get(idx) {
+                                self.emit(Event::ApprovalRequired(
+                                    crate::permissions::ApprovalRequest::from_call(
+                                        call,
+                                        &self.policy,
+                                    ),
+                                ));
+                            }
+                        }
                         self.emit(Event::ToolExecutionEnd(result.clone()));
                         results[idx] = Some(result);
                     }
@@ -728,7 +764,11 @@ impl Agent {
 
         match decision {
             Decision::Deny => ToolResult::err(&call.id, "denied by policy"),
-            Decision::Ask => ToolResult::err(&call.id, "approval required"),
+            Decision::Ask => {
+                // Rich payload is emitted by callers that have Agent self; parallel path
+                // only returns the error string — serial path re-emits below when possible.
+                ToolResult::err(&call.id, "approval required")
+            }
             Decision::Allow => {
                 let effect = tools.effect_of(&resolved_name);
                 let cache_key = format!("{}:{}", resolved_name, call.arguments);

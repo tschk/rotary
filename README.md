@@ -111,9 +111,14 @@ flowchart TD
 - **MCP client** — JSON-RPC 2.0 over stdio; tools prefixed
   `mcp__{server}__{tool}`.
 - **Session tree** — fork/merge with JSONL persistence; optional SQLite via
-  `sqlite-sessions` (`save_sqlite` / `load_sqlite`).
+  `sqlite-sessions` (`save_sqlite` / `load_sqlite`); Codex-friendly
+  `export_codex_jsonl` / `import_codex_jsonl`.
+- **Work packs** — specialist agent profiles as markdown data (`WorkPack`).
+- **Stream-JSON CLI** — `rx4 exec --stream-json` emits NDJSON agent events.
 - **Permission system** — `Policy` + `Approver`; `Policy::default()` and
   `Agent::new` use `workspace_write` (process tools require approval).
+  `Policy.enable_os_sandbox` enables seatbelt/bwrap as a policy plugin.
+  Hosts receive `Event::ApprovalRequired` with a rich `ApprovalRequest`.
 - **Lifecycle hooks** — pluggable hook registry around the agent loop.
 - **Context compaction** — token-estimate auto-compact via
   `estimate_messages` + `apply_compaction`.

@@ -26,9 +26,12 @@ enum Commands {
     /// One-shot prompt execution
     Exec {
         prompt: String,
-        /// Emit JSON output
+        /// Emit final result as a single JSON object
         #[arg(long)]
         json: bool,
+        /// Stream NDJSON events to stdout (Codex-style noninteractive)
+        #[arg(long)]
+        stream_json: bool,
     },
     /// Start the IPC server on a Unix socket
     Serve { socket: Option<String> },
@@ -59,7 +62,11 @@ fn main() {
 
     match command {
         Commands::Chat => run_chat(cli.model, cli.scope),
-        Commands::Exec { prompt, json } => run_exec(&prompt, json, cli.model, cli.scope),
+        Commands::Exec {
+            prompt,
+            json,
+            stream_json,
+        } => run_exec(&prompt, json, stream_json, cli.model, cli.scope),
         Commands::Serve { socket } => run_serve(socket),
         Commands::Version => run_version(),
         Commands::Doctor => run_doctor(),
@@ -524,10 +531,16 @@ fn home_dir() -> std::path::PathBuf {
         .unwrap_or_else(|| std::path::PathBuf::from("."))
 }
 
-fn run_exec(prompt: &str, json: bool, model: Option<String>, scope: Option<String>) {
+fn run_exec(
+    prompt: &str,
+    json: bool,
+    stream_json: bool,
+    model: Option<String>,
+    scope: Option<String>,
+) {
     #[cfg(not(feature = "providers"))]
     {
-        let _ = (prompt, json, model, scope);
+        let _ = (prompt, json, stream_json, model, scope);
         eprintln!("exec requires the `providers` feature");
         std::process::exit(1);
     }
@@ -539,22 +552,35 @@ fn run_exec(prompt: &str, json: bool, model: Option<String>, scope: Option<Strin
             std::process::exit(1);
         }
         let mut agent = build_agent(model.as_deref(), scope.as_deref());
+        // Noninteractive CI: auto-allow tools unless host sets a stricter approver.
+        agent.set_approver(Arc::new(rx4::permissions::AlwaysAllow));
         let output = Arc::new(parking_lot::Mutex::new(String::new()));
         let output_clone = output.clone();
-        agent.subscribe(move |event| match event {
-            rx4::Event::MessageDelta { delta } => {
-                output_clone.lock().push_str(delta);
-                if !json {
+        let stream = stream_json;
+        agent.subscribe(move |event| {
+            if stream {
+                if let Ok(line) = serde_json::to_string(event) {
                     use std::io::Write;
                     let mut out = std::io::stdout().lock();
-                    let _ = out.write_all(delta.as_bytes());
+                    let _ = writeln!(out, "{line}");
                     let _ = out.flush();
                 }
             }
-            rx4::Event::Error(err) => {
-                eprintln!("\n[error: {err}]");
+            match event {
+                rx4::Event::MessageDelta { delta } => {
+                    output_clone.lock().push_str(delta);
+                    if !json && !stream {
+                        use std::io::Write;
+                        let mut out = std::io::stdout().lock();
+                        let _ = out.write_all(delta.as_bytes());
+                        let _ = out.flush();
+                    }
+                }
+                rx4::Event::Error(err) if !stream => {
+                    eprintln!("\n[error: {err}]");
+                }
+                _ => {}
             }
-            _ => {}
         });
         let rt = match tokio::runtime::Runtime::new() {
             Ok(rt) => rt,
@@ -564,14 +590,17 @@ fn run_exec(prompt: &str, json: bool, model: Option<String>, scope: Option<Strin
             }
         };
         if let Err(e) = rt.block_on(agent.prompt(prompt)) {
-            if json {
-                println!(r#"{{"error":"{e}"}}"#);
+            if json || stream_json {
+                println!(
+                    "{}",
+                    serde_json::json!({"type":"error","error": e.to_string()})
+                );
             } else {
                 eprintln!("agent error: {e}");
             }
             std::process::exit(1);
         }
-        if json {
+        if json && !stream_json {
             let result = output.lock().clone();
             let json_out = serde_json::json!({
                 "model": agent.model,
@@ -579,7 +608,7 @@ fn run_exec(prompt: &str, json: bool, model: Option<String>, scope: Option<Strin
                 "output": result,
             });
             println!("{json_out}");
-        } else {
+        } else if !json && !stream_json {
             println!();
         }
     }

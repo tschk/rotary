@@ -19,6 +19,9 @@ pub struct Policy {
     pub allowlist: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub denylist: Vec<String>,
+    /// When true, hosts/Agent should enable OS seatbelt/bwrap for process tools.
+    #[serde(default)]
+    pub enable_os_sandbox: bool,
 }
 
 impl Policy {
@@ -27,6 +30,7 @@ impl Policy {
             mode: PermissionMode::FullAccess,
             allowlist: vec![],
             denylist: vec![],
+            enable_os_sandbox: false,
         }
     }
     pub fn read_only() -> Self {
@@ -34,6 +38,7 @@ impl Policy {
             mode: PermissionMode::ReadOnly,
             allowlist: vec![],
             denylist: vec![],
+            enable_os_sandbox: false,
         }
     }
     pub fn workspace_write() -> Self {
@@ -41,6 +46,7 @@ impl Policy {
             mode: PermissionMode::WorkspaceWrite,
             allowlist: vec![],
             denylist: vec![],
+            enable_os_sandbox: true,
         }
     }
     pub fn deny_all() -> Self {
@@ -48,7 +54,14 @@ impl Policy {
             mode: PermissionMode::DenyAll,
             allowlist: vec![],
             denylist: vec![],
+            enable_os_sandbox: false,
         }
+    }
+
+    /// Enable or disable OS sandbox plugin flag (seatbelt/bwrap).
+    pub fn with_os_sandbox(mut self, enabled: bool) -> Self {
+        self.enable_os_sandbox = enabled;
+        self
     }
 }
 
@@ -59,11 +72,41 @@ impl Default for Policy {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Decision {
     Allow,
     Deny,
     Ask,
+}
+
+/// Rich approval payload for host UX (Codex-style ask).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ApprovalRequest {
+    pub call_id: String,
+    pub tool_name: String,
+    pub arguments: String,
+    pub reason: String,
+    pub policy_mode: String,
+    pub is_process_tool: bool,
+    pub is_write_tool: bool,
+}
+
+impl ApprovalRequest {
+    pub fn from_call(call: &ToolCall, policy: &Policy) -> Self {
+        let name = call.name.as_str();
+        Self {
+            call_id: call.id.clone(),
+            tool_name: call.name.clone(),
+            arguments: call.arguments.clone(),
+            reason: format!(
+                "policy {:?} requires approval for tool `{name}`",
+                policy.mode
+            ),
+            policy_mode: format!("{:?}", policy.mode),
+            is_process_tool: is_process_tool(name),
+            is_write_tool: is_write_tool(name),
+        }
+    }
 }
 
 /// Approver trait — hosts implement this to prompt the user (codex-rs pattern).
@@ -199,6 +242,7 @@ mod tests {
             mode: PermissionMode::FullAccess,
             allowlist: vec![],
             denylist: vec!["bash".into()],
+            enable_os_sandbox: false,
         };
         assert_eq!(authorize(&p, "bash", "{}", None), Decision::Deny);
     }

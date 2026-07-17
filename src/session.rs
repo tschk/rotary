@@ -98,6 +98,98 @@ impl Session {
         Ok(session)
     }
 
+    /// Export Codex/rollout-friendly JSONL (one object per line).
+    /// Lines: session meta, then message events with role/content/timestamp.
+    pub fn export_codex_jsonl(&self, path: &std::path::Path) -> std::io::Result<()> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let mut out = String::new();
+        let meta = serde_json::json!({
+            "type": "session_meta",
+            "id": self.id,
+            "name": self.name,
+            "format": "rx4-codex-jsonl-v1",
+        });
+        out.push_str(&meta.to_string());
+        out.push('\n');
+        for entry in &self.entries {
+            let line = serde_json::json!({
+                "type": "message",
+                "id": entry.id,
+                "parent_id": entry.parent_id,
+                "role": entry.role.to_string(),
+                "content": entry.content,
+            });
+            out.push_str(&line.to_string());
+            out.push('\n');
+        }
+        std::fs::write(path, out)
+    }
+
+    /// Import from Codex/rollout-friendly JSONL produced by [`Self::export_codex_jsonl`]
+    /// or a plain message stream with `role` + `content` fields.
+    pub fn import_codex_jsonl(path: &std::path::Path) -> std::io::Result<Self> {
+        let content = std::fs::read_to_string(path)?;
+        let fallback_id = path
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "imported".into());
+        let mut id = fallback_id.clone();
+        let mut name = fallback_id;
+        let mut session = Self::new(id.clone(), name.clone());
+        for line in content.lines() {
+            if line.trim().is_empty() {
+                continue;
+            }
+            let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+                continue;
+            };
+            let ty = v.get("type").and_then(|t| t.as_str()).unwrap_or("");
+            if ty == "session_meta" {
+                if let Some(s) = v.get("id").and_then(|x| x.as_str()) {
+                    id = s.to_string();
+                    session.id = id.clone();
+                }
+                if let Some(s) = v.get("name").and_then(|x| x.as_str()) {
+                    name = s.to_string();
+                    session.name = name.clone();
+                }
+                continue;
+            }
+            // Accept typed message lines or bare role/content lines.
+            if ty == "message" || v.get("role").is_some() {
+                let role_str = v.get("role").and_then(|r| r.as_str()).unwrap_or("user");
+                let role = match role_str {
+                    "assistant" => Role::Assistant,
+                    "system" => Role::System,
+                    "tool" => Role::Tool,
+                    _ => Role::User,
+                };
+                let text = v
+                    .get("content")
+                    .and_then(|c| c.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                if let Some(eid) = v.get("id").and_then(|x| x.as_u64()) {
+                    let parent = v.get("parent_id").and_then(|x| x.as_u64());
+                    if eid >= session.next_id {
+                        session.next_id = eid + 1;
+                    }
+                    session.entries.push(Entry {
+                        id: eid,
+                        parent_id: parent,
+                        role,
+                        content: text,
+                    });
+                } else {
+                    session.append(role, text);
+                }
+            }
+        }
+        Ok(session)
+    }
+
     pub fn messages(&self) -> Vec<Message> {
         self.entries
             .iter()
@@ -226,6 +318,22 @@ mod tests {
         let forked = s.fork(1);
         assert_eq!(forked.entries.len(), 1);
         assert_eq!(forked.entries[0].content, "hello");
+    }
+
+    #[test]
+    fn codex_jsonl_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("codex.jsonl");
+        let mut s = Session::new("codex1", "export-test");
+        s.append(Role::User, "ping");
+        s.append(Role::Assistant, "pong");
+        s.export_codex_jsonl(&path).unwrap();
+        let loaded = Session::import_codex_jsonl(&path).unwrap();
+        assert_eq!(loaded.id, "codex1");
+        assert_eq!(loaded.name, "export-test");
+        assert_eq!(loaded.entries.len(), 2);
+        assert_eq!(loaded.entries[0].content, "ping");
+        assert_eq!(loaded.entries[1].content, "pong");
     }
 
     #[cfg(feature = "sqlite-sessions")]
