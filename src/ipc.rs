@@ -66,6 +66,10 @@ impl IpcServer {
             std::fs::remove_file(path)?;
         }
         let listener = UnixListener::bind(path)?;
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+        }
         info!("IPC server listening on {}", self.socket_path);
 
         let runtime = tokio::runtime::Handle::try_current().map_err(std::io::Error::other)?;
@@ -111,6 +115,17 @@ impl IpcServer {
         let id = req.get("id").cloned();
         let method = req.get("method").and_then(|m| m.as_str()).unwrap_or("");
         let params = req.get("params").cloned().unwrap_or(Value::Null);
+
+        if method != "ping" {
+            if let Ok(token) = std::env::var("RX4_IPC_TOKEN") {
+                if !token.is_empty() {
+                    let provided = params.get("token").and_then(|t| t.as_str()).unwrap_or("");
+                    if provided != token {
+                        return error_response(id, -32000, "invalid or missing token");
+                    }
+                }
+            }
+        }
 
         let result: Result<Value, String> = match method {
             "ping" => Ok(Value::String("pong".into())),

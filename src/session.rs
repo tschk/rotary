@@ -104,6 +104,116 @@ impl Session {
             .map(|e| Message::new(e.role, e.content.clone()))
             .collect()
     }
+
+    /// Persists this session into a SQLite database at `path`.
+    #[cfg(feature = "sqlite-sessions")]
+    pub fn save_sqlite(&self, path: &std::path::Path) -> Result<(), String> {
+        use rusqlite::{params, Connection};
+
+        let conn = Connection::open(path).map_err(|e| e.to_string())?;
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS sessions (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                next_id INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS entries (
+                session_id TEXT NOT NULL,
+                id INTEGER NOT NULL,
+                parent_id INTEGER,
+                role TEXT NOT NULL,
+                content TEXT NOT NULL,
+                PRIMARY KEY (session_id, id)
+            );",
+        )
+        .map_err(|e| e.to_string())?;
+
+        conn.execute(
+            "INSERT OR REPLACE INTO sessions (id, name, next_id) VALUES (?1, ?2, ?3)",
+            params![self.id, self.name, self.next_id as i64],
+        )
+        .map_err(|e| e.to_string())?;
+        conn.execute(
+            "DELETE FROM entries WHERE session_id = ?1",
+            params![self.id],
+        )
+        .map_err(|e| e.to_string())?;
+
+        for entry in &self.entries {
+            conn.execute(
+                "INSERT INTO entries (session_id, id, parent_id, role, content)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    self.id,
+                    entry.id as i64,
+                    entry.parent_id.map(|p| p as i64),
+                    entry.role.to_string(),
+                    entry.content,
+                ],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+
+    /// Loads a session from a SQLite database at `path`.
+    #[cfg(feature = "sqlite-sessions")]
+    pub fn load_sqlite(path: &std::path::Path) -> Result<Self, String> {
+        use rusqlite::{params, Connection};
+
+        let conn = Connection::open(path).map_err(|e| e.to_string())?;
+        let (id, name, next_id): (String, String, i64) = conn
+            .query_row(
+                "SELECT id, name, next_id FROM sessions LIMIT 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .map_err(|e| e.to_string())?;
+
+        let mut session = Self::new(id.clone(), name);
+        session.next_id = next_id as u64;
+
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, parent_id, role, content FROM entries
+                 WHERE session_id = ?1 ORDER BY id ASC",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![id], |row| {
+                let role_s: String = row.get(2)?;
+                let role = match role_s.as_str() {
+                    "system" => Role::System,
+                    "user" => Role::User,
+                    "assistant" => Role::Assistant,
+                    "tool" => Role::Tool,
+                    other => {
+                        return Err(rusqlite::Error::FromSqlConversionFailure(
+                            2,
+                            rusqlite::types::Type::Text,
+                            Box::new(std::io::Error::new(
+                                std::io::ErrorKind::InvalidData,
+                                format!("unknown role: {other}"),
+                            )),
+                        ));
+                    }
+                };
+                Ok(Entry {
+                    id: row.get::<_, i64>(0)? as u64,
+                    parent_id: row
+                        .get::<_, Option<i64>>(1)?
+                        .map(|p| p as u64),
+                    role,
+                    content: row.get(3)?,
+                })
+            })
+            .map_err(|e| e.to_string())?;
+
+        for row in rows {
+            session.entries.push(row.map_err(|e| e.to_string())?);
+        }
+        Ok(session)
+    }
 }
 
 #[cfg(test)]
@@ -118,5 +228,24 @@ mod tests {
         let forked = s.fork(1);
         assert_eq!(forked.entries.len(), 1);
         assert_eq!(forked.entries[0].content, "hello");
+    }
+
+    #[cfg(feature = "sqlite-sessions")]
+    #[test]
+    fn sqlite_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.db");
+        let mut s = Session::new("s1", "test");
+        s.append(Role::User, "hello");
+        s.append(Role::Assistant, "hi");
+        s.save_sqlite(&path).unwrap();
+
+        let loaded = Session::load_sqlite(&path).unwrap();
+        assert_eq!(loaded.id, "s1");
+        assert_eq!(loaded.name, "test");
+        assert_eq!(loaded.entries.len(), 2);
+        assert_eq!(loaded.entries[0].content, "hello");
+        assert_eq!(loaded.entries[1].role, Role::Assistant);
+        assert_eq!(loaded.next_id, s.next_id);
     }
 }

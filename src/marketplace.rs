@@ -200,12 +200,55 @@ impl PluginBlocklist {
 #[derive(Debug, Clone)]
 pub struct PluginInstaller {
     install_dir: PathBuf,
+    blocklist: PluginBlocklist,
+}
+
+/// Accepts only `[a-zA-Z0-9._-]`. Rejects empty names, `..`, absolute paths,
+/// and path separators.
+pub fn sanitize_plugin_name(name: &str) -> Result<&str, MarketplaceError> {
+    if name.is_empty() {
+        return Err(MarketplaceError::InstallFailed(
+            "plugin name is empty".to_string(),
+        ));
+    }
+    if name == ".." || name.contains("..") {
+        return Err(MarketplaceError::InstallFailed(format!(
+            "invalid plugin name: {name}"
+        )));
+    }
+    if name.starts_with('/')
+        || name.starts_with('\\')
+        || name.contains('/')
+        || name.contains('\\')
+    {
+        return Err(MarketplaceError::InstallFailed(format!(
+            "invalid plugin name: {name}"
+        )));
+    }
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+    {
+        return Err(MarketplaceError::InstallFailed(format!(
+            "invalid plugin name: {name}"
+        )));
+    }
+    Ok(name)
 }
 
 impl PluginInstaller {
     /// Creates a new installer targeting the given install directory.
     pub fn new(install_dir: PathBuf) -> Self {
-        Self { install_dir }
+        Self {
+            install_dir,
+            blocklist: PluginBlocklist::new(),
+        }
+    }
+
+    /// Replaces the installer's plugin blocklist.
+    pub fn with_blocklist(mut self, blocklist: PluginBlocklist) -> Self {
+        self.blocklist = blocklist;
+        self
     }
 
     /// Returns the default install directory (`~/.rx4/plugins/`).
@@ -254,12 +297,18 @@ impl PluginInstaller {
         manifest: &PluginManifest,
         source: &str,
     ) -> Result<InstalledPlugin, MarketplaceError> {
-        if self.is_installed(&manifest.name) {
-            return Err(MarketplaceError::AlreadyInstalled(manifest.name.clone()));
+        let name = sanitize_plugin_name(&manifest.name)?;
+        if self.blocklist.is_blocked(name) {
+            return Err(MarketplaceError::InstallFailed(format!(
+                "plugin {name} is blocklisted"
+            )));
+        }
+        if self.is_installed(name) {
+            return Err(MarketplaceError::AlreadyInstalled(name.to_string()));
         }
         std::fs::create_dir_all(&self.install_dir)
             .map_err(|e| MarketplaceError::InstallFailed(e.to_string()))?;
-        let target = self.install_dir.join(&manifest.name);
+        let target = self.install_dir.join(name);
         if target.exists() {
             std::fs::remove_dir_all(&target)
                 .map_err(|e| MarketplaceError::InstallFailed(e.to_string()))?;
@@ -300,10 +349,9 @@ impl PluginInstaller {
         } else if let Some(ref expected) = manifest.sha256 {
             verify_plugin_integrity(&target, expected)?;
         } else {
-            tracing::warn!(
-                "plugin {} has no sha256 in manifest — skipping integrity check",
-                on_disk_manifest.name
-            );
+            return Err(MarketplaceError::InstallFailed(
+                "sha256 required".to_string(),
+            ));
         }
 
         if target.join("package.json").exists() {
@@ -525,6 +573,13 @@ mod tests {
         fs::write(dir.join("plugin.json"), json).unwrap();
     }
 
+    /// Manifest with sha256 of an already-written source dir (hash not stored on disk).
+    fn manifest_with_hash(source_dir: &Path) -> PluginManifest {
+        let mut m = sample_manifest();
+        m.sha256 = Some(compute_dir_sha256(source_dir).unwrap());
+        m
+    }
+
     #[test]
     fn deserializes_plugin_manifest_from_json() {
         let json = r#"{
@@ -593,10 +648,11 @@ mod tests {
         let install_dir = tmp.path().join("plugins");
         let source_dir = tmp.path().join("source");
         write_plugin_dir(&source_dir, &sample_manifest());
+        let manifest = manifest_with_hash(&source_dir);
 
         let installer = PluginInstaller::new(install_dir.clone());
         let installed = installer
-            .install(&sample_manifest(), source_dir.to_str().unwrap())
+            .install(&manifest, source_dir.to_str().unwrap())
             .unwrap();
         assert_eq!(installed.name, "demo-plugin");
         assert_eq!(installed.version, "0.1.0");
@@ -609,12 +665,13 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let source_dir = tmp.path().join("source");
         write_plugin_dir(&source_dir, &sample_manifest());
+        let manifest = manifest_with_hash(&source_dir);
         let installer = PluginInstaller::new(tmp.path().join("plugins"));
         installer
-            .install(&sample_manifest(), source_dir.to_str().unwrap())
+            .install(&manifest, source_dir.to_str().unwrap())
             .unwrap();
         let err = installer
-            .install(&sample_manifest(), source_dir.to_str().unwrap())
+            .install(&manifest, source_dir.to_str().unwrap())
             .unwrap_err();
         assert!(matches!(err, MarketplaceError::AlreadyInstalled(_)));
     }
@@ -624,9 +681,10 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let source_dir = tmp.path().join("source");
         write_plugin_dir(&source_dir, &sample_manifest());
+        let manifest = manifest_with_hash(&source_dir);
         let installer = PluginInstaller::new(tmp.path().join("plugins"));
         installer
-            .install(&sample_manifest(), source_dir.to_str().unwrap())
+            .install(&manifest, source_dir.to_str().unwrap())
             .unwrap();
         assert!(installer.is_installed("demo-plugin"));
         installer.uninstall("demo-plugin").unwrap();
@@ -646,9 +704,10 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let source_dir = tmp.path().join("source");
         write_plugin_dir(&source_dir, &sample_manifest());
+        let manifest = manifest_with_hash(&source_dir);
         let installer = PluginInstaller::new(tmp.path().join("plugins"));
         installer
-            .install(&sample_manifest(), source_dir.to_str().unwrap())
+            .install(&manifest, source_dir.to_str().unwrap())
             .unwrap();
         let list = installer.list_installed();
         assert_eq!(list.len(), 1);
@@ -687,13 +746,52 @@ mod tests {
     fn install_errors_on_missing_source() {
         let tmp = TempDir::new().unwrap();
         let installer = PluginInstaller::new(tmp.path().join("plugins"));
+        let mut manifest = sample_manifest();
+        manifest.sha256 = Some("deadbeef".to_string());
         let err = installer
             .install(
-                &sample_manifest(),
+                &manifest,
                 tmp.path().join("missing").to_str().unwrap(),
             )
             .unwrap_err();
         assert!(matches!(err, MarketplaceError::InstallFailed(_)));
+    }
+
+    #[test]
+    fn install_requires_sha256() {
+        let tmp = TempDir::new().unwrap();
+        let source_dir = tmp.path().join("source");
+        write_plugin_dir(&source_dir, &sample_manifest());
+        let installer = PluginInstaller::new(tmp.path().join("plugins"));
+        let err = installer
+            .install(&sample_manifest(), source_dir.to_str().unwrap())
+            .unwrap_err();
+        assert!(matches!(err, MarketplaceError::InstallFailed(msg) if msg.contains("sha256")));
+    }
+
+    #[test]
+    fn install_rejects_blocklisted_name() {
+        let tmp = TempDir::new().unwrap();
+        let source_dir = tmp.path().join("source");
+        write_plugin_dir(&source_dir, &sample_manifest());
+        let manifest = manifest_with_hash(&source_dir);
+        let mut bl = PluginBlocklist::new();
+        bl.add("demo-plugin");
+        let installer = PluginInstaller::new(tmp.path().join("plugins")).with_blocklist(bl);
+        let err = installer
+            .install(&manifest, source_dir.to_str().unwrap())
+            .unwrap_err();
+        assert!(matches!(err, MarketplaceError::InstallFailed(msg) if msg.contains("blocklisted")));
+    }
+
+    #[test]
+    fn sanitize_plugin_name_rejects_path_chars() {
+        assert!(sanitize_plugin_name("demo-plugin").is_ok());
+        assert!(sanitize_plugin_name("").is_err());
+        assert!(sanitize_plugin_name("..").is_err());
+        assert!(sanitize_plugin_name("a/b").is_err());
+        assert!(sanitize_plugin_name("/abs").is_err());
+        assert!(sanitize_plugin_name("bad name").is_err());
     }
 
     #[test]
