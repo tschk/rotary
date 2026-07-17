@@ -235,19 +235,28 @@ fn exec_bash(ctx: Arc<ToolContext>, args: String) -> ToolFuture {
             ctx.workspace_root.clone()
         };
 
-        let mut cmd = if cfg!(target_os = "windows") {
+        let mut cmd = if let Some(os) = ctx.os_sandbox.as_ref() {
+            // Wrap bash -c under seatbelt/bwrap when OS sandbox is configured.
+            match os.command("bash", &["-c", &command]) {
+                Ok(mut c) => {
+                    c.current_dir(&working_dir);
+                    c
+                }
+                Err(e) => return ToolResult::err("bash", e.to_string()),
+            }
+        } else if cfg!(target_os = "windows") {
             let mut c = Command::new("cmd");
             c.arg("/C").arg(&command);
+            c.current_dir(&working_dir);
             c
         } else {
             let mut c = Command::new("bash");
             c.arg("-c").arg(&command);
+            c.current_dir(&working_dir);
             c
         };
 
-        cmd.current_dir(&working_dir)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+        cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
         let mut child = match cmd.spawn() {
             Ok(c) => c,

@@ -1,13 +1,13 @@
 [package]
 name = "rx4"
-version = "0.3.4"
+version = "0.3.5"
 edition = "2021"
 rust-version = "1.88"
 license = "MPL-2.0"
 description = "The agent harness engine — loop, tools, providers, sessions, permissions, computer-use"
 repository = "https://github.com/tschk/rotary"
 homepage = "https://github.com/tschk/rotary"
-keywords = ["agent", "harness", "coding", "llm", "ai", "computer-use", "mcp", "rx4"]
+keywords = ["agent", "harness", "llm", "mcp", "coding"]
 categories = ["development-tools", "api-bindings", "asynchronous", "command-line-utilities"]
 
 [[bin]]

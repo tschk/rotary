@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.3.5] — 2026-07-17
+
+### Added
+- Skills inject into system prompt via `Agent::set_skill_registry` + `auto_activate`
+- Graph memory extraction after each agent run via `set_graph_memory`
+- Prompt-cache `cache_control` applied on Anthropic provider stream bodies
+- OS sandbox wrap for bash (`enable_os_sandbox` / seatbelt + bwrap)
+
+### Fixed
+- crates.io publish: keywords capped at 5
+
 ## [0.3.4] — 2026-07-17
 
 ### Added

@@ -161,6 +161,7 @@ pub struct OpenAIProvider {
     api_key: String,
     provider_id: String,
     provider_name: String,
+    prompt_cache: crate::prompt_cache::PromptCacheConfig,
 }
 
 #[cfg(feature = "providers")]
@@ -188,6 +189,14 @@ impl OpenAIProvider {
         provider_id: impl Into<String>,
         provider_name: impl Into<String>,
     ) -> Self {
+        let provider_id_str = provider_id.into();
+        let prompt_cache = if provider_id_str == "anthropic" {
+            crate::prompt_cache::PromptCacheConfig::anthropic()
+        } else if provider_id_str == "openai" {
+            crate::prompt_cache::PromptCacheConfig::openai()
+        } else {
+            crate::prompt_cache::PromptCacheConfig::disabled()
+        };
         Self {
             client: reqwest::Client::builder()
                 .pool_idle_timeout(std::time::Duration::from_secs(90))
@@ -196,9 +205,16 @@ impl OpenAIProvider {
                 .unwrap_or_else(|_| reqwest::Client::new()),
             base_url: base_url.into(),
             api_key: api_key.into(),
-            provider_id: provider_id.into(),
+            provider_id: provider_id_str,
             provider_name: provider_name.into(),
+            prompt_cache,
         }
+    }
+
+    /// Override prompt-cache configuration (Anthropic cache_control markers).
+    pub fn with_prompt_cache(mut self, config: crate::prompt_cache::PromptCacheConfig) -> Self {
+        self.prompt_cache = config;
+        self
     }
 
     /// Prewarm the connection pool by sending a lightweight HEAD request.
@@ -286,6 +302,11 @@ impl Provider for OpenAIProvider {
 
         if !tools.is_empty() {
             body["tools"] = serde_json::json!(tools);
+        }
+
+        // Apply Anthropic cache_control markers when configured.
+        if let Some(arr) = body["messages"].as_array_mut() {
+            crate::prompt_cache::apply_cache_control(arr, &self.prompt_cache);
         }
 
         let mut req = self

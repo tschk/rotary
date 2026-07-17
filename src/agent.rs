@@ -79,6 +79,7 @@ pub struct ToolContext {
     #[cfg(feature = "ipc")]
     pub cancellation: CancellationToken,
     pub sandbox: Option<std::sync::Arc<crate::sandbox::SandboxManager>>,
+    pub os_sandbox: Option<std::sync::Arc<crate::sandbox::OsSandboxRunner>>,
 }
 
 impl ToolContext {
@@ -88,11 +89,17 @@ impl ToolContext {
             #[cfg(feature = "ipc")]
             cancellation: CancellationToken::new(false),
             sandbox: None,
+            os_sandbox: None,
         }
     }
 
     pub fn with_sandbox(mut self, sb: Arc<crate::sandbox::SandboxManager>) -> Self {
         self.sandbox = Some(sb);
+        self
+    }
+
+    pub fn with_os_sandbox(mut self, os: Arc<crate::sandbox::OsSandboxRunner>) -> Self {
+        self.os_sandbox = Some(os);
         self
     }
 }
@@ -270,6 +277,11 @@ pub struct Agent {
     pub auto_compact_after: usize,
     pub workspace_root: std::path::PathBuf,
     pub sandbox: Option<Arc<crate::sandbox::SandboxManager>>,
+    pub os_sandbox: Option<Arc<crate::sandbox::OsSandboxRunner>>,
+    #[cfg(feature = "skills")]
+    pub skill_registry: Option<crate::skill_engine::SkillRegistry>,
+    #[cfg(feature = "graph-memory")]
+    pub graph_memory: Option<crate::graph_memory::GraphMemory>,
     subscribers: Vec<Subscriber>,
     pub messages: RwLock<Vec<Message>>,
     tool_cache: Cache<String, ToolResult>,
@@ -291,6 +303,11 @@ impl Agent {
             auto_compact_after: 80,
             workspace_root: std::env::current_dir().unwrap_or_else(|_| ".".into()),
             sandbox: None,
+            os_sandbox: None,
+            #[cfg(feature = "skills")]
+            skill_registry: None,
+            #[cfg(feature = "graph-memory")]
+            graph_memory: None,
             subscribers: Vec::new(),
             messages: RwLock::new(Vec::new()),
             tool_cache: Cache::builder()
@@ -357,6 +374,29 @@ impl Agent {
         self.sandbox = Some(sb);
     }
 
+    pub fn set_os_sandbox(&mut self, os: Arc<crate::sandbox::OsSandboxRunner>) {
+        self.os_sandbox = Some(os);
+    }
+
+    /// Enable OS sandbox for bash using auto-detected seatbelt/bwrap backend.
+    pub fn enable_os_sandbox(&mut self) -> Result<(), crate::sandbox::SandboxError> {
+        let mode = crate::sandbox::detect_sandbox();
+        let config = crate::sandbox::OsSandboxConfig::new(mode, self.workspace_root.clone());
+        let runner = crate::sandbox::OsSandboxRunner::new(config)?;
+        self.os_sandbox = Some(Arc::new(runner));
+        Ok(())
+    }
+
+    #[cfg(feature = "skills")]
+    pub fn set_skill_registry(&mut self, registry: crate::skill_engine::SkillRegistry) {
+        self.skill_registry = Some(registry);
+    }
+
+    #[cfg(feature = "graph-memory")]
+    pub fn set_graph_memory(&mut self, graph: crate::graph_memory::GraphMemory) {
+        self.graph_memory = Some(graph);
+    }
+
     pub fn subscribe(&mut self, callback: impl Fn(&Event) + Send + Sync + 'static) {
         self.subscribers.push(Arc::new(callback));
     }
@@ -386,6 +426,21 @@ impl Agent {
             self.compact("auto-compact before prompt");
         }
 
+        // Inject activated skill instructions into system prompt for this turn.
+        #[cfg(feature = "skills")]
+        if let Some(reg) = &self.skill_registry {
+            let activated = reg.auto_activate(text);
+            if !activated.is_empty() {
+                let block = activated.join("\n\n---\n\n");
+                let base = self.system_prompt.as_deref();
+                let merged = match base {
+                    Some(b) => format!("{b}\n\n# Active Skills\n\n{block}"),
+                    None => format!("# Active Skills\n\n{block}"),
+                };
+                self.system_prompt = Some(merged);
+            }
+        }
+
         self.messages.write().push(Message::user(text));
         self.emit(Event::AgentStart);
 
@@ -393,6 +448,9 @@ impl Agent {
         let mut tool_ctx = ToolContext::new(self.workspace_root.clone());
         if let Some(sb) = self.sandbox.clone() {
             tool_ctx = tool_ctx.with_sandbox(sb);
+        }
+        if let Some(os) = self.os_sandbox.clone() {
+            tool_ctx = tool_ctx.with_os_sandbox(os);
         }
         let ctx = Arc::new(tool_ctx);
 
@@ -477,6 +535,26 @@ impl Agent {
             }
 
             self.emit(Event::TurnEnd { turn: iteration });
+        }
+
+        #[cfg(feature = "graph-memory")]
+        if let Some(graph) = self.graph_memory.as_mut() {
+            let turns: Vec<crate::graph_memory::ConversationTurn> = self
+                .messages
+                .read()
+                .iter()
+                .map(|m| crate::graph_memory::ConversationTurn {
+                    role: m.role.to_string(),
+                    content: m.content.clone(),
+                })
+                .collect();
+            let extracted = crate::graph_memory::ConversationExtractor::new().extract(&turns);
+            for node in extracted.nodes {
+                graph.add_node(node);
+            }
+            for edge in extracted.edges {
+                let _ = graph.add_edge(edge);
+            }
         }
 
         self.emit(Event::AgentEnd);
