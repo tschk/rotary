@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.3.6] — 2026-07-17
+
+### Added
+- `Agent::set_skill_engine` — post-prompt `BackgroundReviewer` when attached
+- `Agent::enable_auto_dream` — optional dream consolidation after graph extract
+- CLI `build_agent` wires sandbox, OS bash wrap, skills, graph + auto_dream
+
+### Fixed
+- Hosts: telekinesis Anthropic stream applies `apply_cache_control`
+
 ## [0.3.5] — 2026-07-17
 
 ### Added

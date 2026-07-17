@@ -97,6 +97,33 @@ fn build_agent(model: Option<&str>, scope: Option<&str>) -> Agent {
         agent.set_provider(provider);
     }
 
+    let workspace = agent.workspace_root.clone();
+    agent.set_sandbox(Arc::new(rx4::SandboxManager::new(
+        rx4::SandboxProfile::Workspace,
+        workspace,
+    )));
+    let _ = agent.enable_os_sandbox();
+
+    #[cfg(feature = "skills")]
+    if let Some(home) = dirs::home_dir() {
+        let skills_dir = home.join(".agents").join("skills");
+        let mut engine = rx4::SkillEngine::new(skills_dir);
+        if engine.load().is_ok() {
+            let mut reg = rx4::SkillRegistry::new();
+            for skill in engine.list() {
+                reg.register(skill.clone());
+            }
+            agent.set_skill_registry(reg);
+            agent.set_skill_engine(engine);
+        }
+    }
+
+    #[cfg(feature = "graph-memory")]
+    {
+        agent.set_graph_memory(rx4::GraphMemory::new());
+        agent.enable_auto_dream(true);
+    }
+
     agent
 }
 
@@ -277,6 +304,7 @@ fn run_chat(model: Option<String>, scope: Option<String>) {
 
     #[cfg(not(feature = "providers"))]
     {
+        let _ = (model, scope);
         eprintln!("chat requires the `providers` feature");
         std::process::exit(1);
     }

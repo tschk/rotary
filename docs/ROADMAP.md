@@ -20,10 +20,11 @@
 ### P1
 3. [x] Tool effects + parallel tool batches (`JoinSet`, 0.3.3+)
 4. Session export/import (Codex rollout-friendly JSONL)
-5. Consolidation auto-run wiring (host-driven, capability already exists)
+5. [x] Consolidation auto-run via `enable_auto_dream` (0.3.6); host still owns schedule policy
 6. [x] Skills/graph host hooks on `Agent` (`set_skill_registry` / `set_graph_memory`, 0.3.5)
 7. [x] Prompt-cache on Anthropic stream path (0.3.5)
 8. [x] OS sandbox wrap for bash (`enable_os_sandbox` seatbelt/bwrap, 0.3.5)
+9. [x] Background review on prompt via `set_skill_engine` (0.3.6)
 
 ### P2
 9. OS sandbox as policy-plugin surface (today: explicit `enable_os_sandbox`)

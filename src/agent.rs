@@ -280,8 +280,13 @@ pub struct Agent {
     pub os_sandbox: Option<Arc<crate::sandbox::OsSandboxRunner>>,
     #[cfg(feature = "skills")]
     pub skill_registry: Option<crate::skill_engine::SkillRegistry>,
+    #[cfg(feature = "skills")]
+    pub skill_engine: Option<crate::skill_engine::SkillEngine>,
     #[cfg(feature = "graph-memory")]
     pub graph_memory: Option<crate::graph_memory::GraphMemory>,
+    /// When true and graph_memory is set, run one dream consolidation after each prompt.
+    #[cfg(feature = "graph-memory")]
+    pub auto_dream: bool,
     subscribers: Vec<Subscriber>,
     pub messages: RwLock<Vec<Message>>,
     tool_cache: Cache<String, ToolResult>,
@@ -306,8 +311,12 @@ impl Agent {
             os_sandbox: None,
             #[cfg(feature = "skills")]
             skill_registry: None,
+            #[cfg(feature = "skills")]
+            skill_engine: None,
             #[cfg(feature = "graph-memory")]
             graph_memory: None,
+            #[cfg(feature = "graph-memory")]
+            auto_dream: false,
             subscribers: Vec::new(),
             messages: RwLock::new(Vec::new()),
             tool_cache: Cache::builder()
@@ -392,9 +401,21 @@ impl Agent {
         self.skill_registry = Some(registry);
     }
 
+    /// Attach a skill engine for post-prompt background review.
+    #[cfg(feature = "skills")]
+    pub fn set_skill_engine(&mut self, engine: crate::skill_engine::SkillEngine) {
+        self.skill_engine = Some(engine);
+    }
+
     #[cfg(feature = "graph-memory")]
     pub fn set_graph_memory(&mut self, graph: crate::graph_memory::GraphMemory) {
         self.graph_memory = Some(graph);
+    }
+
+    /// Run dream consolidation after each prompt when graph_memory is set.
+    #[cfg(feature = "graph-memory")]
+    pub fn enable_auto_dream(&mut self, enabled: bool) {
+        self.auto_dream = enabled;
     }
 
     pub fn subscribe(&mut self, callback: impl Fn(&Event) + Send + Sync + 'static) {
@@ -554,6 +575,30 @@ impl Agent {
             }
             for edge in extracted.edges {
                 let _ = graph.add_edge(edge);
+            }
+            if self.auto_dream {
+                let _ = crate::dream_scheduler::DreamScheduler::new().run_cycle(graph);
+            }
+        }
+
+        // Background skill review when a SkillEngine is attached (host opt-in).
+        #[cfg(feature = "skills")]
+        if let Some(engine) = self.skill_engine.as_mut() {
+            let turns: Vec<crate::skill_engine::ConversationTurn> = self
+                .messages
+                .read()
+                .iter()
+                .map(|m| crate::skill_engine::ConversationTurn {
+                    role: m.role.to_string(),
+                    content: m.content.clone(),
+                    tool_calls: Vec::new(),
+                })
+                .collect();
+            let mut reviewer = crate::background_review::BackgroundReviewer::new(engine);
+            if let Ok(reviews) =
+                reviewer.review_conversation(&turns, crate::skill_engine::SkillOutcome::Success)
+            {
+                let _ = reviewer.apply_review(&reviews);
             }
         }
 
