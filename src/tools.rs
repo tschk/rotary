@@ -2,9 +2,13 @@
 //! Uses rayon for parallel search (grok pattern).
 
 use crate::agent::{ToolContext, ToolDefinition, ToolEffect, ToolFuture, ToolRegistry, ToolResult};
+use crate::mode::Scope;
+use crate::subagent::{SubagentConfig, SubagentManager};
+use dashmap::DashMap;
+use parking_lot::Mutex;
 use std::io::Read;
 use std::process::{Command, Stdio};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 use tracing::debug;
 
@@ -75,6 +79,499 @@ pub fn register_builtin_tools(registry: &mut ToolRegistry) {
         )
         .with_effect(ToolEffect::Read),
     );
+    registry.register(
+        ToolDefinition::new_fn(
+            "web_fetch",
+            "HTTP GET a URL and return response text (truncated). Requires providers feature.",
+            r#"{"type":"object","properties":{"url":{"type":"string"},"max_bytes":{"type":"integer"}},"required":["url"]}"#,
+            exec_web_fetch,
+        )
+        .with_effect(ToolEffect::Network),
+    );
+    registry.register(
+        ToolDefinition::new_fn(
+            "todo",
+            "Manage an in-memory session todo list. Actions: list, add, update, complete, clear.",
+            r#"{"type":"object","properties":{"action":{"type":"string","enum":["list","add","update","complete","clear"]},"items":{"type":"array","items":{"type":"object","properties":{"id":{"type":"string"},"content":{"type":"string"},"status":{"type":"string"}},"required":["content"]}}},"required":["action"]}"#,
+            exec_todo,
+        )
+        .with_effect(ToolEffect::Write),
+    );
+    registry.register(
+        ToolDefinition::new_fn(
+            "spawn_agent",
+            "Spawn a nested subagent with a prompt. Uses ToolContext provider/tools when present.",
+            r#"{"type":"object","properties":{"prompt":{"type":"string"},"name":{"type":"string"},"model":{"type":"string"},"isolate":{"type":"boolean"}},"required":["prompt"]}"#,
+            exec_spawn_agent,
+        )
+        .with_effect(ToolEffect::Process),
+    );
+    registry.register(
+        ToolDefinition::new_fn(
+            "enter_plan_mode",
+            "Request Plan scope and return plan-mode instructions for the model.",
+            r#"{"type":"object","properties":{}}"#,
+            exec_enter_plan_mode,
+        )
+        .with_effect(ToolEffect::Read),
+    );
+    registry.register(
+        ToolDefinition::new_fn(
+            "exit_plan_mode",
+            "Request Coding scope and leave plan mode.",
+            r#"{"type":"object","properties":{}}"#,
+            exec_exit_plan_mode,
+        )
+        .with_effect(ToolEffect::Read),
+    );
+    registry.register(
+        ToolDefinition::new_fn(
+            "lsp_diagnostics",
+            "Get LSP diagnostics for a document URI and language.",
+            r#"{"type":"object","properties":{"uri":{"type":"string"},"language":{"type":"string"}},"required":["uri","language"]}"#,
+            exec_lsp_diagnostics,
+        )
+        .with_effect(ToolEffect::Read),
+    );
+    registry.register(
+        ToolDefinition::new_fn(
+            "lsp_definition",
+            "Resolve definition locations via LSP.",
+            r#"{"type":"object","properties":{"uri":{"type":"string"},"language":{"type":"string"},"line":{"type":"integer"},"character":{"type":"integer"}},"required":["uri","language","line","character"]}"#,
+            exec_lsp_definition,
+        )
+        .with_effect(ToolEffect::Read),
+    );
+    registry.register(
+        ToolDefinition::new_fn(
+            "lsp_references",
+            "Find references via LSP.",
+            r#"{"type":"object","properties":{"uri":{"type":"string"},"language":{"type":"string"},"line":{"type":"integer"},"character":{"type":"integer"}},"required":["uri","language","line","character"]}"#,
+            exec_lsp_references,
+        )
+        .with_effect(ToolEffect::Read),
+    );
+
+}
+
+/// Register spawn_agent backed by a host-owned SubagentManager.
+pub fn register_spawn_agent_tool(
+    registry: &mut ToolRegistry,
+    manager: Arc<Mutex<SubagentManager>>,
+) {
+    registry.register(
+        ToolDefinition::new_boxed(
+            "spawn_agent",
+            "Spawn a nested subagent with a prompt via host SubagentManager.",
+            r#"{"type":"object","properties":{"prompt":{"type":"string"},"name":{"type":"string"},"model":{"type":"string"},"isolate":{"type":"boolean"}},"required":["prompt"]}"#,
+            Box::new(move |ctx, args| {
+                let manager = Arc::clone(&manager);
+                Box::pin(async move {
+                    let v: serde_json::Value = match serde_json::from_str(&args) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            return ToolResult::err("spawn_agent", format!("invalid json: {e}"))
+                        }
+                    };
+                    let prompt = match v.get("prompt").and_then(|p| p.as_str()) {
+                        Some(p) if !p.is_empty() => p.to_string(),
+                        _ => return ToolResult::err("spawn_agent", "prompt required"),
+                    };
+                    let name = v
+                        .get("name")
+                        .and_then(|n| n.as_str())
+                        .unwrap_or("subagent")
+                        .to_string();
+                    let model = v
+                        .get("model")
+                        .and_then(|m| m.as_str())
+                        .map(|s| s.to_string());
+                    let isolate = v
+                        .get("isolate")
+                        .and_then(|i| i.as_bool())
+                        .unwrap_or(false);
+                    let config = SubagentConfig {
+                        name: name.clone(),
+                        model,
+                        workspace_isolation: isolate,
+                        ..SubagentConfig::default()
+                    };
+                    let mut mgr = manager.lock();
+                    match mgr.spawn(config, &prompt, &ctx.workspace_root) {
+                        Ok(handle) => {
+                            let result = handle.wait_sync();
+                            let body = serde_json::json!({
+                                "id": handle.id(),
+                                "name": handle.name(),
+                                "status": format!("{:?}", handle.status()),
+                                "output": result.output,
+                                "tool_calls": result.tool_calls,
+                                "error": result.error,
+                            });
+                            ToolResult::ok("spawn_agent", body.to_string())
+                        }
+                        Err(e) => ToolResult::err("spawn_agent", e.to_string()),
+                    }
+                })
+            }),
+        )
+        .with_effect(ToolEffect::Process),
+    );
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+struct TodoItem {
+    id: String,
+    content: String,
+    status: String,
+}
+
+fn todo_store() -> &'static DashMap<String, Vec<TodoItem>> {
+    static STORE: OnceLock<DashMap<String, Vec<TodoItem>>> = OnceLock::new();
+    STORE.get_or_init(DashMap::new)
+}
+
+fn workspace_key(ctx: &ToolContext) -> String {
+    ctx.workspace_root.to_string_lossy().into_owned()
+}
+
+fn exec_web_fetch(_ctx: Arc<ToolContext>, args: String) -> ToolFuture {
+    Box::pin(async move {
+        let url = match parse_str_field(&args, "url") {
+            Some(u) => u,
+            None => return ToolResult::err("web_fetch", "url required"),
+        };
+        let max_bytes = parse_num_field(&args, "max_bytes").unwrap_or(100_000) as usize;
+        let max_bytes = max_bytes.min(100_000);
+
+        #[cfg(feature = "providers")]
+        {
+            let client = crate::http::global_client();
+            match client.get(&url).send().await {
+                Ok(resp) => {
+                    let status = resp.status();
+                    match resp.bytes().await {
+                        Ok(bytes) => {
+                            let truncated = bytes.len() > max_bytes;
+                            let slice = &bytes[..bytes.len().min(max_bytes)];
+                            let mut text = String::from_utf8_lossy(slice).into_owned();
+                            if truncated {
+                                text.push_str(&format!(
+                                    "\n\n[truncated to {max_bytes} bytes; total {}]",
+                                    bytes.len()
+                                ));
+                            }
+                            if !status.is_success() {
+                                text = format!("HTTP {status}\n{text}");
+                            }
+                            ToolResult::ok("web_fetch", text)
+                        }
+                        Err(e) => ToolResult::err("web_fetch", format!("body read failed: {e}")),
+                    }
+                }
+                Err(e) => ToolResult::err("web_fetch", format!("request failed: {e}")),
+            }
+        }
+
+        #[cfg(not(feature = "providers"))]
+        {
+            let _ = max_bytes;
+            ToolResult::err(
+                "web_fetch",
+                format!("providers feature required to fetch {url}"),
+            )
+        }
+    })
+}
+
+fn exec_todo(ctx: Arc<ToolContext>, args: String) -> ToolFuture {
+    Box::pin(async move {
+        let v: serde_json::Value = match serde_json::from_str(&args) {
+            Ok(v) => v,
+            Err(e) => return ToolResult::err("todo", format!("invalid json: {e}")),
+        };
+        let action = match v.get("action").and_then(|a| a.as_str()) {
+            Some(a) => a,
+            None => return ToolResult::err("todo", "action required"),
+        };
+        let key = workspace_key(&ctx);
+        let store = todo_store();
+
+        match action {
+            "list" => {
+                let items = store.get(&key).map(|e| e.clone()).unwrap_or_default();
+                ToolResult::ok(
+                    "todo",
+                    serde_json::to_string_pretty(&items).unwrap_or_else(|_| "[]".into()),
+                )
+            }
+            "clear" => {
+                store.insert(key, Vec::new());
+                ToolResult::ok("todo", "[]")
+            }
+            "add" => {
+                let mut items = store.get(&key).map(|e| e.clone()).unwrap_or_default();
+                let incoming = v
+                    .get("items")
+                    .and_then(|i| i.as_array())
+                    .cloned()
+                    .unwrap_or_default();
+                if incoming.is_empty() {
+                    return ToolResult::err("todo", "items required for add");
+                }
+                for item in incoming {
+                    let content = item
+                        .get("content")
+                        .and_then(|c| c.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    if content.is_empty() {
+                        continue;
+                    }
+                    let id = item
+                        .get("id")
+                        .and_then(|i| i.as_str())
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+                    let status = item
+                        .get("status")
+                        .and_then(|s| s.as_str())
+                        .unwrap_or("pending")
+                        .to_string();
+                    items.push(TodoItem { id, content, status });
+                }
+                let out = serde_json::to_string_pretty(&items).unwrap_or_else(|_| "[]".into());
+                store.insert(key, items);
+                ToolResult::ok("todo", out)
+            }
+            "update" | "complete" => {
+                let mut items = store.get(&key).map(|e| e.clone()).unwrap_or_default();
+                let incoming = v
+                    .get("items")
+                    .and_then(|i| i.as_array())
+                    .cloned()
+                    .unwrap_or_default();
+                if incoming.is_empty() {
+                    return ToolResult::err("todo", format!("items required for {action}"));
+                }
+                for item in incoming {
+                    let id = item.get("id").and_then(|i| i.as_str());
+                    let content = item.get("content").and_then(|c| c.as_str());
+                    let status = if action == "complete" {
+                        Some("completed")
+                    } else {
+                        item.get("status").and_then(|s| s.as_str())
+                    };
+                    if let Some(id) = id {
+                        if let Some(existing) = items.iter_mut().find(|t| t.id == id) {
+                            if let Some(c) = content {
+                                existing.content = c.to_string();
+                            }
+                            if let Some(s) = status {
+                                existing.status = s.to_string();
+                            }
+                        }
+                    } else if let Some(c) = content {
+                        if let Some(existing) = items.iter_mut().find(|t| t.content == c) {
+                            if let Some(s) = status {
+                                existing.status = s.to_string();
+                            }
+                        }
+                    }
+                }
+                let out = serde_json::to_string_pretty(&items).unwrap_or_else(|_| "[]".into());
+                store.insert(key, items);
+                ToolResult::ok("todo", out)
+            }
+            other => ToolResult::err("todo", format!("unknown action: {other}")),
+        }
+    })
+}
+
+fn exec_spawn_agent(ctx: Arc<ToolContext>, args: String) -> ToolFuture {
+    Box::pin(async move {
+        let v: serde_json::Value = match serde_json::from_str(&args) {
+            Ok(v) => v,
+            Err(e) => return ToolResult::err("spawn_agent", format!("invalid json: {e}")),
+        };
+        let prompt = match v.get("prompt").and_then(|p| p.as_str()) {
+            Some(p) if !p.is_empty() => p.to_string(),
+            _ => return ToolResult::err("spawn_agent", "prompt required"),
+        };
+        let name = v
+            .get("name")
+            .and_then(|n| n.as_str())
+            .unwrap_or("subagent")
+            .to_string();
+        let model = v
+            .get("model")
+            .and_then(|m| m.as_str())
+            .map(|s| s.to_string());
+        let isolate = v
+            .get("isolate")
+            .and_then(|i| i.as_bool())
+            .unwrap_or(false);
+
+        let mut manager = SubagentManager::new();
+        if let Some(provider) = ctx.provider.clone() {
+            manager = manager.with_provider(provider);
+        }
+        if let Some(tools) = ctx.tools.clone() {
+            manager = manager.with_tools(tools);
+        }
+        let config = SubagentConfig {
+            name: name.clone(),
+            model,
+            workspace_isolation: isolate,
+            ..SubagentConfig::default()
+        };
+        match manager.spawn(config, &prompt, &ctx.workspace_root) {
+            Ok(handle) => {
+                let result = handle.wait_sync();
+                let body = serde_json::json!({
+                    "id": handle.id(),
+                    "name": handle.name(),
+                    "status": format!("{:?}", handle.status()),
+                    "output": result.output,
+                    "tool_calls": result.tool_calls,
+                    "error": result.error,
+                });
+                ToolResult::ok("spawn_agent", body.to_string())
+            }
+            Err(e) => ToolResult::err("spawn_agent", e.to_string()),
+        }
+    })
+}
+
+fn exec_enter_plan_mode(ctx: Arc<ToolContext>, _args: String) -> ToolFuture {
+    Box::pin(async move {
+        if let Some(slot) = ctx.pending_scope.as_ref() {
+            *slot.lock() = Some(Scope::Plan);
+        }
+        ToolResult::ok(
+            "enter_plan_mode",
+            "Entered plan mode. Produce a concrete multi-step plan: files, risks, verification. Do not modify the workspace. Host should set_scope(Plan).",
+        )
+    })
+}
+
+fn exec_exit_plan_mode(ctx: Arc<ToolContext>, _args: String) -> ToolFuture {
+    Box::pin(async move {
+        if let Some(slot) = ctx.pending_scope.as_ref() {
+            *slot.lock() = Some(Scope::Coding);
+        }
+        ToolResult::ok(
+            "exit_plan_mode",
+            "Exited plan mode. Resume coding scope. Host should set_scope(Coding).",
+        )
+    })
+}
+
+fn exec_lsp_diagnostics(ctx: Arc<ToolContext>, args: String) -> ToolFuture {
+    Box::pin(async move {
+        #[cfg(feature = "ipc")]
+        {
+            let uri = match parse_str_field(&args, "uri") {
+                Some(u) => u,
+                None => return ToolResult::err("lsp_diagnostics", "uri required"),
+            };
+            let language = match parse_str_field(&args, "language") {
+                Some(l) => l,
+                None => return ToolResult::err("lsp_diagnostics", "language required"),
+            };
+            let Some(lsp) = ctx.lsp.clone() else {
+                return ToolResult::err("lsp_diagnostics", "lsp not configured");
+            };
+            match lsp.diagnostics(&uri, &language).await {
+                Ok(diags) => ToolResult::ok(
+                    "lsp_diagnostics",
+                    serde_json::to_string_pretty(&diags).unwrap_or_else(|e| e.to_string()),
+                ),
+                Err(e) => ToolResult::err("lsp_diagnostics", e.to_string()),
+            }
+        }
+        #[cfg(not(feature = "ipc"))]
+        {
+            let _ = (ctx, args);
+            ToolResult::err("lsp_diagnostics", "lsp not configured")
+        }
+    })
+}
+
+fn exec_lsp_definition(ctx: Arc<ToolContext>, args: String) -> ToolFuture {
+    Box::pin(async move {
+        #[cfg(feature = "ipc")]
+        {
+            let uri = match parse_str_field(&args, "uri") {
+                Some(u) => u,
+                None => return ToolResult::err("lsp_definition", "uri required"),
+            };
+            let language = match parse_str_field(&args, "language") {
+                Some(l) => l,
+                None => return ToolResult::err("lsp_definition", "language required"),
+            };
+            let line = match parse_num_field(&args, "line") {
+                Some(n) => n as u32,
+                None => return ToolResult::err("lsp_definition", "line required"),
+            };
+            let character = parse_num_field(&args, "character")
+                .or_else(|| parse_num_field(&args, "char"))
+                .unwrap_or(0) as u32;
+            let Some(lsp) = ctx.lsp.clone() else {
+                return ToolResult::err("lsp_definition", "lsp not configured");
+            };
+            match lsp.definition(&uri, &language, line, character).await {
+                Ok(locs) => ToolResult::ok(
+                    "lsp_definition",
+                    serde_json::to_string_pretty(&locs).unwrap_or_else(|e| e.to_string()),
+                ),
+                Err(e) => ToolResult::err("lsp_definition", e.to_string()),
+            }
+        }
+        #[cfg(not(feature = "ipc"))]
+        {
+            let _ = (ctx, args);
+            ToolResult::err("lsp_definition", "lsp not configured")
+        }
+    })
+}
+
+fn exec_lsp_references(ctx: Arc<ToolContext>, args: String) -> ToolFuture {
+    Box::pin(async move {
+        #[cfg(feature = "ipc")]
+        {
+            let uri = match parse_str_field(&args, "uri") {
+                Some(u) => u,
+                None => return ToolResult::err("lsp_references", "uri required"),
+            };
+            let language = match parse_str_field(&args, "language") {
+                Some(l) => l,
+                None => return ToolResult::err("lsp_references", "language required"),
+            };
+            let line = match parse_num_field(&args, "line") {
+                Some(n) => n as u32,
+                None => return ToolResult::err("lsp_references", "line required"),
+            };
+            let character = parse_num_field(&args, "character")
+                .or_else(|| parse_num_field(&args, "char"))
+                .unwrap_or(0) as u32;
+            let Some(lsp) = ctx.lsp.clone() else {
+                return ToolResult::err("lsp_references", "lsp not configured");
+            };
+            match lsp.references(&uri, &language, line, character).await {
+                Ok(locs) => ToolResult::ok(
+                    "lsp_references",
+                    serde_json::to_string_pretty(&locs).unwrap_or_else(|e| e.to_string()),
+                ),
+                Err(e) => ToolResult::err("lsp_references", e.to_string()),
+            }
+        }
+        #[cfg(not(feature = "ipc"))]
+        {
+            let _ = (ctx, args);
+            ToolResult::err("lsp_references", "lsp not configured")
+        }
+    })
 }
 
 fn parse_str_field(args: &str, field: &str) -> Option<String> {
@@ -593,4 +1090,59 @@ mod tests {
         assert!(result.is_error);
         assert_eq!(result.content, "command cancelled");
     }
+
+
+    #[tokio::test]
+    async fn test_todo_add_list_complete() {
+        let tmp = TempDir::new().unwrap();
+        let ctx = Arc::new(ToolContext::new(tmp.path()));
+        let add = exec_todo(
+            ctx.clone(),
+            r#"{"action":"add","items":[{"id":"1","content":"ship tools"}]}"#.to_string(),
+        )
+        .await;
+        assert!(!add.is_error, "{}", add.content);
+        assert!(add.content.contains("ship tools"));
+
+        let listed = exec_todo(ctx.clone(), r#"{"action":"list"}"#.to_string()).await;
+        assert!(!listed.is_error);
+        assert!(listed.content.contains("ship tools"));
+
+        let done = exec_todo(
+            ctx.clone(),
+            r#"{"action":"complete","items":[{"id":"1"}]}"#.to_string(),
+        )
+        .await;
+        assert!(!done.is_error);
+        assert!(done.content.contains("completed"));
+
+        let _ = exec_todo(ctx, r#"{"action":"clear"}"#.to_string()).await;
+    }
+
+    #[tokio::test]
+    async fn test_enter_plan_mode_sets_pending_scope() {
+        let pending = Arc::new(parking_lot::Mutex::new(None));
+        let mut ctx = ToolContext::new(".");
+        ctx.pending_scope = Some(Arc::clone(&pending));
+        let result = exec_enter_plan_mode(Arc::new(ctx), "{}".to_string()).await;
+        assert!(!result.is_error);
+        assert_eq!(*pending.lock(), Some(Scope::Plan));
+    }
+
+    #[tokio::test]
+    async fn test_web_fetch_without_providers_or_offline() {
+        let ctx = Arc::new(ToolContext::new("."));
+        let result = exec_web_fetch(
+            ctx,
+            r#"{"url":"https://example.invalid/"}"#.to_string(),
+        )
+        .await;
+        assert!(result.is_error);
+        assert!(
+            result.content.contains("providers feature required")
+                || result.content.contains("request failed")
+                || result.content.contains("error")
+        );
+    }
+
 }

@@ -68,6 +68,13 @@ pub const CODING_TOOLS: &[&str] = &[
     "ls",
     "list_dir",
     "spawn_agent",
+    "web_fetch",
+    "todo",
+    "enter_plan_mode",
+    "exit_plan_mode",
+    "lsp_diagnostics",
+    "lsp_definition",
+    "lsp_references",
 ];
 pub const RESEARCH_TOOLS: &[&str] = &[
     "read",
@@ -80,6 +87,10 @@ pub const RESEARCH_TOOLS: &[&str] = &[
     "code_intel",
     "bash",
     "run_command",
+    "web_fetch",
+    "lsp_diagnostics",
+    "lsp_definition",
+    "lsp_references",
 ];
 pub const PLAN_TOOLS: &[&str] = &[
     "read",
@@ -90,6 +101,13 @@ pub const PLAN_TOOLS: &[&str] = &[
     "find_files",
     "grep",
     "code_intel",
+    "todo",
+    "web_fetch",
+    "enter_plan_mode",
+    "exit_plan_mode",
+    "lsp_diagnostics",
+    "lsp_definition",
+    "lsp_references",
 ];
 pub const COMPUTER_USE_TOOLS: &[&str] = &[
     "cu_call",

@@ -144,7 +144,7 @@ pub use skill_engine::{
     SkillState,
 };
 pub use sse::{SseError, SseEvent, SseParser};
-pub use tools::register_builtin_tools;
+pub use tools::{register_builtin_tools, register_spawn_agent_tool};
 pub use work_pack::{WorkPack, WorkPackError};
 
 #[cfg(feature = "mcp")]
