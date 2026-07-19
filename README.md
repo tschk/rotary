@@ -172,7 +172,7 @@ flowchart TD
 | `computer-use` | no | rs_peekaboo `cu_*` tools (13 tools) |
 | `providers` | no | reqwest SSE streaming for OpenAI/Anthropic/Ollama/custom |
 | `memory` | no | SQLite-backed memory store |
-| `mcp` | no | MCP client (rmcp, JSON-RPC 2.0 over stdio) |
+| `mcp` | no | MCP client (JSON-RPC 2.0 over stdio / HTTP / SSE) |
 | `sqlite-sessions` | no | SQLite session save/load on `Session` |
 | `skills` | no | skill engine, curator, background review, embeddings |
 | `graph-memory` | no | graph memory, dream scheduler |

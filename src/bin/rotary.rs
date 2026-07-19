@@ -1,7 +1,10 @@
 use clap::{Parser, Subcommand};
-use rx4::{print_banner, register_builtin_tools, Agent, Scope, ToolRegistry};
+use rx4::{print_banner, register_builtin_tools, ToolRegistry};
 use std::io::BufRead;
 use std::sync::Arc;
+
+#[cfg(feature = "providers")]
+use rx4::{Agent, Scope};
 
 #[cfg(feature = "computer-use")]
 use rx4::computer_use;
@@ -300,11 +303,6 @@ fn setup_provider() -> Option<Arc<dyn rx4::Provider>> {
         }
     }
 
-    None
-}
-
-#[cfg(not(feature = "providers"))]
-fn setup_provider() -> Option<Arc<dyn rx4::Provider>> {
     None
 }
 

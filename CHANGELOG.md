@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.3.10] — 2026-07-19
+
+### Added
+- Dangerous shell command hard-deny under non-`FullAccess` modes (`is_dangerous_shell_command`)
+- Project context merges all present instruction files (AGENTS/CLAUDE/CRUSH/GEMINI/.cursor/rules)
+
+### Removed
+- Unused optional `rmcp` dependency from `mcp` feature (hand-rolled client only)
+
+### Fixed
+- `rx4` bin unused imports / dead non-providers `setup_provider` stub
+- Docs: MCP feature no longer claims `rmcp`
+
 ## [0.3.9] — 2026-07-19
 
 ### Added

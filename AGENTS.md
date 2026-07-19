@@ -224,7 +224,7 @@ graph TD
 | `computer-use` | no | rs_peekaboo `cu_*` tools (13 tools) |
 | `providers` | no | reqwest SSE streaming for OpenAI/Anthropic/Ollama/custom |
 | `memory` | no | SQLite-backed memory store |
-| `mcp` | no | MCP client (rmcp, JSON-RPC 2.0 over stdio) |
+| `mcp` | no | MCP client (JSON-RPC 2.0 over stdio / HTTP / SSE) |
 | `sqlite-sessions` | no | SQLite session persistence |
 | `skills` | no | skill engine, skill curator, background review, embeddings (serde_yaml + dirs) |
 | `graph-memory` | no | graph memory (pagerank, community detection), dream scheduler |

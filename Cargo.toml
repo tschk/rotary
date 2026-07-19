@@ -1,6 +1,6 @@
 [package]
 name = "rx4"
-version = "0.3.9"
+version = "0.3.10"
 edition = "2021"
 rust-version = "1.88"
 license = "MPL-2.0"
@@ -25,7 +25,7 @@ ipc = ["dep:tokio", "tokio/net", "tokio/io-util", "tokio/sync", "tokio/process",
 providers = ["dep:reqwest", "dep:eventsource-stream", "dep:futures"]
 builtin-tools = ["dep:rayon", "dep:glob", "dep:ignore", "dep:regex"]
 memory = ["dep:rusqlite"]
-mcp = ["dep:rmcp", "dep:tokio", "tokio/process", "tokio/io-util", "tokio/sync", "dep:reqwest", "reqwest/json", "reqwest/rustls-tls"]
+mcp = ["dep:tokio", "tokio/process", "tokio/io-util", "tokio/sync", "dep:reqwest", "reqwest/json", "reqwest/rustls-tls"]
 sqlite-sessions = ["dep:rusqlite"]
 graph-memory = []
 skills = ["dep:serde_yaml", "dep:dirs"]
@@ -63,9 +63,6 @@ rs_peekaboo = { version = "0.3.2", optional = true }
 
 # Optional — memory / sqlite-sessions
 rusqlite = { version = "0.37", features = ["bundled"], optional = true }
-
-# Optional — mcp
-rmcp = { version = "=0.6.0", optional = true }
 
 # Skill frontmatter parsing (skill_engine) and home-dir resolution.
 serde_yaml = { version = "0.9", optional = true }
