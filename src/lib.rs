@@ -78,6 +78,7 @@ pub mod models;
 #[cfg(feature = "mcp")]
 pub mod mcp;
 
+#[cfg(feature = "ipc")]
 pub mod acp;
 #[cfg(feature = "ipc")]
 pub mod lsp;
@@ -94,6 +95,7 @@ pub use background_review::{
 pub use compaction::{
     apply_compaction, compact_messages, CompactionConfig, CompactionMarker, CompactionResult,
 };
+pub use context::{compose_system_prompt, load_project_instructions, ProjectInstructions};
 pub use cost::{CostEntry, ModelPricing, PricingRegistry, SessionCost, TokenUsage};
 #[cfg(feature = "graph-memory")]
 pub use dream_scheduler::{DreamReport, DreamScheduler};
@@ -101,6 +103,10 @@ pub use dream_scheduler::{DreamReport, DreamScheduler};
 pub use embeddings::{
     cosine_similarity, EmbedError, EmbeddingClient, EmbeddingConfig, EmbeddingProvider,
     SemanticSearch,
+};
+pub use extract::{
+    extract_knowledge_loose, extract_proactive_loose, parse_knowledge, parse_proactive,
+    ExtractedKnowledge, ProactiveItem,
 };
 #[cfg(feature = "graph-memory")]
 pub use graph_memory::{
@@ -110,19 +116,30 @@ pub use graph_memory::{
 pub use guardrails::{
     classify_tool, GuardrailConfig, GuardrailDecision, SelfHealingRetry, ToolClass, ToolGuardrails,
 };
-pub use hooks::{HookDecision, HookEvent, HookRegistry};
+pub use hooks::{HookDecision, HookEvent, HookFn, HookRegistry};
 pub use mode::{Profile, Scope};
 pub use model_router::{
     ModelRouter, ModelRouterError, ModelTier, ProactiveMonitor, RouterConfig, SkillSuggestion,
     SubagentModelSelector, TaskTier, TaskType,
 };
 pub use models::{CompatConfig, ModelInfo, ModelRegistry};
-pub use permissions::{ApprovalRequest, Approver, Decision, PermissionMode, Policy};
+#[cfg(feature = "ipc")]
+pub use multiagent::CoordinatorEvent;
+pub use multiagent::{
+    AgentProfile, AgentRole, MultiAgentCoordinator, MultiAgentError, TeamResult, TeamTask,
+};
+pub use permissions::{
+    authorize, authorize_with_workspace, command_from_args, is_dangerous_shell_command,
+    is_process_tool, is_read_only_tool, is_write_tool, path_outside_workspace,
+    shell_command_allowed, shell_rule_matches, AlwaysAllow, AlwaysDeny, ApprovalRequest, Approver,
+    Decision, PermissionMode, Policy,
+};
 pub use prompt_cache::{
     apply_cache_control, CachePoint, CachePosition, CacheProvider, CacheStats, CacheStatsTracker,
     CacheTtl, PromptCacheConfig,
 };
 pub use provider::{Message, Provider, ProviderRegistry, Role, StreamEvent};
+pub use ranking::{rank, rank_with_query, top_n};
 pub use repomap::{RepoMap, RepoMapError};
 pub use rollout::{RolloutEntry, RolloutManager, TraceWriter};
 pub use routing::{
@@ -143,12 +160,19 @@ pub use skill_engine::{
     ConfidencePrior, Skill, SkillEngine, SkillError, SkillFrontmatter, SkillOutcome, SkillRegistry,
     SkillState,
 };
+pub use slash::{help_text as slash_help_text, parse as parse_slash, Command as SlashCommand};
 pub use sse::{SseError, SseEvent, SseParser};
+pub use subagent::{
+    SubagentConfig, SubagentError, SubagentHandle, SubagentManager, SubagentResult, SubagentStatus,
+};
 pub use tools::{register_builtin_tools, register_spawn_agent_tool};
 pub use work_pack::{WorkPack, WorkPackError};
 
 #[cfg(feature = "mcp")]
 pub use mcp::{McpClient, McpError, McpRegistry, McpResourceInfo, McpToolInfo};
+
+#[cfg(feature = "ipc")]
+pub use acp::{AcpHost, AcpSession};
 
 pub use marketplace::{
     verify_plugin_integrity, InstalledPlugin, MarketplaceError, MarketplaceIndex, McpServerConfig,

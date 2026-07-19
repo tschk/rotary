@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.3.11] — 2026-07-19
+
+### Added
+- `Policy.shell_allow` + `shell_rule_matches` / `shell_command_allowed` (e.g. `git *`)
+- `McpClient::connect_config` from marketplace host config
+- Public crate reexports: context, extract, ranking, slash, subagent, multiagent, permissions helpers, ACP (ipc)
+- `extract_*_loose` + `rank_with_query`
+- Tokio always-on for agent loop (feature matrix fixed)
+
+### Fixed
+- Dangerous shell deny no longer flags `rm -rf /tmp/...` as root wipe
+- ACP module gated on `ipc` (needs tokio net/sync extras)
+- `no-default-features` build compiles again
+
 ## [0.3.10] — 2026-07-19
 
 ### Added

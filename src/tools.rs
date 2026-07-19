@@ -888,7 +888,7 @@ fn exec_grep(ctx: Arc<ToolContext>, args: String) -> ToolFuture {
 
         #[cfg(not(feature = "builtin-tools"))]
         {
-            let _ = (pattern, context);
+            let _ = (pattern, context, full);
             ToolResult::err("grep", "builtin-tools feature not enabled")
         }
     })
@@ -936,7 +936,7 @@ fn exec_find(ctx: Arc<ToolContext>, args: String) -> ToolFuture {
 
         #[cfg(not(feature = "builtin-tools"))]
         {
-            let _ = pattern;
+            let _ = (pattern, full);
             ToolResult::err("find", "builtin-tools feature not enabled")
         }
     })

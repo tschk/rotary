@@ -364,7 +364,7 @@ async fn handshake(transport: &mut dyn McpTransport) -> Result<(), McpError> {
     let init_params = json!({
         "protocolVersion": "2024-11-05",
         "capabilities": {},
-        "clientInfo": { "name": "rx4", "version": "0.3.0" }
+        "clientInfo": { "name": "rx4", "version": env!("CARGO_PKG_VERSION") }
     });
     transport
         .send_request("initialize", Some(init_params))
@@ -442,6 +442,46 @@ impl McpClient {
         Ok(Self {
             inner: Mutex::new(Box::new(transport)),
         })
+    }
+
+    /// Connect from marketplace/host config (`stdio` | `http` | `sse`).
+    pub async fn connect_config(
+        cfg: &crate::marketplace::McpServerConfig,
+    ) -> Result<Self, McpError> {
+        use crate::marketplace::McpTransportKind;
+        match cfg.transport {
+            McpTransportKind::Stdio => {
+                if cfg.command.is_empty() {
+                    return Err(McpError::Spawn("stdio MCP config missing command".into()));
+                }
+                let args: Vec<&str> = cfg.args.iter().map(String::as_str).collect();
+                Self::connect_stdio(&cfg.command, &args).await
+            }
+            McpTransportKind::Http => {
+                let url = cfg
+                    .url
+                    .as_deref()
+                    .ok_or_else(|| McpError::Transport("http MCP config missing url".into()))?;
+                let headers = if cfg.headers.is_empty() {
+                    None
+                } else {
+                    Some(cfg.headers.clone())
+                };
+                Self::connect_http(url, headers).await
+            }
+            McpTransportKind::Sse => {
+                let url = cfg
+                    .url
+                    .as_deref()
+                    .ok_or_else(|| McpError::Transport("sse MCP config missing url".into()))?;
+                let headers = if cfg.headers.is_empty() {
+                    None
+                } else {
+                    Some(cfg.headers.clone())
+                };
+                Self::connect_sse(url, headers).await
+            }
+        }
     }
 
     /// Calls `tools/list` and returns the tools exposed by the server.

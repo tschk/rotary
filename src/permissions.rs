@@ -23,6 +23,10 @@ pub struct Policy {
     /// When true, hosts/Agent should enable OS seatbelt/bwrap for process tools.
     #[serde(default)]
     pub enable_os_sandbox: bool,
+    /// Shell command allow patterns for process tools, e.g. `git *`, `cargo test*`.
+    /// Matching commands auto-Allow under WorkspaceWrite/ReadOnly (after dangerous deny).
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub shell_allow: Vec<String>,
 }
 
 impl Policy {
@@ -32,6 +36,7 @@ impl Policy {
             allowlist: vec![],
             denylist: vec![],
             enable_os_sandbox: false,
+            shell_allow: vec![],
         }
     }
     pub fn read_only() -> Self {
@@ -40,6 +45,7 @@ impl Policy {
             allowlist: vec![],
             denylist: vec![],
             enable_os_sandbox: false,
+            shell_allow: vec![],
         }
     }
     pub fn workspace_write() -> Self {
@@ -48,6 +54,7 @@ impl Policy {
             allowlist: vec![],
             denylist: vec![],
             enable_os_sandbox: true,
+            shell_allow: vec![],
         }
     }
     pub fn deny_all() -> Self {
@@ -56,12 +63,21 @@ impl Policy {
             allowlist: vec![],
             denylist: vec![],
             enable_os_sandbox: false,
+            shell_allow: vec![],
         }
     }
 
     /// Enable or disable OS sandbox plugin flag (seatbelt/bwrap).
     pub fn with_os_sandbox(mut self, enabled: bool) -> Self {
         self.enable_os_sandbox = enabled;
+        self
+    }
+
+    pub fn with_shell_allow(
+        mut self,
+        patterns: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Self {
+        self.shell_allow = patterns.into_iter().map(Into::into).collect();
         self
     }
 }
@@ -211,6 +227,9 @@ pub fn authorize_with_workspace(
             if is_dangerous_shell_command(&cmd) {
                 return Decision::Deny;
             }
+            if !policy.shell_allow.is_empty() && shell_command_allowed(&cmd, &policy.shell_allow) {
+                return Decision::Allow;
+            }
         }
     }
 
@@ -246,7 +265,7 @@ pub fn authorize_with_workspace(
     mode_decision
 }
 
-fn is_read_only_tool(name: &str) -> bool {
+pub fn is_read_only_tool(name: &str) -> bool {
     matches!(
         name,
         "read"
@@ -285,7 +304,7 @@ pub fn is_process_tool(name: &str) -> bool {
     matches!(name, "bash" | "run_command" | "spawn_agent")
 }
 
-fn command_from_args(arguments: &str) -> Option<String> {
+pub fn command_from_args(arguments: &str) -> Option<String> {
     let v: serde_json::Value = serde_json::from_str(arguments).ok()?;
     for key in ["command", "cmd"] {
         if let Some(s) = v.get(key).and_then(|x| x.as_str()) {
@@ -295,43 +314,102 @@ fn command_from_args(arguments: &str) -> Option<String> {
     None
 }
 
+/// Glob-ish match: `*` = any substring, case-sensitive on remaining parts.
+pub fn shell_rule_matches(pattern: &str, command: &str) -> bool {
+    let cmd = command.trim();
+    let pat = pattern.trim();
+    if pat.is_empty() {
+        return false;
+    }
+    if pat == "*" {
+        return true;
+    }
+    if !pat.contains('*') {
+        return cmd == pat || cmd.starts_with(&format!("{pat} "));
+    }
+    let parts: Vec<&str> = pat.split('*').collect();
+    let mut rest = cmd;
+    if let Some(first) = parts.first() {
+        if !first.is_empty() {
+            if !rest.starts_with(first) {
+                return false;
+            }
+            rest = &rest[first.len()..];
+        }
+    }
+    for (i, part) in parts.iter().enumerate().skip(1) {
+        if part.is_empty() {
+            if i == parts.len() - 1 {
+                return true;
+            }
+            continue;
+        }
+        if let Some(idx) = rest.find(part) {
+            rest = &rest[idx + part.len()..];
+        } else {
+            return false;
+        }
+    }
+    true
+}
+
+pub fn shell_command_allowed(command: &str, patterns: &[String]) -> bool {
+    patterns.iter().any(|p| shell_rule_matches(p, command))
+}
+
 /// Hard-deny shell patterns under non-FullAccess modes (escape / wipe / remote pipe).
 pub fn is_dangerous_shell_command(command: &str) -> bool {
     let lower = command.to_ascii_lowercase();
+    if is_rm_rf_root(&lower) {
+        return true;
+    }
     const PATTERNS: &[&str] = &[
-        "rm -rf /",
-        "rm -rf /*",
-        "mkfs",
+        "mkfs.",
+        "mkfs ",
         "dd if=",
         ":(){ :|:& };:",
-        "curl | sh",
-        "curl|sh",
-        "wget | sh",
-        "wget|sh",
-        "curl | bash",
-        "curl|bash",
-        "wget | bash",
-        "wget|bash",
         "/dev/sda",
         "chmod -r 777 /",
-        "chown -r",
+        "chmod -r 777/*",
+        "chown -r root /",
+        "chown -r /",
     ];
     if PATTERNS.iter().any(|p| lower.contains(p)) {
         return true;
     }
     // curl/wget piped to interpreter variants with optional flags between.
-    if (lower.contains("curl ") || lower.contains("wget "))
+    if (lower.contains("curl ")
+        || lower.contains("wget ")
+        || lower.starts_with("curl")
+        || lower.starts_with("wget"))
         && lower.contains('|')
-        && (lower.contains(" sh")
-            || lower.contains("|sh")
-            || lower.contains(" bash")
+        && (lower.contains("|sh")
+            || lower.contains("| sh")
             || lower.contains("|bash")
-            || lower.contains(" zsh")
-            || lower.contains("|zsh"))
+            || lower.contains("| bash")
+            || lower.contains("|zsh")
+            || lower.contains("| zsh")
+            || lower.contains("|sh ")
+            || lower.contains("|bash ")
+            || lower.contains("|zsh "))
     {
         return true;
     }
     false
+}
+
+/// True for `rm -rf /` / `rm -rf /*` style root wipes, not `rm -rf /tmp/...`.
+fn is_rm_rf_root(cmd: &str) -> bool {
+    let Some(idx) = cmd.find("rm -rf /") else {
+        return cmd.contains("rm -rf /*");
+    };
+    let after = &cmd[idx + "rm -rf /".len()..];
+    after.is_empty()
+        || after.starts_with('*')
+        || after.starts_with(' ')
+        || after.starts_with(';')
+        || after.starts_with('&')
+        || after.starts_with('|')
 }
 
 #[cfg(test)]
@@ -371,6 +449,7 @@ mod tests {
             allowlist: vec![],
             denylist: vec!["bash".into()],
             enable_os_sandbox: false,
+            shell_allow: vec![],
         };
         assert_eq!(authorize(&p, "bash", "{}", None), Decision::Deny);
     }
@@ -520,5 +599,24 @@ mod tests {
             ),
             Decision::Ask
         );
+    }
+
+    #[test]
+    fn shell_allow_auto_allows_safe_git() {
+        let p = Policy::workspace_write().with_shell_allow(["git *", "cargo test*"]);
+        assert_eq!(
+            authorize(&p, "bash", r#"{"command":"git status"}"#, None),
+            Decision::Allow
+        );
+        assert_eq!(
+            authorize(&p, "bash", r#"{"command":"cargo test --lib"}"#, None),
+            Decision::Allow
+        );
+        assert_eq!(
+            authorize(&p, "bash", r#"{"command":"rm -rf /tmp/x"}"#, None),
+            Decision::Ask
+        );
+        assert!(shell_rule_matches("git *", "git status"));
+        assert!(!shell_rule_matches("git *", "rm -rf"));
     }
 }

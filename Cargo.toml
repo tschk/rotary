@@ -1,6 +1,6 @@
 [package]
 name = "rx4"
-version = "0.3.10"
+version = "0.3.11"
 edition = "2021"
 rust-version = "1.88"
 license = "MPL-2.0"
@@ -21,11 +21,12 @@ path = "src/lib.rs"
 [features]
 default = ["ipc", "builtin-tools"]
 computer-use = ["dep:rs_peekaboo"]
-ipc = ["dep:tokio", "tokio/net", "tokio/io-util", "tokio/sync", "tokio/process", "tokio/rt-multi-thread", "tokio/macros", "dep:cancellation-token"]
+# Agent loop always needs tokio (JoinSet / sleep). IPC adds net/process extras.
+ipc = ["tokio/net", "tokio/io-util", "tokio/sync", "tokio/process", "tokio/rt-multi-thread", "dep:cancellation-token"]
 providers = ["dep:reqwest", "dep:eventsource-stream", "dep:futures"]
 builtin-tools = ["dep:rayon", "dep:glob", "dep:ignore", "dep:regex"]
 memory = ["dep:rusqlite"]
-mcp = ["dep:tokio", "tokio/process", "tokio/io-util", "tokio/sync", "dep:reqwest", "reqwest/json", "reqwest/rustls-tls"]
+mcp = ["tokio/process", "tokio/io-util", "tokio/sync", "dep:reqwest", "reqwest/json", "reqwest/rustls-tls"]
 sqlite-sessions = ["dep:rusqlite"]
 graph-memory = []
 skills = ["dep:serde_yaml", "dep:dirs"]
@@ -42,9 +43,10 @@ moka = { version = "0.12", features = ["future"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive"] }
+# Core async runtime for agent loop (always on).
+tokio = { version = "1", features = ["rt", "time", "macros", "sync"] }
 
 # Optional — ipc
-tokio = { version = "1", features = ["rt", "time"], optional = true }
 cancellation-token = { version = "0.1", optional = true }
 
 # Optional — providers
