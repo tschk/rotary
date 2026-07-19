@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.3.18] — 2026-07-19
+
+### Fixed
+- Allowlist no longer skips path/shell hard-deny gates (eligibility only, then hard gates, then Allow)
+
 ## [0.3.17] — 2026-07-19
 
 ### Added
