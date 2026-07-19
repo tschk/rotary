@@ -152,7 +152,7 @@ pub use mcp::{McpClient, McpError, McpRegistry, McpResourceInfo, McpToolInfo};
 
 pub use marketplace::{
     verify_plugin_integrity, InstalledPlugin, MarketplaceError, MarketplaceIndex, McpServerConfig,
-    PluginBlocklist, PluginInstaller, PluginManifest,
+    McpTransportKind, PluginBlocklist, PluginInstaller, PluginManifest,
 };
 
 #[cfg(feature = "providers")]

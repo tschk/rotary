@@ -32,15 +32,32 @@ pub enum MarketplaceError {
     IntegrityCheckFailed { expected: String, actual: String },
 }
 
+/// MCP server transport kind for plugin manifests.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum McpTransportKind {
+    #[default]
+    Stdio,
+    Http,
+    Sse,
+}
+
 /// Configuration for a single MCP server declared by a plugin manifest.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct McpServerConfig {
     pub name: String,
+    #[serde(default)]
     pub command: String,
     #[serde(default)]
     pub args: Vec<String>,
     #[serde(default)]
     pub env: HashMap<String, String>,
+    #[serde(default)]
+    pub transport: McpTransportKind,
+    #[serde(default)]
+    pub url: Option<String>,
+    #[serde(default)]
+    pub headers: HashMap<String, String>,
 }
 
 /// Describes a marketplace plugin.
@@ -606,6 +623,31 @@ mod tests {
         assert_eq!(m.mcp_servers.len(), 1);
         assert_eq!(m.mcp_servers[0].command, "node");
         assert_eq!(m.mcp_servers[0].env.get("X").unwrap(), "1");
+        assert_eq!(m.mcp_servers[0].transport, McpTransportKind::Stdio);
+        assert!(m.mcp_servers[0].url.is_none());
+    }
+
+    #[test]
+    fn deserializes_remote_mcp_server_config() {
+        let json = r#"{
+            "name": "remote",
+            "transport": "http",
+            "url": "https://example.com/mcp",
+            "headers": {"Authorization": "Bearer t"}
+        }"#;
+        let cfg: McpServerConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(cfg.name, "remote");
+        assert_eq!(cfg.command, "");
+        assert_eq!(cfg.transport, McpTransportKind::Http);
+        assert_eq!(cfg.url.as_deref(), Some("https://example.com/mcp"));
+        assert_eq!(cfg.headers.get("Authorization").unwrap(), "Bearer t");
+    }
+
+    #[test]
+    fn deserializes_sse_transport_kind() {
+        let json = r#"{"name":"s","transport":"sse","url":"https://x/sse"}"#;
+        let cfg: McpServerConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(cfg.transport, McpTransportKind::Sse);
     }
 
     #[test]

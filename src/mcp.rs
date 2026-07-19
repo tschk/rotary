@@ -1,4 +1,4 @@
-//! MCP client integration via JSON-RPC 2.0 over stdio.
+//! MCP client integration via JSON-RPC 2.0 over stdio / HTTP / SSE.
 //!
 //! When `mcp` feature is enabled, provides MCP server connection
 //! and tool registration from MCP servers.
@@ -6,6 +6,7 @@
 use std::collections::HashMap;
 use std::process::Stdio;
 
+use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -80,14 +81,48 @@ struct RpcError {
     message: String,
 }
 
-struct ClientInner {
+#[async_trait]
+trait McpTransport: Send {
+    async fn send_request(
+        &mut self,
+        method: &str,
+        params: Option<Value>,
+    ) -> Result<Value, McpError>;
+    async fn send_notification(
+        &mut self,
+        method: &str,
+        params: Option<Value>,
+    ) -> Result<(), McpError>;
+    async fn close(&mut self) -> Result<(), McpError>;
+}
+
+struct StdioTransport {
     child: Child,
     stdin: ChildStdin,
     reader: BufReader<ChildStdout>,
     next_id: u64,
 }
 
-impl ClientInner {
+impl StdioTransport {
+    async fn write_line(&mut self, line: &str) -> Result<(), McpError> {
+        self.stdin
+            .write_all(line.as_bytes())
+            .await
+            .map_err(|e| McpError::Transport(e.to_string()))?;
+        self.stdin
+            .write_all(b"\n")
+            .await
+            .map_err(|e| McpError::Transport(e.to_string()))?;
+        self.stdin
+            .flush()
+            .await
+            .map_err(|e| McpError::Transport(e.to_string()))?;
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl McpTransport for StdioTransport {
     async fn send_request(
         &mut self,
         method: &str,
@@ -143,26 +178,207 @@ impl ClientInner {
         self.write_line(&line).await
     }
 
-    async fn write_line(&mut self, line: &str) -> Result<(), McpError> {
-        self.stdin
-            .write_all(line.as_bytes())
-            .await
-            .map_err(|e| McpError::Transport(e.to_string()))?;
-        self.stdin
-            .write_all(b"\n")
-            .await
-            .map_err(|e| McpError::Transport(e.to_string()))?;
-        self.stdin
-            .flush()
-            .await
-            .map_err(|e| McpError::Transport(e.to_string()))?;
+    async fn close(&mut self) -> Result<(), McpError> {
+        let _ = self.child.kill().await;
+        let _ = self.child.wait().await;
         Ok(())
     }
 }
 
-/// Client connected to a single MCP server over stdio.
+struct HttpTransport {
+    client: reqwest::Client,
+    url: String,
+    headers: HashMap<String, String>,
+    next_id: u64,
+    session_id: Option<String>,
+    prefer_sse: bool,
+}
+
+impl HttpTransport {
+    fn new(
+        url: String,
+        headers: HashMap<String, String>,
+        prefer_sse: bool,
+    ) -> Result<Self, McpError> {
+        let client = reqwest::Client::builder()
+            .user_agent(concat!("rx4/", env!("CARGO_PKG_VERSION")))
+            .build()
+            .map_err(|e| McpError::Transport(e.to_string()))?;
+        Ok(Self {
+            client,
+            url,
+            headers,
+            next_id: 1,
+            session_id: None,
+            prefer_sse,
+        })
+    }
+
+    fn apply_headers(&self, req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        let accept = if self.prefer_sse {
+            "text/event-stream, application/json"
+        } else {
+            "application/json, text/event-stream"
+        };
+        let mut req = req
+            .header("Content-Type", "application/json")
+            .header("Accept", accept);
+        if let Some(sid) = &self.session_id {
+            req = req.header("Mcp-Session-Id", sid);
+        }
+        for (k, v) in &self.headers {
+            req = req.header(k, v);
+        }
+        req
+    }
+
+    async fn post_json(&mut self, body: &Value) -> Result<(String, String), McpError> {
+        let req = self.apply_headers(self.client.post(&self.url).json(body));
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| McpError::Transport(e.to_string()))?;
+        let status = resp.status();
+        let content_type = resp
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+        if let Some(sid) = resp
+            .headers()
+            .get("mcp-session-id")
+            .and_then(|v| v.to_str().ok())
+        {
+            self.session_id = Some(sid.to_string());
+        }
+        let text = resp
+            .text()
+            .await
+            .map_err(|e| McpError::Transport(e.to_string()))?;
+        if !status.is_success() {
+            return Err(McpError::Transport(format!(
+                "HTTP {status}: {}",
+                text.chars().take(200).collect::<String>()
+            )));
+        }
+        Ok((content_type, text))
+    }
+}
+
+fn result_from_response(resp: Response) -> Result<Value, McpError> {
+    if let Some(err) = resp.error {
+        return Err(McpError::Protocol(err.message));
+    }
+    Ok(resp.result.unwrap_or(Value::Null))
+}
+
+fn parse_json_rpc_body(body: &str, expected_id: u64) -> Result<Value, McpError> {
+    let resp: Response =
+        serde_json::from_str(body.trim()).map_err(|e| McpError::Protocol(e.to_string()))?;
+    if resp.id.is_some() && resp.id != Some(expected_id) {
+        return Err(McpError::Protocol(format!(
+            "response id mismatch: expected {expected_id}, got {:?}",
+            resp.id
+        )));
+    }
+    result_from_response(resp)
+}
+
+fn parse_sse_body(body: &str, expected_id: u64) -> Result<Value, McpError> {
+    let mut last_err: Option<McpError> = None;
+    for block in body.split("\n\n") {
+        let mut data_lines = Vec::new();
+        for line in block.lines() {
+            if let Some(rest) = line.trim_end().strip_prefix("data:") {
+                data_lines.push(rest.trim_start());
+            }
+        }
+        if data_lines.is_empty() {
+            continue;
+        }
+        let data = data_lines.join("\n");
+        if data.is_empty() || data == "[DONE]" {
+            continue;
+        }
+        match serde_json::from_str::<Response>(&data) {
+            Ok(resp) if resp.id == Some(expected_id) => return result_from_response(resp),
+            Ok(_) => {}
+            Err(e) => last_err = Some(McpError::Protocol(e.to_string())),
+        }
+    }
+    Err(last_err.unwrap_or_else(|| {
+        McpError::Protocol(format!("no SSE response for id {expected_id} in stream"))
+    }))
+}
+
+#[async_trait]
+impl McpTransport for HttpTransport {
+    async fn send_request(
+        &mut self,
+        method: &str,
+        params: Option<Value>,
+    ) -> Result<Value, McpError> {
+        let id = self.next_id;
+        self.next_id += 1;
+        let body = serde_json::to_value(Request {
+            jsonrpc: "2.0",
+            id,
+            method,
+            params,
+        })
+        .map_err(|e| McpError::Transport(e.to_string()))?;
+
+        let (content_type, text) = self.post_json(&body).await?;
+        if content_type
+            .to_ascii_lowercase()
+            .contains("text/event-stream")
+        {
+            parse_sse_body(&text, id)
+        } else {
+            parse_json_rpc_body(&text, id)
+        }
+    }
+
+    async fn send_notification(
+        &mut self,
+        method: &str,
+        params: Option<Value>,
+    ) -> Result<(), McpError> {
+        let body = serde_json::to_value(Notification {
+            jsonrpc: "2.0",
+            method,
+            params,
+        })
+        .map_err(|e| McpError::Transport(e.to_string()))?;
+        let _ = self.post_json(&body).await?;
+        Ok(())
+    }
+
+    async fn close(&mut self) -> Result<(), McpError> {
+        Ok(())
+    }
+}
+
+async fn handshake(transport: &mut dyn McpTransport) -> Result<(), McpError> {
+    let init_params = json!({
+        "protocolVersion": "2024-11-05",
+        "capabilities": {},
+        "clientInfo": { "name": "rx4", "version": "0.3.0" }
+    });
+    transport
+        .send_request("initialize", Some(init_params))
+        .await
+        .map_err(|e| McpError::Protocol(format!("initialize failed: {e}")))?;
+    transport
+        .send_notification("notifications/initialized", None)
+        .await?;
+    Ok(())
+}
+
+/// Client connected to a single MCP server over stdio, HTTP, or SSE.
 pub struct McpClient {
-    inner: Mutex<ClientInner>,
+    inner: Mutex<Box<dyn McpTransport>>,
 }
 
 impl McpClient {
@@ -185,28 +401,46 @@ impl McpClient {
             .take()
             .ok_or_else(|| McpError::Spawn("child has no stdout".into()))?;
 
-        let mut inner = ClientInner {
+        let mut transport = StdioTransport {
             child,
             stdin,
             reader: BufReader::new(stdout),
             next_id: 1,
         };
-
-        let init_params = json!({
-            "protocolVersion": "2024-11-05",
-            "capabilities": {},
-            "clientInfo": { "name": "rx4", "version": "0.3.0" }
-        });
-        inner
-            .send_request("initialize", Some(init_params))
-            .await
-            .map_err(|e| McpError::Protocol(format!("initialize failed: {e}")))?;
-        inner
-            .send_notification("notifications/initialized", None)
-            .await?;
+        handshake(&mut transport).await?;
 
         Ok(Self {
-            inner: Mutex::new(inner),
+            inner: Mutex::new(Box::new(transport)),
+        })
+    }
+
+    /// Connects to a remote MCP server via JSON-RPC over HTTP POST.
+    ///
+    /// Responses may be plain JSON or `text/event-stream` (streamable HTTP).
+    pub async fn connect_http(
+        url: &str,
+        headers: Option<HashMap<String, String>>,
+    ) -> Result<Self, McpError> {
+        let mut transport =
+            HttpTransport::new(url.to_string(), headers.unwrap_or_default(), false)?;
+        handshake(&mut transport).await?;
+        Ok(Self {
+            inner: Mutex::new(Box::new(transport)),
+        })
+    }
+
+    /// Connects to a remote MCP server preferring SSE-style responses.
+    ///
+    /// Uses the same streamable HTTP POST path as [`Self::connect_http`], with
+    /// `Accept` set to prefer `text/event-stream` when the server offers it.
+    pub async fn connect_sse(
+        url: &str,
+        headers: Option<HashMap<String, String>>,
+    ) -> Result<Self, McpError> {
+        let mut transport = HttpTransport::new(url.to_string(), headers.unwrap_or_default(), true)?;
+        handshake(&mut transport).await?;
+        Ok(Self {
+            inner: Mutex::new(Box::new(transport)),
         })
     }
 
@@ -260,9 +494,7 @@ impl McpClient {
     /// Gracefully shuts down the connection by terminating the child process.
     pub async fn close(&mut self) -> Result<(), McpError> {
         let mut inner = self.inner.lock().await;
-        let _ = inner.child.kill().await;
-        let _ = inner.child.wait().await;
-        Ok(())
+        inner.close().await
     }
 }
 
@@ -413,5 +645,37 @@ mod tests {
     fn test_registry_default() {
         let registry = McpRegistry::default();
         assert!(registry.tool_names().is_empty());
+    }
+
+    #[test]
+    fn parse_json_rpc_success() {
+        let body = r#"{"jsonrpc":"2.0","id":1,"result":{"ok":true}}"#;
+        let v = parse_json_rpc_body(body, 1).unwrap();
+        assert_eq!(v["ok"], true);
+    }
+
+    #[test]
+    fn parse_json_rpc_error() {
+        let body = r#"{"jsonrpc":"2.0","id":2,"error":{"code":-32600,"message":"bad"}}"#;
+        let err = parse_json_rpc_body(body, 2).unwrap_err();
+        assert!(matches!(err, McpError::Protocol(m) if m == "bad"));
+    }
+
+    #[test]
+    fn parse_sse_json_data_events() {
+        let body =
+            "event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"tools\":[]}}\n\n";
+        let v = parse_sse_body(body, 3).unwrap();
+        assert!(v.get("tools").is_some());
+    }
+
+    #[test]
+    fn parse_sse_skips_unrelated_ids() {
+        let body = concat!(
+            "data: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"a\":1}}\n\n",
+            "data: {\"jsonrpc\":\"2.0\",\"id\":9,\"result\":{\"b\":2}}\n\n",
+        );
+        let v = parse_sse_body(body, 9).unwrap();
+        assert_eq!(v["b"], 2);
     }
 }
