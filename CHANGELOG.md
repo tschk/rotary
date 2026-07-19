@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.3.14] — 2026-07-19
+
+### Added
+- `Authorizer` trait + `PolicyAuthorizer` (pi `beforeToolCall` shape; host-replaceable gate)
+- `Agent::set_authorizer` / `clear_authorizer`
+- `shell_segments`, `shell_command_matches_any`, `shell_command_matches_all` pure helpers
+- `Policy.enforce_dangerous_shell` (hosts can disable built-in dangerous hard-deny)
+
+### Changed
+- Shell allow requires **every** segment to match (deny still any-segment)
+- Shell allow/deny documented as host-owned lists; engine only matches
+- AGENTS.md: capability vs policy gate clarified
+
 ## [0.3.13] — 2026-07-19
 
 ### Added

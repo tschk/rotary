@@ -12,7 +12,7 @@ use crate::compaction::{apply_compaction, estimate_messages, CompactionConfig};
 use crate::guardrails::plan_tool_effect_batches;
 use crate::hooks::HookRegistry;
 use crate::mode::{self, Profile, Scope};
-use crate::permissions::{self, Approver, Decision, Policy};
+use crate::permissions::{Approver, Authorizer, Decision, Policy, PolicyAuthorizer};
 use crate::provider::{Message, Provider, Role};
 use moka::future::Cache;
 use parking_lot::RwLock;
@@ -64,6 +64,8 @@ pub struct Agent {
     scope_profile: Option<Profile>,
     pub hooks: Option<HookRegistry>,
     pub approver: Option<Arc<dyn Approver>>,
+    /// Pluggable pre-tool gate (default: [`PolicyAuthorizer`] from `policy`).
+    pub authorizer: Option<Arc<dyn Authorizer>>,
     pub provider: Option<Arc<dyn Provider>>,
     pub max_tool_iterations: usize,
     pub auto_compact_after: usize,
@@ -97,6 +99,7 @@ impl Agent {
             scope_profile: None,
             hooks: None,
             approver: None,
+            authorizer: None,
             provider: None,
             max_tool_iterations: 50,
             auto_compact_after: 80,
@@ -162,6 +165,15 @@ impl Agent {
 
     pub fn set_approver(&mut self, approver: Arc<dyn Approver>) {
         self.approver = Some(approver);
+    }
+
+    /// Replace the pre-tool authorizer (pi-style host policy). `None` uses [`PolicyAuthorizer`].
+    pub fn set_authorizer(&mut self, authorizer: Arc<dyn Authorizer>) {
+        self.authorizer = Some(authorizer);
+    }
+
+    pub fn clear_authorizer(&mut self) {
+        self.authorizer = None;
     }
 
     pub fn set_provider(&mut self, provider: Arc<dyn Provider>) {
@@ -511,6 +523,7 @@ impl Agent {
             let policy = self.policy.clone();
             let scope_profile = self.scope_profile.clone();
             let approver = self.approver.clone();
+            let authorizer = self.authorizer.clone();
             let tool_cache = self.tool_cache.clone();
             let mut join_set = tokio::task::JoinSet::new();
 
@@ -532,11 +545,13 @@ impl Agent {
                 let policy = policy.clone();
                 let scope_profile = scope_profile.clone();
                 let approver = approver.clone();
+                let authorizer = authorizer.clone();
                 let tool_cache = tool_cache.clone();
                 join_set.spawn(async move {
                     let result = Agent::run_tool_call(
                         &tools,
                         &policy,
+                        authorizer.as_deref(),
                         scope_profile.as_ref(),
                         approver.as_deref(),
                         &tool_cache,
@@ -602,6 +617,7 @@ impl Agent {
         let result = Self::run_tool_call(
             self.tools.as_ref(),
             &self.policy,
+            self.authorizer.as_deref(),
             self.scope_profile.as_ref(),
             self.approver.as_deref(),
             &self.tool_cache,
@@ -612,9 +628,11 @@ impl Agent {
         (call, result)
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn run_tool_call(
         tools: &ToolRegistry,
         policy: &Policy,
+        authorizer: Option<&dyn Authorizer>,
         scope_profile: Option<&Profile>,
         approver: Option<&dyn Approver>,
         tool_cache: &Cache<String, ToolResult>,
@@ -632,13 +650,21 @@ impl Agent {
             }
         }
 
-        let decision = permissions::authorize_with_workspace(
-            policy,
-            &resolved_name,
-            &call.arguments,
-            approver,
-            Some(ctx.workspace_root.as_path()),
-        );
+        // Host-supplied Authorizer, else default PolicyAuthorizer (pi beforeToolCall shape).
+        let decision = match authorizer {
+            Some(auth) => auth.authorize(
+                &resolved_name,
+                &call.arguments,
+                approver,
+                Some(ctx.workspace_root.as_path()),
+            ),
+            None => PolicyAuthorizer::new(policy.clone()).authorize(
+                &resolved_name,
+                &call.arguments,
+                approver,
+                Some(ctx.workspace_root.as_path()),
+            ),
+        };
 
         match decision {
             Decision::Deny => ToolResult::err(&call.id, "denied by policy"),

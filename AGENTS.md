@@ -17,6 +17,12 @@ enabled flags, and lifecycle decisions are the host's job. Modules like
 `dream_scheduler` and `skill_curator` provide the *capability* to run a
 cycle or audit; the host decides *when*.
 
+Tool gate shape (pi `beforeToolCall`):
+- Engine owns hooks + pluggable [`Authorizer`] + default [`PolicyAuthorizer`].
+- Hosts fill `Policy.shell_allow` / `shell_deny` and/or install a custom `Authorizer`.
+- Shell match helpers (`shell_segments`, `shell_rule_matches`) are pure utilities.
+- Real isolation is OS sandbox / outer container — not shell globs.
+
 ## Stack
 
 - Rust 2021 (MSRV 1.88), `#![forbid(unsafe_code)]`
@@ -240,6 +246,7 @@ graph TD
 - computer-use uses the crates.io `rs_peekaboo` dependency — no vendoring, no FFI.
 - A scope is a work mode, not an agent name.
 - rotary exposes capabilities, not policy — scheduling and lifecycle decisions belong to the host.
+- Shell allow/deny lists are host-owned; engine only matches. Prefer `Authorizer` for product rules.
 - Keep MPL-2.0.
 
 ## Validation
