@@ -2,6 +2,7 @@
 
 use crate::agent::ToolCall;
 use serde::{Deserialize, Serialize};
+use std::path::{Component, Path, PathBuf};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -130,11 +131,58 @@ impl Approver for AlwaysDeny {
     }
 }
 
+/// True when `path` escapes `workspace_root` (absolute or after `..` resolution).
+pub fn path_outside_workspace(workspace_root: &Path, path: &str) -> bool {
+    let p = Path::new(path);
+    let joined = if p.is_absolute() {
+        p.to_path_buf()
+    } else {
+        workspace_root.join(p)
+    };
+    let canon = normalize_lexically(&joined);
+    let root = normalize_lexically(workspace_root);
+    !canon.starts_with(&root)
+}
+
+fn normalize_lexically(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for c in path.components() {
+        match c {
+            Component::ParentDir => {
+                out.pop();
+            }
+            Component::CurDir => {}
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
+}
+
+fn path_from_args(arguments: &str) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_str(arguments).ok()?;
+    for key in ["path", "file", "file_path"] {
+        if let Some(s) = v.get(key).and_then(|x| x.as_str()) {
+            return Some(s.to_string());
+        }
+    }
+    None
+}
+
 pub fn authorize(
     policy: &Policy,
     tool_name: &str,
-    _arguments: &str,
+    arguments: &str,
     approver: Option<&dyn Approver>,
+) -> Decision {
+    authorize_with_workspace(policy, tool_name, arguments, approver, None)
+}
+
+pub fn authorize_with_workspace(
+    policy: &Policy,
+    tool_name: &str,
+    arguments: &str,
+    approver: Option<&dyn Approver>,
+    workspace_root: Option<&Path>,
 ) -> Decision {
     if policy.denylist.iter().any(|d| d == tool_name) {
         return Decision::Deny;
@@ -145,6 +193,19 @@ pub fn authorize(
         }
         return Decision::Deny;
     }
+
+    if matches!(
+        policy.mode,
+        PermissionMode::WorkspaceWrite | PermissionMode::ReadOnly
+    ) && is_write_tool(tool_name)
+    {
+        if let (Some(root), Some(path)) = (workspace_root, path_from_args(arguments)) {
+            if path_outside_workspace(root, &path) {
+                return Decision::Deny;
+            }
+        }
+    }
+
     let mode_decision = match policy.mode {
         PermissionMode::FullAccess => Decision::Allow,
         PermissionMode::DenyAll => Decision::Deny,
@@ -166,12 +227,12 @@ pub fn authorize(
     };
     if mode_decision == Decision::Ask {
         if let Some(app) = approver {
-            let dummy_call = ToolCall {
+            let call = ToolCall {
                 id: String::new(),
                 name: tool_name.to_string(),
-                arguments: String::new(),
+                arguments: arguments.to_string(),
             };
-            return app.approve(&dummy_call);
+            return app.approve(&call);
         }
     }
     mode_decision
@@ -191,25 +252,35 @@ fn is_read_only_tool(name: &str) -> bool {
             | "cu_see"
             | "cu_image"
             | "cu_list"
-    )
+            | "web_fetch"
+            | "enter_plan_mode"
+            | "exit_plan_mode"
+    ) || name.starts_with("lsp_")
 }
 
 /// Returns true when the tool mutates workspace files (write/edit family).
 pub fn is_write_tool(name: &str) -> bool {
     matches!(
         name,
-        "write" | "write_file" | "edit" | "hashline_edit" | "search_replace" | "apply_patch"
+        "write"
+            | "write_file"
+            | "edit"
+            | "hashline_edit"
+            | "search_replace"
+            | "apply_patch"
+            | "todo"
     )
 }
 
 /// Returns true when the tool is a shell/process executor.
 pub fn is_process_tool(name: &str) -> bool {
-    matches!(name, "bash" | "run_command")
+    matches!(name, "bash" | "run_command" | "spawn_agent")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
 
     #[test]
     fn full_access_allows() {
@@ -293,5 +364,88 @@ mod tests {
             authorize(&Policy::workspace_write(), "unknown_tool", "{}", None),
             Decision::Ask
         );
+    }
+
+    struct CaptureApprover {
+        seen: Mutex<Option<ToolCall>>,
+    }
+
+    impl Approver for CaptureApprover {
+        fn approve(&self, call: &ToolCall) -> Decision {
+            *self.seen.lock().unwrap() = Some(call.clone());
+            Decision::Allow
+        }
+    }
+
+    #[test]
+    fn approver_sees_real_arguments() {
+        let app = CaptureApprover {
+            seen: Mutex::new(None),
+        };
+        let args = r#"{"path":"secret.txt","content":"x"}"#;
+        assert_eq!(
+            authorize(&Policy::read_only(), "write", args, Some(&app)),
+            Decision::Allow
+        );
+        let seen = app.seen.lock().unwrap().clone().expect("approver called");
+        assert_eq!(seen.name, "write");
+        assert_eq!(seen.arguments, args);
+    }
+
+    #[test]
+    fn write_outside_workspace_denied_under_workspace_write() {
+        let root = Path::new("/proj");
+        let outside = r#"{"path":"/tmp/escape.txt"}"#;
+        assert_eq!(
+            authorize_with_workspace(
+                &Policy::workspace_write(),
+                "write",
+                outside,
+                None,
+                Some(root)
+            ),
+            Decision::Deny
+        );
+        let relative_escape = r#"{"path":"../../etc/passwd"}"#;
+        assert_eq!(
+            authorize_with_workspace(
+                &Policy::workspace_write(),
+                "write",
+                relative_escape,
+                None,
+                Some(root)
+            ),
+            Decision::Deny
+        );
+        let inside = r#"{"path":"src/main.rs"}"#;
+        assert_eq!(
+            authorize_with_workspace(
+                &Policy::workspace_write(),
+                "write",
+                inside,
+                None,
+                Some(root)
+            ),
+            Decision::Allow
+        );
+        assert_eq!(
+            authorize_with_workspace(
+                &Policy::full_access(),
+                "write",
+                outside,
+                None,
+                Some(root)
+            ),
+            Decision::Allow
+        );
+    }
+
+    #[test]
+    fn path_outside_workspace_helper() {
+        let root = Path::new("/proj");
+        assert!(path_outside_workspace(root, "/tmp/x"));
+        assert!(path_outside_workspace(root, "../escape"));
+        assert!(!path_outside_workspace(root, "src/lib.rs"));
+        assert!(!path_outside_workspace(root, "/proj/src/lib.rs"));
     }
 }

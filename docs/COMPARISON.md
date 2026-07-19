@@ -41,6 +41,9 @@ hosts on top.
 
 ## Deferred (intentionally host or later)
 
-- OS sandbox process jail (Codex seatbelt/bwrap) — host policy
 - Web/desktop multi-client pairing (t3code) — telekinesis product
 - Pi protocol compat (JSONL v3, RPC, extensions) — telekinesis host
+
+## Implemented in rotary (was deferred)
+
+- OS sandbox process jail via `Policy.enable_os_sandbox` + seatbelt/bwrap (`sandbox` module)

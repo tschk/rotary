@@ -35,7 +35,14 @@ pub fn normalize_tool_name(name: &str) -> &str {
         "find_files" | "find" => "find",
         "code_intel" | "grep" => "grep",
         "hashline_edit" | "search_replace" | "apply_patch" | "edit" => "edit",
-        "spawn_agent" => "spawn_agent",
+        "spawn_agent" | "agent" => "spawn_agent",
+        "web_fetch" | "fetch" | "fetch_url" => "web_fetch",
+        "todo" | "todo_write" | "todo_list" => "todo",
+        "enter_plan_mode" | "plan_mode" => "enter_plan_mode",
+        "exit_plan_mode" => "exit_plan_mode",
+        "lsp_diagnostics" | "diagnostics" => "lsp_diagnostics",
+        "lsp_definition" | "definition" | "go_to_definition" => "lsp_definition",
+        "lsp_references" | "references" | "find_references" => "lsp_references",
         _ => name,
     }
 }
@@ -106,6 +113,15 @@ pub struct ToolContext {
     pub cancellation: CancellationToken,
     pub sandbox: Option<std::sync::Arc<crate::sandbox::SandboxManager>>,
     pub os_sandbox: Option<std::sync::Arc<crate::sandbox::OsSandboxRunner>>,
+    /// Optional provider so nested tools (e.g. spawn_agent) can run an agent loop.
+    pub provider: Option<Arc<dyn Provider>>,
+    /// Optional tool registry for nested agent runs.
+    pub tools: Option<Arc<ToolRegistry>>,
+    /// Tools may request a scope switch; Agent applies after the tool batch.
+    pub pending_scope: Option<Arc<parking_lot::Mutex<Option<Scope>>>>,
+    /// Optional LSP manager for diagnostics / navigation tools.
+    #[cfg(feature = "ipc")]
+    pub lsp: Option<Arc<crate::lsp::LspManager>>,
 }
 
 impl ToolContext {
@@ -116,6 +132,11 @@ impl ToolContext {
             cancellation: CancellationToken::new(false),
             sandbox: None,
             os_sandbox: None,
+            provider: None,
+            tools: None,
+            pending_scope: None,
+            #[cfg(feature = "ipc")]
+            lsp: None,
         }
     }
 
@@ -538,6 +559,10 @@ impl Agent {
         if let Some(os) = self.os_sandbox.clone() {
             tool_ctx = tool_ctx.with_os_sandbox(os);
         }
+        tool_ctx.provider = Some(provider.clone());
+        tool_ctx.tools = Some(Arc::clone(&self.tools));
+        let pending_scope = Arc::new(parking_lot::Mutex::new(None));
+        tool_ctx.pending_scope = Some(Arc::clone(&pending_scope));
         let ctx = Arc::new(tool_ctx);
 
         for iteration in 0..self.max_tool_iterations {
@@ -663,6 +688,9 @@ impl Agent {
                     .write()
                     .push(Message::tool(&result.id, &result.content));
             }
+            if let Some(scope) = pending_scope.lock().take() {
+                self.set_scope(scope);
+            }
 
             self.emit(Event::TurnEnd { turn: iteration });
         }
@@ -734,12 +762,12 @@ impl Agent {
         for batch in batches {
             if batch.len() == 1 {
                 let idx = batch[0];
-                let call = &calls[idx];
-                self.emit(Event::ToolExecutionStart(call.clone()));
-                let result = self.execute_single_tool(call, ctx).await;
+                let original = &calls[idx];
+                self.emit(Event::ToolExecutionStart(original.clone()));
+                let (call, result) = self.execute_single_tool(original, ctx).await;
                 if result.is_error && result.content == "approval required" {
                     self.emit(Event::ApprovalRequired(
-                        crate::permissions::ApprovalRequest::from_call(call, &self.policy),
+                        crate::permissions::ApprovalRequest::from_call(&call, &self.policy),
                     ));
                 }
                 self.emit(Event::ToolExecutionEnd(result.clone()));
@@ -755,7 +783,17 @@ impl Agent {
             let mut join_set = tokio::task::JoinSet::new();
 
             for idx in batch {
-                let call = calls[idx].clone();
+                let original = &calls[idx];
+                let call = match self.apply_before_tool_hooks(original) {
+                    Ok(c) => c,
+                    Err(reason) => {
+                        self.emit(Event::ToolExecutionStart(original.clone()));
+                        let result = ToolResult::err(&original.id, reason);
+                        self.emit(Event::ToolExecutionEnd(result.clone()));
+                        results[idx] = Some(result);
+                        continue;
+                    }
+                };
                 self.emit(Event::ToolExecutionStart(call.clone()));
                 let ctx = Arc::clone(ctx);
                 let tools = Arc::clone(&tools);
@@ -774,22 +812,20 @@ impl Agent {
                         &ctx,
                     )
                     .await;
-                    (idx, result)
+                    (idx, call, result)
                 });
             }
 
             while let Some(joined) = join_set.join_next().await {
                 match joined {
-                    Ok((idx, result)) => {
+                    Ok((idx, call, result)) => {
                         if result.is_error && result.content == "approval required" {
-                            if let Some(call) = calls.get(idx) {
-                                self.emit(Event::ApprovalRequired(
-                                    crate::permissions::ApprovalRequest::from_call(
-                                        call,
-                                        &self.policy,
-                                    ),
-                                ));
-                            }
+                            self.emit(Event::ApprovalRequired(
+                                crate::permissions::ApprovalRequest::from_call(
+                                    &call,
+                                    &self.policy,
+                                ),
+                            ));
                         }
                         self.emit(Event::ToolExecutionEnd(result.clone()));
                         results[idx] = Some(result);
@@ -815,18 +851,38 @@ impl Agent {
             .collect()
     }
 
-    async fn execute_single_tool(&self, call: &ToolCall, ctx: &Arc<ToolContext>) -> ToolResult {
-        Self::run_tool_call(
+    fn apply_before_tool_hooks(&self, call: &ToolCall) -> Result<ToolCall, String> {
+        match &self.hooks {
+            Some(hooks) => hooks.run_before_tool(call),
+            None => Ok(call.clone()),
+        }
+    }
+
+    async fn execute_single_tool(
+        &self,
+        call: &ToolCall,
+        ctx: &Arc<ToolContext>,
+    ) -> (ToolCall, ToolResult) {
+        let call = match self.apply_before_tool_hooks(call) {
+            Ok(c) => c,
+            Err(reason) => {
+                let id = call.id.clone();
+                return (call.clone(), ToolResult::err(&id, reason));
+            }
+        };
+        let result = Self::run_tool_call(
             self.tools.as_ref(),
             &self.policy,
             self.scope_profile.as_ref(),
             self.approver.as_deref(),
             &self.tool_cache,
-            call,
+            &call,
             ctx,
         )
-        .await
+        .await;
+        (call, result)
     }
+
 
     async fn run_tool_call(
         tools: &ToolRegistry,
@@ -848,7 +904,13 @@ impl Agent {
             }
         }
 
-        let decision = permissions::authorize(policy, &resolved_name, &call.arguments, approver);
+        let decision = permissions::authorize_with_workspace(
+            policy,
+            &resolved_name,
+            &call.arguments,
+            approver,
+            Some(ctx.workspace_root.as_path()),
+        );
 
         match decision {
             Decision::Deny => ToolResult::err(&call.id, "denied by policy"),

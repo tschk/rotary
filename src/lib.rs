@@ -110,7 +110,7 @@ pub use graph_memory::{
 pub use guardrails::{
     classify_tool, GuardrailConfig, GuardrailDecision, SelfHealingRetry, ToolClass, ToolGuardrails,
 };
-pub use hooks::HookRegistry;
+pub use hooks::{HookDecision, HookEvent, HookRegistry};
 pub use mode::{Profile, Scope};
 pub use model_router::{
     ModelRouter, ModelRouterError, ModelTier, ProactiveMonitor, RouterConfig, SkillSuggestion,
