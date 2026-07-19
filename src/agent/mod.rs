@@ -148,6 +148,8 @@ impl Agent {
         if self.policy.enable_os_sandbox && self.os_sandbox.is_none() {
             let _ = self.enable_os_sandbox();
         }
+        // Default gate reads `self.policy` each call when `authorizer` is None.
+        // Custom Authorizer snapshots are NOT auto-refreshed — re-call set_authorizer if needed.
     }
 
     pub fn set_scope(&mut self, scope: Scope) {
@@ -171,11 +173,14 @@ impl Agent {
         self.approver = Some(approver);
     }
 
-    /// Replace the pre-tool authorizer (pi-style host policy). `None` uses [`PolicyAuthorizer`].
+    /// Replace the pre-tool authorizer (pi-style host policy).
+    /// Prefer leaving unset so each tool call uses a fresh [`PolicyAuthorizer`] from `policy`.
+    /// If you install a snapshot authorizer, re-set it after `set_policy` / `set_scope`.
     pub fn set_authorizer(&mut self, authorizer: Arc<dyn Authorizer>) {
         self.authorizer = Some(authorizer);
     }
 
+    /// Drop custom authorizer; subsequent tools use live `policy` via [`PolicyAuthorizer`].
     pub fn clear_authorizer(&mut self) {
         self.authorizer = None;
     }
@@ -673,8 +678,10 @@ impl Agent {
         match decision {
             Decision::Deny => ToolResult::err(&call.id, "denied by policy"),
             Decision::Ask => {
-                // Rich payload is emitted by callers that have Agent self; parallel path
-                // only returns the error string — serial path re-emits below when possible.
+                // No Approver, or Approver returned Ask: tool fails this turn.
+                // Callers emit Event::ApprovalRequired; hosts that need interactive Allow
+                // must set a blocking Approver (e.g. ChannelApprover) so approve() runs
+                // inside authorize before we get here.
                 ToolResult::err(&call.id, "approval required")
             }
             Decision::Allow => {

@@ -248,6 +248,7 @@ graph TD
 - rotary exposes capabilities, not policy — scheduling and lifecycle decisions belong to the host.
 - Shell allow/deny lists are host-owned; engine only matches. Prefer `Authorizer` for product rules.
 - `set_scope` uses `Policy::apply_scope` (mode/sandbox only) so host shell lists survive scope changes.
+- Interactive Ask: set a blocking `Approver` (`ChannelApprover`); `ApprovalRequired` alone does not resume the tool.
 - Keep MPL-2.0.
 
 ## Validation

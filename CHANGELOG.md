@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.3.16] — 2026-07-19
+
+### Added
+- `ChannelApprover` — blocking channel-based Approver for interactive hosts
+- IPC: `set_scope`, `get_policy`, `set_policy`, `set_approver`, `clear_authorizer`
+- IPC `state` includes policy/approver flags
+
+### Docs
+- Ask semantics: blocking Approver required for same-turn Allow; `ApprovalRequired` alone does not resume
+- Custom Authorizer snapshots not auto-refreshed on `set_policy`/`set_scope`
+
 ## [0.3.15] — 2026-07-19
 
 ### Fixed

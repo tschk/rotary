@@ -1,4 +1,10 @@
-//! Permissions: policy modes, allow/deny lists, async approver (pi_agent_rust pattern).
+//! Permissions: policy modes, allow/deny lists, host Approver / Authorizer (pi beforeToolCall).
+//!
+//! **Ask semantics:** when policy yields `Decision::Ask` and an [`Approver`] is set,
+//! `authorize*` calls `Approver::approve` synchronously (may block). If that returns
+//! Allow/Deny, the tool continues or stops in the same turn. Without an Approver,
+//! the agent emits `ApprovalRequired` and fails the tool with `"approval required"`.
+//! Use [`ChannelApprover`] for UI-driven blocking approval.
 
 use crate::agent::ToolCall;
 use serde::{Deserialize, Serialize};
@@ -190,6 +196,46 @@ pub struct AlwaysDeny;
 impl Approver for AlwaysDeny {
     fn approve(&self, _call: &ToolCall) -> Decision {
         Decision::Deny
+    }
+}
+
+/// Blocking approver for hosts: sends each pending tool call on a channel and waits
+/// for a [`Decision`]. Pair with a UI thread that receives and replies.
+///
+/// ```ignore
+/// let (approver, rx) = ChannelApprover::pair();
+/// agent.set_approver(Arc::new(approver));
+/// // UI thread:
+/// let (call, reply) = rx.recv().unwrap();
+/// reply.send(Decision::Allow).ok();
+/// ```
+pub struct ChannelApprover {
+    tx: parking_lot::Mutex<std::sync::mpsc::Sender<(ToolCall, std::sync::mpsc::Sender<Decision>)>>,
+}
+
+impl ChannelApprover {
+    /// Create approver + receiver of `(ToolCall, reply_tx)`.
+    pub fn pair() -> (
+        Self,
+        std::sync::mpsc::Receiver<(ToolCall, std::sync::mpsc::Sender<Decision>)>,
+    ) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        (
+            Self {
+                tx: parking_lot::Mutex::new(tx),
+            },
+            rx,
+        )
+    }
+}
+
+impl Approver for ChannelApprover {
+    fn approve(&self, tool_call: &ToolCall) -> Decision {
+        let (reply_tx, reply_rx) = std::sync::mpsc::channel();
+        if self.tx.lock().send((tool_call.clone(), reply_tx)).is_err() {
+            return Decision::Deny;
+        }
+        reply_rx.recv().unwrap_or(Decision::Deny)
     }
 }
 
@@ -874,5 +920,27 @@ mod tests {
         assert!(!p.enforce_dangerous_shell);
         // read_only default sandbox flag
         assert!(!p.enable_os_sandbox);
+    }
+
+    #[test]
+    fn channel_approver_blocks_until_reply() {
+        let (approver, rx) = ChannelApprover::pair();
+        let handle = std::thread::spawn(move || {
+            let (call, reply) = rx.recv().expect("request");
+            assert_eq!(call.name, "bash");
+            reply.send(Decision::Allow).unwrap();
+        });
+        let call = ToolCall {
+            id: "1".into(),
+            name: "bash".into(),
+            arguments: r#"{"command":"true"}"#.into(),
+        };
+        assert_eq!(approver.approve(&call), Decision::Allow);
+        handle.join().unwrap();
+
+        // no receiver → Deny
+        let (approver2, rx2) = ChannelApprover::pair();
+        drop(rx2);
+        assert_eq!(approver2.approve(&call), Decision::Deny);
     }
 }

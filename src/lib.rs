@@ -133,7 +133,7 @@ pub use permissions::{
     is_process_tool, is_read_only_tool, is_write_tool, path_outside_workspace,
     shell_command_allowed, shell_command_matches_all, shell_command_matches_any,
     shell_rule_matches, shell_segments, AlwaysAllow, AlwaysDeny, ApprovalRequest, Approver,
-    Authorizer, Decision, PermissionMode, Policy, PolicyAuthorizer,
+    Authorizer, ChannelApprover, Decision, PermissionMode, Policy, PolicyAuthorizer,
 };
 pub use prompt_cache::{
     apply_cache_control, CachePoint, CachePosition, CacheProvider, CacheStats, CacheStatsTracker,

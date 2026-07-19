@@ -134,6 +134,11 @@ impl IpcServer {
                 Ok(serde_json::json!({
                     "model": agent.model,
                     "scope": agent.scope.name(),
+                    "policy_mode": format!("{:?}", agent.policy.mode),
+                    "shell_allow": agent.policy.shell_allow.len(),
+                    "shell_deny": agent.policy.shell_deny.len(),
+                    "has_approver": agent.approver.is_some(),
+                    "has_authorizer": agent.authorizer.is_some(),
                     "tools": self.tools.lock().unwrap().count(),
                     "plugins": self.plugins.lock().unwrap().count(),
                 }))
@@ -164,6 +169,62 @@ impl IpcServer {
                     .unwrap_or("gpt-4o");
                 self.agent.lock().await.set_model(model);
                 Ok(Value::String(format!("model set to {model}")))
+            }
+            "set_scope" => {
+                if let Some(name) = params.get("scope").and_then(|s| s.as_str()) {
+                    if let Some(scope) = crate::mode::Scope::parse_scope(name) {
+                        self.agent.lock().await.set_scope(scope);
+                        Ok(Value::String(format!("scope set to {scope}")))
+                    } else {
+                        Err(format!("unknown scope: {name}"))
+                    }
+                } else {
+                    Err("missing scope".into())
+                }
+            }
+            "get_policy" => {
+                let agent = self.agent.lock().await;
+                serde_json::to_value(&agent.policy).map_err(|e| e.to_string())
+            }
+            "set_policy" => {
+                if let Some(raw) = params.get("policy").cloned() {
+                    match serde_json::from_value::<crate::permissions::Policy>(raw) {
+                        Ok(policy) => {
+                            self.agent.lock().await.set_policy(policy);
+                            Ok(Value::String("policy set".into()))
+                        }
+                        Err(e) => Err(e.to_string()),
+                    }
+                } else {
+                    Err("missing policy".into())
+                }
+            }
+            "set_approver" => {
+                // Host product Approver stays in-process; IPC only offers always_allow / always_deny.
+                let mode = params
+                    .get("mode")
+                    .and_then(|m| m.as_str())
+                    .unwrap_or("always_allow");
+                let mut agent = self.agent.lock().await;
+                match mode {
+                    "always_allow" | "allow" => {
+                        agent.set_approver(std::sync::Arc::new(crate::permissions::AlwaysAllow));
+                        Ok(Value::String(format!("approver set to {mode}")))
+                    }
+                    "always_deny" | "deny" => {
+                        agent.set_approver(std::sync::Arc::new(crate::permissions::AlwaysDeny));
+                        Ok(Value::String(format!("approver set to {mode}")))
+                    }
+                    "clear" | "none" => {
+                        agent.approver = None;
+                        Ok(Value::String("approver cleared".into()))
+                    }
+                    other => Err(format!("unknown approver mode: {other}")),
+                }
+            }
+            "clear_authorizer" => {
+                self.agent.lock().await.clear_authorizer();
+                Ok(Value::String("authorizer cleared".into()))
             }
             "prompt" => {
                 let text = params
