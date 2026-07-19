@@ -1,6 +1,6 @@
 [package]
 name = "rx4"
-version = "0.3.18"
+version = "0.3.19"
 edition = "2021"
 rust-version = "1.88"
 license = "MPL-2.0"
@@ -44,7 +44,7 @@ uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive"] }
 # Core async runtime for agent loop (always on).
-tokio = { version = "1", features = ["rt", "time", "macros", "sync"] }
+tokio = { version = "1", features = ["rt", "time", "macros", "sync", "process"] }
 
 # Optional — ipc
 cancellation-token = { version = "0.1", optional = true }

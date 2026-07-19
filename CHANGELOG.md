@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.3.19] — 2026-07-19
+
+### Changed
+- Sync `Approver` runs on `spawn_blocking` (no JoinSet runtime stall)
+- Bash tool uses async `tokio::process` + `tokio::time` (no `thread::sleep`)
+- Unknown tool effect defaults to `Process` (serial, no cache) not `Read`
+- Tokio always enables `process` feature
+
 ## [0.3.18] — 2026-07-19
 
 ### Fixed

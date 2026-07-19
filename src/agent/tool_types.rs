@@ -262,12 +262,13 @@ impl ToolRegistry {
         Some(entry.execute.call(ctx.clone(), arguments.to_string()).await)
     }
 
-    /// Get the effect class for a tool (defaults to Read if not found).
+    /// Get the effect class for a tool.
+    /// Unknown tools default to Process (serial, no cache) — safer than Read.
     pub fn effect_of(&self, name: &str) -> ToolEffect {
         self.tools
             .get(name)
             .map(|e| e.effect)
-            .unwrap_or(ToolEffect::Read)
+            .unwrap_or(ToolEffect::Process)
     }
 }
 

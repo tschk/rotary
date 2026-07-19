@@ -127,9 +127,15 @@ impl Agent {
                 .time_to_idle(std::time::Duration::from_secs(900))
                 .build(),
         };
-        // Policy plugin: workspace_write enables OS sandbox by default.
+        // Always attach userspace workspace sandbox (path confinement for FS tools).
+        agent.ensure_userspace_sandbox();
+        // OS sandbox when policy requests it — fail closed (no silent bare bash).
         if agent.policy.enable_os_sandbox {
-            let _ = agent.enable_os_sandbox();
+            if let Err(e) = agent.enable_os_sandbox() {
+                // Keep userspace; mark policy so hosts see isolation is partial.
+                agent.policy.enable_os_sandbox = false;
+                tracing::warn!("OS sandbox unavailable, userspace only: {e}");
+            }
         }
         agent
     }
@@ -148,11 +154,17 @@ impl Agent {
 
     pub fn set_policy(&mut self, policy: Policy) {
         self.policy = policy;
+        self.ensure_userspace_sandbox();
         if self.policy.enable_os_sandbox && self.os_sandbox.is_none() {
-            let _ = self.enable_os_sandbox();
+            if let Err(e) = self.enable_os_sandbox() {
+                self.policy.enable_os_sandbox = false;
+                tracing::warn!("OS sandbox unavailable, userspace only: {e}");
+            }
         }
-        // Default gate reads `self.policy` each call when `authorizer` is None.
-        // Custom Authorizer snapshots are NOT auto-refreshed — re-call set_authorizer if needed.
+        // Custom Authorizer snapshots are NOT auto-refreshed — clear if present.
+        if self.authorizer.is_some() {
+            self.authorizer = None;
+        }
     }
 
     pub fn set_scope(&mut self, scope: Scope) {
@@ -160,8 +172,15 @@ impl Agent {
         let profile = mode::profile(scope);
         // Scope changes mode/sandbox only — keep host shell lists / allowlists.
         self.policy.apply_scope(&profile.policy);
+        self.ensure_userspace_sandbox();
         if self.policy.enable_os_sandbox && self.os_sandbox.is_none() {
-            let _ = self.enable_os_sandbox();
+            if let Err(e) = self.enable_os_sandbox() {
+                self.policy.enable_os_sandbox = false;
+                tracing::warn!("OS sandbox unavailable, userspace only: {e}");
+            }
+        }
+        if self.authorizer.is_some() {
+            self.authorizer = None;
         }
         let base = self.system_prompt.clone();
         self.system_prompt = Some(mode::compose_prompt(base.as_deref(), &profile));
@@ -234,12 +253,30 @@ impl Agent {
         self.os_sandbox = Some(os);
     }
 
-    /// Enable OS sandbox for bash using auto-detected seatbelt/bwrap backend.
+    /// Attach userspace workspace path sandbox if missing.
+    pub fn ensure_userspace_sandbox(&mut self) {
+        if self.sandbox.is_none() {
+            self.sandbox = Some(Arc::new(crate::sandbox::SandboxManager::new(
+                crate::sandbox::SandboxProfile::Workspace,
+                self.workspace_root.clone(),
+            )));
+        }
+    }
+
+    /// Enable OS sandbox for bash using seatbelt/bwrap. Errors if backend missing
+    /// (no silent fail-open to bare bash). Always ensures userspace sandbox too.
     pub fn enable_os_sandbox(&mut self) -> Result<(), crate::sandbox::SandboxError> {
+        self.ensure_userspace_sandbox();
         let mode = crate::sandbox::detect_sandbox();
+        if matches!(mode, crate::sandbox::OsSandbox::UserspaceOnly) {
+            return Err(crate::sandbox::SandboxError::PathDenied(
+                "no seatbelt/bwrap on this host".into(),
+            ));
+        }
         let config = crate::sandbox::OsSandboxConfig::new(mode, self.workspace_root.clone());
         let runner = crate::sandbox::OsSandboxRunner::new(config)?;
         self.os_sandbox = Some(Arc::new(runner));
+        self.policy.enable_os_sandbox = true;
         Ok(())
     }
 
@@ -576,7 +613,7 @@ impl Agent {
                         &policy,
                         authorizer.as_deref(),
                         scope_profile.as_ref(),
-                        approver.as_deref(),
+                        approver.clone(),
                         async_approver.as_deref(),
                         &tool_cache,
                         &call,
@@ -643,7 +680,7 @@ impl Agent {
             &self.policy,
             self.authorizer.as_deref(),
             self.scope_profile.as_ref(),
-            self.approver.as_deref(),
+            self.approver.clone(),
             self.async_approver.as_deref(),
             &self.tool_cache,
             &call,
@@ -659,7 +696,7 @@ impl Agent {
         policy: &Policy,
         authorizer: Option<&dyn Authorizer>,
         scope_profile: Option<&Profile>,
-        approver: Option<&dyn Approver>,
+        approver: Option<Arc<dyn Approver>>,
         async_approver: Option<&dyn AsyncApprover>,
         tool_cache: &Cache<String, ToolResult>,
         call: &ToolCall,
@@ -700,7 +737,11 @@ impl Agent {
             if let Some(app) = async_approver {
                 decision = app.approve(&ask_call).await;
             } else if let Some(app) = approver {
-                decision = app.approve(&ask_call);
+                // Offload blocking Approver so parallel JoinSet workers do not
+                // stall the multi-thread runtime (ChannelApprover uses recv).
+                decision = tokio::task::spawn_blocking(move || app.approve(&ask_call))
+                    .await
+                    .unwrap_or(Decision::Deny);
             }
         }
 

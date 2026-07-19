@@ -1,9 +1,10 @@
 use super::common::{parse_num_field, parse_str_field, resolve_path};
 use crate::agent::{ToolContext, ToolFuture, ToolResult};
-use std::io::Read;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use tokio::io::AsyncReadExt;
+use tokio::process::Command;
 use tracing::debug;
 
 #[cfg(feature = "builtin-tools")]
@@ -145,11 +146,14 @@ pub(crate) fn exec_bash(ctx: Arc<ToolContext>, args: String) -> ToolFuture {
         };
 
         let mut cmd = if let Some(os) = ctx.os_sandbox.as_ref() {
-            // Wrap bash -c under seatbelt/bwrap when OS sandbox is configured.
+            // Wrap bash -c under seatbelt/bwrap; convert std Command → tokio.
             match os.command("bash", &["-c", &command]) {
                 Ok(mut c) => {
                     c.current_dir(&working_dir);
-                    c
+                    c.stdout(Stdio::piped()).stderr(Stdio::piped());
+                    let mut tc = Command::from(c);
+                    tc.kill_on_drop(true);
+                    tc
                 }
                 Err(e) => return ToolResult::err("bash", e.to_string()),
             }
@@ -157,43 +161,52 @@ pub(crate) fn exec_bash(ctx: Arc<ToolContext>, args: String) -> ToolFuture {
             let mut c = Command::new("cmd");
             c.arg("/C").arg(&command);
             c.current_dir(&working_dir);
+            c.stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .kill_on_drop(true);
             c
         } else {
             let mut c = Command::new("bash");
             c.arg("-c").arg(&command);
             c.current_dir(&working_dir);
+            c.stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .kill_on_drop(true);
             c
         };
-
-        cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
         let mut child = match cmd.spawn() {
             Ok(c) => c,
             Err(e) => return ToolResult::err("bash", format!("failed to execute: {e}")),
         };
 
-        let deadline = Instant::now() + Duration::from_secs(timeout_secs);
-        loop {
-            #[cfg(feature = "ipc")]
-            if ctx.cancellation.is_canceled() {
-                let _ = child.kill();
-                let _ = child.wait();
-                return ToolResult::err("bash", "command cancelled");
-            }
-            match child.try_wait() {
-                Ok(Some(_)) => break,
-                Ok(None) => {
-                    if Instant::now() >= deadline {
-                        let _ = child.kill();
-                        let _ = child.wait();
-                        return ToolResult::err(
-                            "bash",
-                            format!("command timed out after {timeout_secs}s"),
-                        );
-                    }
-                    std::thread::sleep(Duration::from_millis(10));
+        let timeout = Duration::from_secs(timeout_secs);
+        let wait_fut = async {
+            loop {
+                #[cfg(feature = "ipc")]
+                if ctx.cancellation.is_canceled() {
+                    let _ = child.kill().await;
+                    let _ = child.wait().await;
+                    return Err("command cancelled".to_string());
                 }
-                Err(e) => return ToolResult::err("bash", format!("wait failed: {e}")),
+                match child.try_wait() {
+                    Ok(Some(_)) => break,
+                    Ok(None) => {
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                    }
+                    Err(e) => return Err(format!("wait failed: {e}")),
+                }
+            }
+            Ok(())
+        };
+
+        match tokio::time::timeout(timeout, wait_fut).await {
+            Ok(Ok(())) => {}
+            Ok(Err(msg)) => return ToolResult::err("bash", msg),
+            Err(_) => {
+                let _ = child.kill().await;
+                let _ = child.wait().await;
+                return ToolResult::err("bash", format!("command timed out after {timeout_secs}s"));
             }
         }
 
@@ -201,15 +214,15 @@ pub(crate) fn exec_bash(ctx: Arc<ToolContext>, args: String) -> ToolFuture {
         let mut stderr = String::new();
         if let Some(mut out) = child.stdout.take() {
             let mut buf = Vec::new();
-            let _ = out.read_to_end(&mut buf);
+            let _ = out.read_to_end(&mut buf).await;
             stdout = String::from_utf8_lossy(&buf).to_string();
         }
         if let Some(mut err) = child.stderr.take() {
             let mut buf = Vec::new();
-            let _ = err.read_to_end(&mut buf);
+            let _ = err.read_to_end(&mut buf).await;
             stderr = String::from_utf8_lossy(&buf).to_string();
         }
-        let exit_code = child.wait().ok().and_then(|s| s.code()).unwrap_or(-1);
+        let exit_code = child.wait().await.ok().and_then(|s| s.code()).unwrap_or(-1);
 
         let mut result = String::new();
         if !stdout.is_empty() {

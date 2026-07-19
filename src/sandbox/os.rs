@@ -108,25 +108,27 @@ impl OsSandboxRunner {
     /// Create a runner for the given config. On macOS this writes the
     /// seatbelt profile to `/tmp` so that [`Self::wrap_command`] can refer
     /// to it.
-    pub fn new(mut config: OsSandboxConfig) -> Result<Self, SandboxError> {
+    pub fn new(config: OsSandboxConfig) -> Result<Self, SandboxError> {
         let profile_path = match config.mode {
             OsSandbox::MacosSeatbelt => {
                 if !has_seatbelt() {
-                    config.mode = OsSandbox::UserspaceOnly;
-                    None
-                } else {
-                    let gen = SandboxProfileGenerator::new(config.clone());
-                    let dir = if config.allow_tmp {
-                        PathBuf::from("/tmp")
-                    } else {
-                        std::env::temp_dir()
-                    };
-                    Some(gen.write_profile(&dir)?)
+                    return Err(SandboxError::PathDenied(
+                        "macOS seatbelt (sandbox-exec) not available; refuse fail-open".into(),
+                    ));
                 }
+                let gen = SandboxProfileGenerator::new(config.clone());
+                let dir = if config.allow_tmp {
+                    PathBuf::from("/tmp")
+                } else {
+                    std::env::temp_dir()
+                };
+                Some(gen.write_profile(&dir)?)
             }
             OsSandbox::LinuxBubblewrap => {
                 if !has_bubblewrap() {
-                    config.mode = OsSandbox::UserspaceOnly;
+                    return Err(SandboxError::PathDenied(
+                        "Linux bwrap not available; refuse fail-open".into(),
+                    ));
                 }
                 None
             }
