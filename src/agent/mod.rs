@@ -153,7 +153,11 @@ impl Agent {
     pub fn set_scope(&mut self, scope: Scope) {
         self.scope = scope;
         let profile = mode::profile(scope);
-        self.policy = profile.policy.clone();
+        // Scope changes mode/sandbox only — keep host shell lists / allowlists.
+        self.policy.apply_scope(&profile.policy);
+        if self.policy.enable_os_sandbox && self.os_sandbox.is_none() {
+            let _ = self.enable_os_sandbox();
+        }
         let base = self.system_prompt.clone();
         self.system_prompt = Some(mode::compose_prompt(base.as_deref(), &profile));
         self.scope_profile = Some(profile);
@@ -871,6 +875,40 @@ mod tests {
         let token = handle.reset();
         external.cancel();
         assert!(token.is_canceled());
+    }
+
+    #[test]
+    fn set_scope_preserves_host_shell_policy() {
+        let mut agent = Agent::new();
+        agent.set_policy(
+            Policy::workspace_write()
+                .with_shell_allow(["git *", "cargo test*"])
+                .with_shell_deny(["sudo *"])
+                .with_enforce_dangerous_shell(false),
+        );
+        agent.set_scope(Scope::Research);
+        assert_eq!(
+            agent.policy.mode,
+            crate::permissions::PermissionMode::ReadOnly
+        );
+        assert_eq!(
+            agent.policy.shell_allow,
+            vec!["git *".to_string(), "cargo test*".to_string()]
+        );
+        assert_eq!(agent.policy.shell_deny, vec!["sudo *".to_string()]);
+        assert!(!agent.policy.enforce_dangerous_shell);
+        // research is read_only → sandbox flag from profile
+        assert!(!agent.policy.enable_os_sandbox);
+
+        agent.set_scope(Scope::Coding);
+        assert_eq!(
+            agent.policy.mode,
+            crate::permissions::PermissionMode::WorkspaceWrite
+        );
+        assert_eq!(
+            agent.policy.shell_allow,
+            vec!["git *".to_string(), "cargo test*".to_string()]
+        );
     }
 }
 

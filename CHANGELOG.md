@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.3.15] — 2026-07-19
+
+### Fixed
+- `Agent::set_scope` no longer wipes host-owned shell allow/deny lists
+- `Policy::apply_scope` / `with_scope` — mode + sandbox only; preserves host fields
+
 ## [0.3.14] — 2026-07-19
 
 ### Added
