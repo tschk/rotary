@@ -360,6 +360,217 @@ impl McpTransport for HttpTransport {
     }
 }
 
+type SsePendingMap = std::sync::Arc<
+    tokio::sync::Mutex<HashMap<u64, tokio::sync::oneshot::Sender<Result<Value, McpError>>>>,
+>;
+
+struct SseGetTransport {
+    client: reqwest::Client,
+    post_url: String,
+    headers: HashMap<String, String>,
+    next_id: u64,
+    session_id: Option<String>,
+    pending: SsePendingMap,
+    _reader: tokio::task::JoinHandle<()>,
+}
+
+impl SseGetTransport {
+    async fn connect(
+        sse_url: String,
+        post_url: String,
+        headers: HashMap<String, String>,
+    ) -> Result<Self, McpError> {
+        let client = reqwest::Client::builder()
+            .user_agent(concat!("rx4/", env!("CARGO_PKG_VERSION")))
+            .build()
+            .map_err(|e| McpError::Transport(e.to_string()))?;
+        let mut req = client.get(&sse_url).header("Accept", "text/event-stream");
+        for (k, v) in &headers {
+            req = req.header(k, v);
+        }
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| McpError::Transport(e.to_string()))?;
+        if !resp.status().is_success() {
+            return Err(McpError::Transport(format!(
+                "SSE GET HTTP {}",
+                resp.status()
+            )));
+        }
+        let mut session_id = None;
+        if let Some(sid) = resp
+            .headers()
+            .get("mcp-session-id")
+            .and_then(|v| v.to_str().ok())
+        {
+            session_id = Some(sid.to_string());
+        }
+        let pending: SsePendingMap = std::sync::Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+        let pending_r = pending.clone();
+        let reader = tokio::spawn(async move {
+            use futures::StreamExt;
+            let mut stream = resp.bytes_stream();
+            let mut buf = String::new();
+            while let Some(chunk) = stream.next().await {
+                let Ok(bytes) = chunk else {
+                    break;
+                };
+                buf.push_str(&String::from_utf8_lossy(&bytes));
+                while let Some(pos) = buf.find("\n\n") {
+                    let block = buf[..pos].to_string();
+                    buf = buf[pos + 2..].to_string();
+                    let mut data_lines = Vec::new();
+                    for line in block.lines() {
+                        if let Some(rest) = line.trim_end().strip_prefix("data:") {
+                            data_lines.push(rest.trim_start());
+                        }
+                    }
+                    if data_lines.is_empty() {
+                        continue;
+                    }
+                    let data = data_lines.join("\n");
+                    if data.is_empty() || data == "[DONE]" {
+                        continue;
+                    }
+                    if let Ok(resp) = serde_json::from_str::<Response>(&data) {
+                        if let Some(id) = resp.id {
+                            let mut map = pending_r.lock().await;
+                            if let Some(tx) = map.remove(&id) {
+                                let _ = tx.send(result_from_response(resp));
+                            }
+                        }
+                    }
+                }
+            }
+        });
+        Ok(Self {
+            client,
+            post_url,
+            headers,
+            next_id: 1,
+            session_id,
+            pending,
+            _reader: reader,
+        })
+    }
+}
+
+#[async_trait]
+impl McpTransport for SseGetTransport {
+    async fn send_request(
+        &mut self,
+        method: &str,
+        params: Option<Value>,
+    ) -> Result<Value, McpError> {
+        let id = self.next_id;
+        self.next_id += 1;
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.pending.lock().await.insert(id, tx);
+        let body = serde_json::to_value(Request {
+            jsonrpc: "2.0",
+            id,
+            method,
+            params,
+        })
+        .map_err(|e| McpError::Transport(e.to_string()))?;
+        let mut req = self
+            .client
+            .post(&self.post_url)
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json, text/event-stream")
+            .json(&body);
+        if let Some(sid) = &self.session_id {
+            req = req.header("Mcp-Session-Id", sid);
+        }
+        for (k, v) in &self.headers {
+            req = req.header(k, v);
+        }
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| McpError::Transport(e.to_string()))?;
+        if let Some(sid) = resp
+            .headers()
+            .get("mcp-session-id")
+            .and_then(|v| v.to_str().ok())
+        {
+            self.session_id = Some(sid.to_string());
+        }
+        let status = resp.status();
+        let content_type = resp
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        let text = resp
+            .text()
+            .await
+            .map_err(|e| McpError::Transport(e.to_string()))?;
+        if !status.is_success() {
+            self.pending.lock().await.remove(&id);
+            return Err(McpError::Transport(format!(
+                "HTTP {status}: {}",
+                text.chars().take(200).collect::<String>()
+            )));
+        }
+        // Some servers answer on POST body; others only on SSE channel.
+        if content_type.contains("application/json") && !text.trim().is_empty() {
+            self.pending.lock().await.remove(&id);
+            return parse_json_rpc_body(&text, id);
+        }
+        if content_type.contains("text/event-stream") && !text.trim().is_empty() {
+            self.pending.lock().await.remove(&id);
+            return parse_sse_body(&text, id);
+        }
+        match tokio::time::timeout(std::time::Duration::from_secs(30), rx).await {
+            Ok(Ok(v)) => v,
+            Ok(Err(_)) => Err(McpError::Transport("SSE response channel closed".into())),
+            Err(_) => {
+                self.pending.lock().await.remove(&id);
+                Err(McpError::Transport(
+                    "timed out waiting for SSE response".into(),
+                ))
+            }
+        }
+    }
+
+    async fn send_notification(
+        &mut self,
+        method: &str,
+        params: Option<Value>,
+    ) -> Result<(), McpError> {
+        let body = serde_json::to_value(Notification {
+            jsonrpc: "2.0",
+            method,
+            params,
+        })
+        .map_err(|e| McpError::Transport(e.to_string()))?;
+        let mut req = self
+            .client
+            .post(&self.post_url)
+            .header("Content-Type", "application/json")
+            .json(&body);
+        if let Some(sid) = &self.session_id {
+            req = req.header("Mcp-Session-Id", sid);
+        }
+        for (k, v) in &self.headers {
+            req = req.header(k, v);
+        }
+        let _ = req
+            .send()
+            .await
+            .map_err(|e| McpError::Transport(e.to_string()))?;
+        Ok(())
+    }
+
+    async fn close(&mut self) -> Result<(), McpError> {
+        self._reader.abort();
+        Ok(())
+    }
+}
+
 async fn handshake(transport: &mut dyn McpTransport) -> Result<(), McpError> {
     let init_params = json!({
         "protocolVersion": "2024-11-05",
@@ -442,6 +653,33 @@ impl McpClient {
         Ok(Self {
             inner: Mutex::new(Box::new(transport)),
         })
+    }
+
+    /// Connect with a long-lived SSE GET channel for server messages plus HTTP POST for requests.
+    ///
+    /// `sse_url` is opened with `GET` + `Accept: text/event-stream`. Requests POST to
+    /// `post_url` (defaults to `sse_url`). Falls back to streamable HTTP POST when GET fails.
+    pub async fn connect_sse_get(
+        sse_url: &str,
+        post_url: Option<&str>,
+        headers: Option<HashMap<String, String>>,
+    ) -> Result<Self, McpError> {
+        let headers = headers.unwrap_or_default();
+        let post = post_url.unwrap_or(sse_url).to_string();
+        match SseGetTransport::connect(sse_url.to_string(), post, headers.clone()).await {
+            Ok(mut transport) => {
+                handshake(&mut transport).await?;
+                Ok(Self {
+                    inner: Mutex::new(Box::new(transport)),
+                })
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "sse GET connect failed ({e}); falling back to POST streamable HTTP"
+                );
+                Self::connect_sse(sse_url, Some(headers)).await
+            }
+        }
     }
 
     /// Connect from marketplace/host config (`stdio` | `http` | `sse`).

@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.3.12] — 2026-07-19
+
+### Added
+- `Policy.shell_deny` + `with_shell_deny` (deny globs before allow)
+- `McpClient::connect_sse_get` — long-lived SSE GET channel + POST requests (fallback to streamable HTTP)
+- Module splits under 1k where practical: `agent/{mod,tool_types}`, `tools/{mod,fs,extended,common}`, `sandbox/{mod,userspace,os}`, `skill_engine/{mod,engine,registry}`
+
+### Changed
+- `mcp` feature enables `futures` for SSE byte streams
+
 ## [0.3.11] — 2026-07-19
 
 ### Added

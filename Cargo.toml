@@ -1,6 +1,6 @@
 [package]
 name = "rx4"
-version = "0.3.11"
+version = "0.3.12"
 edition = "2021"
 rust-version = "1.88"
 license = "MPL-2.0"
@@ -26,7 +26,7 @@ ipc = ["tokio/net", "tokio/io-util", "tokio/sync", "tokio/process", "tokio/rt-mu
 providers = ["dep:reqwest", "dep:eventsource-stream", "dep:futures"]
 builtin-tools = ["dep:rayon", "dep:glob", "dep:ignore", "dep:regex"]
 memory = ["dep:rusqlite"]
-mcp = ["tokio/process", "tokio/io-util", "tokio/sync", "dep:reqwest", "reqwest/json", "reqwest/rustls-tls"]
+mcp = ["tokio/process", "tokio/io-util", "tokio/sync", "dep:reqwest", "reqwest/json", "reqwest/rustls-tls", "dep:futures"]
 sqlite-sessions = ["dep:rusqlite"]
 graph-memory = []
 skills = ["dep:serde_yaml", "dep:dirs"]

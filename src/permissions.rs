@@ -27,6 +27,9 @@ pub struct Policy {
     /// Matching commands auto-Allow under WorkspaceWrite/ReadOnly (after dangerous deny).
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub shell_allow: Vec<String>,
+    /// Extra host deny globs for process tools (matched before allow).
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub shell_deny: Vec<String>,
 }
 
 impl Policy {
@@ -37,6 +40,7 @@ impl Policy {
             denylist: vec![],
             enable_os_sandbox: false,
             shell_allow: vec![],
+            shell_deny: vec![],
         }
     }
     pub fn read_only() -> Self {
@@ -46,6 +50,7 @@ impl Policy {
             denylist: vec![],
             enable_os_sandbox: false,
             shell_allow: vec![],
+            shell_deny: vec![],
         }
     }
     pub fn workspace_write() -> Self {
@@ -55,6 +60,7 @@ impl Policy {
             denylist: vec![],
             enable_os_sandbox: true,
             shell_allow: vec![],
+            shell_deny: vec![],
         }
     }
     pub fn deny_all() -> Self {
@@ -64,6 +70,7 @@ impl Policy {
             denylist: vec![],
             enable_os_sandbox: false,
             shell_allow: vec![],
+            shell_deny: vec![],
         }
     }
 
@@ -78,6 +85,14 @@ impl Policy {
         patterns: impl IntoIterator<Item = impl Into<String>>,
     ) -> Self {
         self.shell_allow = patterns.into_iter().map(Into::into).collect();
+        self
+    }
+
+    pub fn with_shell_deny(
+        mut self,
+        patterns: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Self {
+        self.shell_deny = patterns.into_iter().map(Into::into).collect();
         self
     }
 }
@@ -225,6 +240,9 @@ pub fn authorize_with_workspace(
     if is_process_tool(tool_name) && policy.mode != PermissionMode::FullAccess {
         if let Some(cmd) = command_from_args(arguments) {
             if is_dangerous_shell_command(&cmd) {
+                return Decision::Deny;
+            }
+            if !policy.shell_deny.is_empty() && shell_command_allowed(&cmd, &policy.shell_deny) {
                 return Decision::Deny;
             }
             if !policy.shell_allow.is_empty() && shell_command_allowed(&cmd, &policy.shell_allow) {
@@ -450,6 +468,7 @@ mod tests {
             denylist: vec!["bash".into()],
             enable_os_sandbox: false,
             shell_allow: vec![],
+            shell_deny: vec![],
         };
         assert_eq!(authorize(&p, "bash", "{}", None), Decision::Deny);
     }
@@ -618,5 +637,18 @@ mod tests {
         );
         assert!(shell_rule_matches("git *", "git status"));
         assert!(!shell_rule_matches("git *", "rm -rf"));
+    }
+
+    #[test]
+    fn shell_deny_blocks_pattern() {
+        let p = Policy::workspace_write().with_shell_deny(["rm *", "sudo *"]);
+        assert_eq!(
+            authorize(&p, "bash", r#"{"command":"rm -rf ./build"}"#, None),
+            Decision::Deny
+        );
+        assert_eq!(
+            authorize(&p, "bash", r#"{"command":"ls"}"#, None),
+            Decision::Ask
+        );
     }
 }
