@@ -239,6 +239,38 @@ impl Approver for ChannelApprover {
     }
 }
 
+/// Async host Approver (pi `beforeToolCall` is Promise/async). Prefer for non-blocking UI.
+#[async_trait::async_trait]
+pub trait AsyncApprover: Send + Sync {
+    async fn approve(&self, tool_call: &ToolCall) -> Decision;
+}
+
+/// Tokio mpsc + oneshot Approver (async ChannelApprover).
+pub struct ChannelAsyncApprover {
+    tx: tokio::sync::mpsc::Sender<(ToolCall, tokio::sync::oneshot::Sender<Decision>)>,
+}
+
+impl ChannelAsyncApprover {
+    pub fn pair() -> (
+        Self,
+        tokio::sync::mpsc::Receiver<(ToolCall, tokio::sync::oneshot::Sender<Decision>)>,
+    ) {
+        let (tx, rx) = tokio::sync::mpsc::channel(32);
+        (Self { tx }, rx)
+    }
+}
+
+#[async_trait::async_trait]
+impl AsyncApprover for ChannelAsyncApprover {
+    async fn approve(&self, tool_call: &ToolCall) -> Decision {
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        if self.tx.send((tool_call.clone(), reply_tx)).await.is_err() {
+            return Decision::Deny;
+        }
+        reply_rx.await.unwrap_or(Decision::Deny)
+    }
+}
+
 /// Pluggable pre-tool gate (pi `beforeToolCall` shape).
 /// Engine calls this before executing tools; hosts supply product policy.
 pub trait Authorizer: Send + Sync {
@@ -572,6 +604,118 @@ fn push_seg(out: &mut Vec<String>, cur: &mut String) {
         out.push(s.to_string());
     }
     cur.clear();
+}
+
+/// One simple command as argv (quote-aware; no expansions).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShellSimple {
+    pub argv: Vec<String>,
+}
+
+impl ShellSimple {
+    pub fn binary(&self) -> Option<&str> {
+        self.argv.first().map(|s| s.as_str())
+    }
+}
+
+/// Lightweight shell AST (not full bash).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ShellNode {
+    Pipeline(Vec<ShellSimple>),
+    List(Vec<ShellNode>),
+}
+
+/// Parse into pipelines of simple commands (quote-aware).
+pub fn shell_ast(command: &str) -> ShellNode {
+    let segs = shell_segments(command);
+    if segs.is_empty() {
+        return ShellNode::List(vec![]);
+    }
+    let mut pipes = Vec::new();
+    for seg in segs {
+        let simples: Vec<ShellSimple> = split_pipeline(&seg)
+            .into_iter()
+            .map(|s| ShellSimple {
+                argv: shell_argv(&s),
+            })
+            .filter(|s| !s.argv.is_empty())
+            .collect();
+        if !simples.is_empty() {
+            pipes.push(ShellNode::Pipeline(simples));
+        }
+    }
+    if pipes.len() == 1 {
+        pipes.pop().unwrap()
+    } else {
+        ShellNode::List(pipes)
+    }
+}
+
+fn split_pipeline(segment: &str) -> Vec<String> {
+    // shell_segments already split on `|`; residual single piece.
+    vec![segment.trim().to_string()]
+}
+
+/// Quote-aware argv split (whitespace outside quotes).
+#[allow(clippy::while_let_on_iterator)]
+pub fn shell_argv(command: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut chars = command.chars().peekable();
+    let mut quote: Option<char> = None;
+    let mut escaped = false;
+    #[allow(clippy::while_let_on_iterator)]
+    while let Some(c) = chars.next() {
+        if escaped {
+            cur.push(c);
+            escaped = false;
+            continue;
+        }
+        if quote.is_none() && c == '\\' {
+            escaped = true;
+            continue;
+        }
+        if let Some(q) = quote {
+            if c == q {
+                quote = None;
+            } else {
+                cur.push(c);
+            }
+            continue;
+        }
+        if c == '\'' || c == '"' {
+            quote = Some(c);
+            continue;
+        }
+        if c.is_whitespace() {
+            if !cur.is_empty() {
+                out.push(std::mem::take(&mut cur));
+            }
+            continue;
+        }
+        cur.push(c);
+    }
+    if !cur.is_empty() {
+        out.push(cur);
+    }
+    out
+}
+
+/// Flatten AST to simple commands in order.
+pub fn shell_simples(command: &str) -> Vec<ShellSimple> {
+    fn walk(n: &ShellNode, out: &mut Vec<ShellSimple>) {
+        match n {
+            ShellNode::Pipeline(steps) => out.extend(steps.iter().cloned()),
+            ShellNode::List(items) => {
+                for i in items {
+                    walk(i, out);
+                }
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(&shell_ast(command), &mut out);
+    out
 }
 
 /// Hard-deny shell patterns under non-FullAccess modes (escape / wipe / remote pipe).
@@ -920,6 +1064,18 @@ mod tests {
         assert!(!p.enforce_dangerous_shell);
         // read_only default sandbox flag
         assert!(!p.enable_os_sandbox);
+    }
+
+    #[test]
+    fn shell_ast_argv_and_pipeline() {
+        let n = shell_ast(r#"echo "a b" | git status"#);
+        // shell_segments splits on | → List of two pipelines of one each
+        let simples = shell_simples(r#"echo "a b" | git status"#);
+        assert_eq!(simples.len(), 2);
+        assert_eq!(simples[0].argv, vec!["echo", "a b"]);
+        assert_eq!(simples[1].binary(), Some("git"));
+        assert_eq!(shell_argv("ls -la /tmp"), vec!["ls", "-la", "/tmp"]);
+        let _ = n;
     }
 
     #[test]

@@ -130,10 +130,11 @@ pub use multiagent::{
 };
 pub use permissions::{
     authorize, authorize_with_workspace, command_from_args, is_dangerous_shell_command,
-    is_process_tool, is_read_only_tool, is_write_tool, path_outside_workspace,
-    shell_command_allowed, shell_command_matches_all, shell_command_matches_any,
-    shell_rule_matches, shell_segments, AlwaysAllow, AlwaysDeny, ApprovalRequest, Approver,
-    Authorizer, ChannelApprover, Decision, PermissionMode, Policy, PolicyAuthorizer,
+    is_process_tool, is_read_only_tool, is_write_tool, path_outside_workspace, shell_argv,
+    shell_ast, shell_command_allowed, shell_command_matches_all, shell_command_matches_any,
+    shell_rule_matches, shell_segments, shell_simples, AlwaysAllow, AlwaysDeny, ApprovalRequest,
+    Approver, AsyncApprover, Authorizer, ChannelApprover, ChannelAsyncApprover, Decision,
+    PermissionMode, Policy, PolicyAuthorizer, ShellNode, ShellSimple,
 };
 pub use prompt_cache::{
     apply_cache_control, CachePoint, CachePosition, CacheProvider, CacheStats, CacheStatsTracker,

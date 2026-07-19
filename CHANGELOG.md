@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.3.17] — 2026-07-19
+
+### Added
+- `AsyncApprover` + `ChannelAsyncApprover` (pi-style async beforeToolCall)
+- `Agent::set_async_approver` / `clear_async_approver` (preferred over sync Approver for UI)
+- Lightweight shell AST: `shell_ast`, `shell_argv`, `shell_simples`, `ShellNode`, `ShellSimple`
+- CLI `--approval always_allow|always_deny|ask` (exec default always_allow)
+- CLI `--full-access` to elevate policy (incl. computer_use)
+
+### Changed
+- ComputerUse scope default policy is `workspace_write` (not full_access); elevate with `--full-access` / host policy
+- Tool gate: policy evaluate first, then async/sync Approver on Ask (pi order)
+
 ## [0.3.16] — 2026-07-19
 
 ### Added

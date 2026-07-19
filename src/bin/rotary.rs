@@ -19,9 +19,15 @@ struct Cli {
     /// Model to use
     #[arg(long, global = true)]
     model: Option<String>,
-    /// Scope (coding, research, plan, ask)
+    /// Scope (coding, research, plan, ask, computer_use)
     #[arg(long, global = true)]
     scope: Option<String>,
+    /// Tool approval mode for exec (and noninteractive): always_allow (default) | always_deny | ask
+    #[arg(long, global = true, default_value = "always_allow")]
+    approval: String,
+    /// Elevate policy to FullAccess (also useful for computer_use scope)
+    #[arg(long, global = true, default_value_t = false)]
+    full_access: bool,
 }
 
 #[derive(Subcommand)]
@@ -66,12 +72,20 @@ fn main() {
     let command = cli.command.unwrap_or(Commands::Chat);
 
     match command {
-        Commands::Chat => run_chat(cli.model, cli.scope),
+        Commands::Chat => run_chat(cli.model, cli.scope, cli.full_access),
         Commands::Exec {
             prompt,
             json,
             stream_json,
-        } => run_exec(&prompt, json, stream_json, cli.model, cli.scope),
+        } => run_exec(
+            &prompt,
+            json,
+            stream_json,
+            cli.model,
+            cli.scope,
+            &cli.approval,
+            cli.full_access,
+        ),
         Commands::Serve { socket } => run_serve(socket),
         Commands::Version => run_version(),
         Commands::Doctor => run_doctor(),
@@ -86,7 +100,7 @@ fn main() {
 }
 
 #[cfg(feature = "providers")]
-fn build_agent(model: Option<&str>, scope: Option<&str>) -> Agent {
+fn build_agent(model: Option<&str>, scope: Option<&str>, full_access: bool) -> Agent {
     let mut agent = Agent::new();
     let mut tools = ToolRegistry::new();
     register_builtin_tools(&mut tools);
@@ -104,6 +118,9 @@ fn build_agent(model: Option<&str>, scope: Option<&str>) -> Agent {
 
     let scope = scope.and_then(Scope::parse_scope).unwrap_or(Scope::Coding);
     agent.set_scope(scope);
+    if full_access {
+        agent.set_policy(rx4::Policy::full_access());
+    }
     agent.load_project_context();
 
     #[cfg(feature = "providers")]
@@ -308,12 +325,12 @@ fn setup_provider() -> Option<Arc<dyn rx4::Provider>> {
     None
 }
 
-fn run_chat(model: Option<String>, scope: Option<String>) {
+fn run_chat(model: Option<String>, scope: Option<String>, full_access: bool) {
     print_banner();
 
     #[cfg(not(feature = "providers"))]
     {
-        let _ = (model, scope);
+        let _ = (model, scope, full_access);
         eprintln!("chat requires the `providers` feature");
         std::process::exit(1);
     }
@@ -326,7 +343,7 @@ fn run_chat(model: Option<String>, scope: Option<String>) {
             );
         }
 
-        let mut agent = build_agent(model.as_deref(), scope.as_deref());
+        let mut agent = build_agent(model.as_deref(), scope.as_deref(), full_access);
         eprintln!(
             "model={} tools={} scope={}",
             agent.model,
@@ -537,10 +554,20 @@ fn run_exec(
     stream_json: bool,
     model: Option<String>,
     scope: Option<String>,
+    approval: &str,
+    full_access: bool,
 ) {
     #[cfg(not(feature = "providers"))]
     {
-        let _ = (prompt, json, stream_json, model, scope);
+        let _ = (
+            prompt,
+            json,
+            stream_json,
+            model,
+            scope,
+            approval,
+            full_access,
+        );
         eprintln!("exec requires the `providers` feature");
         std::process::exit(1);
     }
@@ -551,9 +578,20 @@ fn run_exec(
             eprintln!("error: no API key found (run 'rx4 doctor' to see all supported providers)");
             std::process::exit(1);
         }
-        let mut agent = build_agent(model.as_deref(), scope.as_deref());
-        // Noninteractive CI: auto-allow tools unless host sets a stricter approver.
-        agent.set_approver(Arc::new(rx4::permissions::AlwaysAllow));
+        let mut agent = build_agent(model.as_deref(), scope.as_deref(), full_access);
+        // Default always_allow for CI; override with --approval always_deny|ask
+        match approval {
+            "always_deny" | "deny" => {
+                agent.set_approver(Arc::new(rx4::permissions::AlwaysDeny));
+            }
+            "ask" => {
+                // leave no approver → Ask fails closed with approval required
+                agent.approver = None;
+            }
+            _ => {
+                agent.set_approver(Arc::new(rx4::permissions::AlwaysAllow));
+            }
+        }
         let output = Arc::new(parking_lot::Mutex::new(String::new()));
         let output_clone = output.clone();
         let stream = stream_json;

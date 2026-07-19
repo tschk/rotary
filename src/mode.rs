@@ -156,8 +156,9 @@ pub fn profile(scope: Scope) -> Profile {
         },
         Scope::ComputerUse => Profile {
             scope,
-            system_addendum: "Drive the desktop carefully via computer-use tools (embedded rs_peekaboo). Observe with see/image before click/type. Prefer reversible actions.",
-            policy: Policy::full_access(),
+            system_addendum: "Drive the desktop carefully via computer-use tools (embedded rs_peekaboo). Observe with see/image before click/type. Prefer reversible actions. Host may elevate to full_access.",
+            // Safer default; hosts opt into FullAccess via --full-access / set_policy.
+            policy: Policy::workspace_write(),
             allowed_tools: Some(COMPUTER_USE_TOOLS),
         },
     }

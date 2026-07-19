@@ -12,7 +12,7 @@ use crate::compaction::{apply_compaction, estimate_messages, CompactionConfig};
 use crate::guardrails::plan_tool_effect_batches;
 use crate::hooks::HookRegistry;
 use crate::mode::{self, Profile, Scope};
-use crate::permissions::{Approver, Authorizer, Decision, Policy, PolicyAuthorizer};
+use crate::permissions::{Approver, AsyncApprover, Authorizer, Decision, Policy, PolicyAuthorizer};
 use crate::provider::{Message, Provider, Role};
 use moka::future::Cache;
 use parking_lot::RwLock;
@@ -64,6 +64,8 @@ pub struct Agent {
     scope_profile: Option<Profile>,
     pub hooks: Option<HookRegistry>,
     pub approver: Option<Arc<dyn Approver>>,
+    /// Async Approver (pi `beforeToolCall` Promise shape). Preferred for UI hosts.
+    pub async_approver: Option<Arc<dyn AsyncApprover>>,
     /// Pluggable pre-tool gate (default: [`PolicyAuthorizer`] from `policy`).
     pub authorizer: Option<Arc<dyn Authorizer>>,
     pub provider: Option<Arc<dyn Provider>>,
@@ -99,6 +101,7 @@ impl Agent {
             scope_profile: None,
             hooks: None,
             approver: None,
+            async_approver: None,
             authorizer: None,
             provider: None,
             max_tool_iterations: 50,
@@ -171,6 +174,15 @@ impl Agent {
 
     pub fn set_approver(&mut self, approver: Arc<dyn Approver>) {
         self.approver = Some(approver);
+    }
+
+    /// Async Approver (preferred for interactive hosts; pi beforeToolCall is async).
+    pub fn set_async_approver(&mut self, approver: Arc<dyn AsyncApprover>) {
+        self.async_approver = Some(approver);
+    }
+
+    pub fn clear_async_approver(&mut self) {
+        self.async_approver = None;
     }
 
     /// Replace the pre-tool authorizer (pi-style host policy).
@@ -532,6 +544,7 @@ impl Agent {
             let policy = self.policy.clone();
             let scope_profile = self.scope_profile.clone();
             let approver = self.approver.clone();
+            let async_approver = self.async_approver.clone();
             let authorizer = self.authorizer.clone();
             let tool_cache = self.tool_cache.clone();
             let mut join_set = tokio::task::JoinSet::new();
@@ -554,6 +567,7 @@ impl Agent {
                 let policy = policy.clone();
                 let scope_profile = scope_profile.clone();
                 let approver = approver.clone();
+                let async_approver = async_approver.clone();
                 let authorizer = authorizer.clone();
                 let tool_cache = tool_cache.clone();
                 join_set.spawn(async move {
@@ -563,6 +577,7 @@ impl Agent {
                         authorizer.as_deref(),
                         scope_profile.as_ref(),
                         approver.as_deref(),
+                        async_approver.as_deref(),
                         &tool_cache,
                         &call,
                         &ctx,
@@ -629,6 +644,7 @@ impl Agent {
             self.authorizer.as_deref(),
             self.scope_profile.as_ref(),
             self.approver.as_deref(),
+            self.async_approver.as_deref(),
             &self.tool_cache,
             &call,
             ctx,
@@ -644,6 +660,7 @@ impl Agent {
         authorizer: Option<&dyn Authorizer>,
         scope_profile: Option<&Profile>,
         approver: Option<&dyn Approver>,
+        async_approver: Option<&dyn AsyncApprover>,
         tool_cache: &Cache<String, ToolResult>,
         call: &ToolCall,
         ctx: &Arc<ToolContext>,
@@ -659,29 +676,39 @@ impl Agent {
             }
         }
 
-        // Host-supplied Authorizer, else default PolicyAuthorizer (pi beforeToolCall shape).
-        let decision = match authorizer {
+        // Policy evaluate without Approver (pi: beforeToolCall is separate async gate).
+        let mut decision = match authorizer {
             Some(auth) => auth.authorize(
                 &resolved_name,
                 &call.arguments,
-                approver,
+                None,
                 Some(ctx.workspace_root.as_path()),
             ),
             None => PolicyAuthorizer::new(policy.clone()).authorize(
                 &resolved_name,
                 &call.arguments,
-                approver,
+                None,
                 Some(ctx.workspace_root.as_path()),
             ),
         };
+        if decision == Decision::Ask {
+            let ask_call = ToolCall {
+                id: call.id.clone(),
+                name: resolved_name.clone(),
+                arguments: call.arguments.clone(),
+            };
+            if let Some(app) = async_approver {
+                decision = app.approve(&ask_call).await;
+            } else if let Some(app) = approver {
+                decision = app.approve(&ask_call);
+            }
+        }
 
         match decision {
             Decision::Deny => ToolResult::err(&call.id, "denied by policy"),
             Decision::Ask => {
                 // No Approver, or Approver returned Ask: tool fails this turn.
-                // Callers emit Event::ApprovalRequired; hosts that need interactive Allow
-                // must set a blocking Approver (e.g. ChannelApprover) so approve() runs
-                // inside authorize before we get here.
+                // Prefer AsyncApprover / ChannelApprover for interactive Allow.
                 ToolResult::err(&call.id, "approval required")
             }
             Decision::Allow => {
