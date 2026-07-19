@@ -161,7 +161,7 @@ pub use http::{global_client, is_local_provider, HttpClient, TimeoutConfig};
 #[cfg(feature = "ipc")]
 pub use lsp::{Diagnostic, DiagnosticSeverity, Location, LspManager, LspServer};
 
-pub const VERSION: &str = "0.3.0";
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub fn print_banner() {
     eprintln!("rx4 {VERSION} — agent harness engine");

@@ -31,6 +31,12 @@
 10. [x] Specialist work packs as markdown data (`WorkPack`, 0.3.8)
 11. Hosts that reimplement `Provider` (e.g. custom SSE) must call `apply_cache_control` themselves (documented; tele applies)
 
+
+### P3 (0.3.9)
+12. [x] Gating hooks + path-aware write auth + real approver args
+13. [x] Extended tools (web_fetch, todo, spawn_agent, plan mode, lsp)
+14. [x] MCP remote HTTP/SSE transports
+
 ## Non-goals
 
 - Shipping a TUI (telekinesis)

@@ -151,7 +151,6 @@ pub fn register_builtin_tools(registry: &mut ToolRegistry) {
         )
         .with_effect(ToolEffect::Read),
     );
-
 }
 
 /// Register spawn_agent backed by a host-owned SubagentManager.
@@ -338,7 +337,11 @@ fn exec_todo(ctx: Arc<ToolContext>, args: String) -> ToolFuture {
                         .and_then(|s| s.as_str())
                         .unwrap_or("pending")
                         .to_string();
-                    items.push(TodoItem { id, content, status });
+                    items.push(TodoItem {
+                        id,
+                        content,
+                        status,
+                    });
                 }
                 let out = serde_json::to_string_pretty(&items).unwrap_or_else(|_| "[]".into());
                 store.insert(key, items);
@@ -407,10 +410,7 @@ fn exec_spawn_agent(ctx: Arc<ToolContext>, args: String) -> ToolFuture {
             .get("model")
             .and_then(|m| m.as_str())
             .map(|s| s.to_string());
-        let isolate = v
-            .get("isolate")
-            .and_then(|i| i.as_bool())
-            .unwrap_or(false);
+        let isolate = v.get("isolate").and_then(|i| i.as_bool()).unwrap_or(false);
 
         let mut manager = SubagentManager::new();
         if let Some(provider) = ctx.provider.clone() {
@@ -1091,7 +1091,6 @@ mod tests {
         assert_eq!(result.content, "command cancelled");
     }
 
-
     #[tokio::test]
     async fn test_todo_add_list_complete() {
         let tmp = TempDir::new().unwrap();
@@ -1132,11 +1131,7 @@ mod tests {
     #[tokio::test]
     async fn test_web_fetch_without_providers_or_offline() {
         let ctx = Arc::new(ToolContext::new("."));
-        let result = exec_web_fetch(
-            ctx,
-            r#"{"url":"https://example.invalid/"}"#.to_string(),
-        )
-        .await;
+        let result = exec_web_fetch(ctx, r#"{"url":"https://example.invalid/"}"#.to_string()).await;
         assert!(result.is_error);
         assert!(
             result.content.contains("providers feature required")
@@ -1144,5 +1139,4 @@ mod tests {
                 || result.content.contains("error")
         );
     }
-
 }

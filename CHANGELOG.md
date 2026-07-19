@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.3.9] — 2026-07-19
+
+### Added
+- Gating lifecycle hooks (`HookDecision`, `run_before_tool`) — hooks can deny or modify tool args
+- Path-aware write authorization (`path_outside_workspace` / `authorize_with_workspace`)
+- Approver receives real tool arguments (no empty dummy call)
+- Builtin tools: `web_fetch`, `todo`, `spawn_agent`, `enter_plan_mode` / `exit_plan_mode`, `lsp_*`
+- MCP remote transports: `McpClient::connect_http` / `connect_sse` (streamable HTTP + SSE body parse)
+- Marketplace `McpServerConfig.transport` (`stdio` | `http` | `sse`) + optional `url` / `headers`
+- `register_spawn_agent_tool` host helper; `ToolContext` provider/tools/pending_scope/lsp fields
+
+### Changed
+- `HookFn` now returns `HookDecision` (breaking for hosts that registered unit hooks)
+- `VERSION` tracks `CARGO_PKG_VERSION`
+
+### Fixed
+- Docs: OS sandbox marked implemented (not deferred)
+
 ## [0.3.8] — 2026-07-17
 
 ### Added
