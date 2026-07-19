@@ -1,10 +1,12 @@
 use clap::{Parser, Subcommand};
 use rx4::{print_banner, register_builtin_tools, ToolRegistry};
-use std::io::BufRead;
-use std::sync::Arc;
 
 #[cfg(feature = "providers")]
 use rx4::{Agent, Scope};
+#[cfg(feature = "providers")]
+use std::io::BufRead;
+#[cfg(feature = "providers")]
+use std::sync::Arc;
 
 #[cfg(feature = "computer-use")]
 use rx4::computer_use;
