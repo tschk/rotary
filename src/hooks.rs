@@ -71,9 +71,7 @@ impl HookRegistry {
         let hooks = self.hooks.lock().clone();
         let mut call = tool.clone();
         for h in &hooks {
-            match h(&HookEvent::BeforeTool {
-                tool: call.clone(),
-            }) {
+            match h(&HookEvent::BeforeTool { tool: call.clone() }) {
                 HookDecision::Deny { reason } => return Err(reason),
                 HookDecision::ModifyArgs { arguments } => {
                     call.arguments = arguments;

@@ -429,13 +429,7 @@ mod tests {
             Decision::Allow
         );
         assert_eq!(
-            authorize_with_workspace(
-                &Policy::full_access(),
-                "write",
-                outside,
-                None,
-                Some(root)
-            ),
+            authorize_with_workspace(&Policy::full_access(), "write", outside, None, Some(root)),
             Decision::Allow
         );
     }

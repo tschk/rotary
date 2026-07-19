@@ -821,10 +821,7 @@ impl Agent {
                     Ok((idx, call, result)) => {
                         if result.is_error && result.content == "approval required" {
                             self.emit(Event::ApprovalRequired(
-                                crate::permissions::ApprovalRequest::from_call(
-                                    &call,
-                                    &self.policy,
-                                ),
+                                crate::permissions::ApprovalRequest::from_call(&call, &self.policy),
                             ));
                         }
                         self.emit(Event::ToolExecutionEnd(result.clone()));
@@ -882,7 +879,6 @@ impl Agent {
         .await;
         (call, result)
     }
-
 
     async fn run_tool_call(
         tools: &ToolRegistry,
