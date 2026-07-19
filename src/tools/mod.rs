@@ -217,7 +217,6 @@ pub fn register_spawn_agent_tool(
 mod tests {
     use super::extended;
     use super::fs;
-    use super::*;
     use crate::agent::ToolContext;
     use crate::mode::Scope;
     use std::sync::Arc;

@@ -162,7 +162,7 @@ mod tests {
     };
     use super::*;
     use chrono::Utc;
-    use std::path::{Path, PathBuf};
+    use std::path::PathBuf;
     use tempfile::tempdir;
 
     fn sample_conversation() -> Vec<ConversationTurn> {

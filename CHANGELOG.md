@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.3.13] — 2026-07-19
+
+### Added
+- Quote/pipe-aware shell segment matching for allow/deny and dangerous-shell checks
+- `graph_memory` module split: `graph` / `extract` / `scan` / `dream`
+
+### Changed
+- Graph internals (`nodes`/`edges`/`adjacency`/`remove_*`) are `pub(crate)` for submodule access
+
 ## [0.3.12] — 2026-07-19
 
 ### Added
