@@ -190,14 +190,26 @@ pub fn register_spawn_agent_tool(
                         workspace_isolation: isolate,
                         ..SubagentConfig::default()
                     };
-                    let mut mgr = manager.lock();
-                    match mgr.spawn(config, &prompt, &ctx.workspace_root) {
+                    let spawn_res = {
+                        let mut mgr = manager.lock();
+                        mgr.spawn(config, &prompt, &ctx.workspace_root)
+                    };
+                    match spawn_res {
                         Ok(handle) => {
-                            let result = handle.wait_sync();
+                            let id = handle.id().to_string();
+                            let name = handle.name().to_string();
+                            let result = tokio::task::spawn_blocking(move || handle.wait_sync())
+                                .await
+                                .unwrap_or_else(|e| crate::subagent::SubagentResult {
+                                    output: format!("join error: {e}"),
+                                    files_modified: vec![],
+                                    tool_calls: 0,
+                                    error: Some(e.to_string()),
+                                });
                             let body = serde_json::json!({
-                                "id": handle.id(),
-                                "name": handle.name(),
-                                "status": format!("{:?}", handle.status()),
+                                "id": id,
+                                "name": name,
+                                "status": if result.error.is_some() { "Failed" } else { "Completed" },
                                 "output": result.output,
                                 "tool_calls": result.tool_calls,
                                 "error": result.error,
@@ -270,6 +282,15 @@ mod tests {
     }
 
     #[cfg(unix)]
+    #[tokio::test]
+    async fn test_bash_large_stdout() {
+        let ctx = Arc::new(ToolContext::new(std::env::temp_dir()));
+        let args = r#"{"command":"python3 -c 'print(\"x\"*200000)'","timeout":30}"#;
+        let result = fs::exec_bash(ctx, args.to_string()).await;
+        assert!(!result.is_error, "{}", result.content);
+        assert!(result.content.len() > 100_000, "{}", result.content.len());
+    }
+
     #[tokio::test]
     async fn test_bash_timeout() {
         let tmp = TempDir::new().unwrap();

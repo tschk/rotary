@@ -222,6 +222,20 @@ impl Agent {
 
     pub fn set_workspace_root(&mut self, path: impl Into<std::path::PathBuf>) {
         self.workspace_root = path.into();
+        // Rebuild confinement against new root (avoid stale SandboxManager root).
+        let mut sb = crate::sandbox::SandboxManager::new(
+            crate::sandbox::SandboxProfile::Workspace,
+            self.workspace_root.clone(),
+        );
+        sb.set_allow_network(true);
+        self.sandbox = Some(std::sync::Arc::new(sb));
+        self.os_sandbox = None;
+        if self.policy.enable_os_sandbox {
+            if let Err(e) = self.enable_os_sandbox() {
+                self.policy.enable_os_sandbox = false;
+                tracing::warn!("OS sandbox unavailable after workspace change: {e}");
+            }
+        }
     }
 
     #[cfg(feature = "ipc")]
@@ -256,10 +270,14 @@ impl Agent {
     /// Attach userspace workspace path sandbox if missing.
     pub fn ensure_userspace_sandbox(&mut self) {
         if self.sandbox.is_none() {
-            self.sandbox = Some(Arc::new(crate::sandbox::SandboxManager::new(
+            let mut sb = crate::sandbox::SandboxManager::new(
                 crate::sandbox::SandboxProfile::Workspace,
                 self.workspace_root.clone(),
-            )));
+            );
+            // Path confinement is the primary goal; network tools still pass Policy.
+            // Hosts that need hard network deny replace sandbox or call set_allow_network(false).
+            sb.set_allow_network(true);
+            self.sandbox = Some(Arc::new(sb));
         }
     }
 
@@ -766,6 +784,8 @@ impl Agent {
                     Some(r) => r,
                     None => ToolResult::err(&call.id, format!("unknown tool: {}", call.name)),
                 };
+                // Tools stamp name as id; providers need tool_call_id.
+                result.id = call.id.clone();
 
                 result.content = crate::secrets::Redactor::new().redact(&result.content);
 
@@ -984,6 +1004,32 @@ mod tests {
             agent.policy.shell_allow,
             vec!["git *".to_string(), "cargo test*".to_string()]
         );
+    }
+
+    #[tokio::test]
+    async fn tool_result_id_matches_call_id() {
+        let mut tools = ToolRegistry::new();
+        tools.register(
+            ToolDefinition::new_boxed(
+                "echo_id",
+                "echo",
+                "{}",
+                Box::new(|_ctx, _args| Box::pin(async { ToolResult::ok("wrong-id", "ok") })),
+            )
+            .with_effect(ToolEffect::Read),
+        );
+        let mut agent = Agent::new();
+        agent.set_policy(Policy::full_access());
+        agent.tools = std::sync::Arc::new(tools);
+        let ctx = std::sync::Arc::new(ToolContext::new(agent.workspace_root.clone()));
+        let call = ToolCall {
+            id: "call_xyz".into(),
+            name: "echo_id".into(),
+            arguments: "{}".into(),
+        };
+        let (_c, result) = agent.execute_single_tool(&call, &ctx).await;
+        assert_eq!(result.id, "call_xyz");
+        assert_eq!(result.content, "ok");
     }
 }
 

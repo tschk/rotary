@@ -180,49 +180,64 @@ pub(crate) fn exec_bash(ctx: Arc<ToolContext>, args: String) -> ToolFuture {
             Err(e) => return ToolResult::err("bash", format!("failed to execute: {e}")),
         };
 
+        let mut stdout_pipe = child.stdout.take();
+        let mut stderr_pipe = child.stderr.take();
         let timeout = Duration::from_secs(timeout_secs);
-        let wait_fut = async {
-            loop {
-                #[cfg(feature = "ipc")]
-                if ctx.cancellation.is_canceled() {
-                    let _ = child.kill().await;
-                    let _ = child.wait().await;
-                    return Err("command cancelled".to_string());
+
+        let drain = async {
+            let stdout_task = async {
+                let mut buf = Vec::new();
+                if let Some(mut out) = stdout_pipe.take() {
+                    let _ = out.read_to_end(&mut buf).await;
                 }
-                match child.try_wait() {
-                    Ok(Some(_)) => break,
-                    Ok(None) => {
-                        tokio::time::sleep(Duration::from_millis(10)).await;
+                buf
+            };
+            let stderr_task = async {
+                let mut buf = Vec::new();
+                if let Some(mut err) = stderr_pipe.take() {
+                    let _ = err.read_to_end(&mut buf).await;
+                }
+                buf
+            };
+            let wait_task = async {
+                loop {
+                    #[cfg(feature = "ipc")]
+                    if ctx.cancellation.is_canceled() {
+                        let _ = child.kill().await;
+                        let _ = child.wait().await;
+                        return Err("command cancelled".to_string());
                     }
-                    Err(e) => return Err(format!("wait failed: {e}")),
+                    match child.try_wait() {
+                        Ok(Some(status)) => return Ok(status.code().unwrap_or(-1)),
+                        Ok(None) => tokio::time::sleep(Duration::from_millis(10)).await,
+                        Err(e) => return Err(format!("wait failed: {e}")),
+                    }
                 }
-            }
-            Ok(())
+            };
+            // Drain pipes concurrent with wait — avoid pipe-buffer deadlock.
+            let (stdout_buf, stderr_buf, wait_res) =
+                tokio::join!(stdout_task, stderr_task, wait_task);
+            let exit_code = wait_res?;
+            // If process still has leftover status after pipes closed:
+            let exit_code = if exit_code == -1 {
+                child.wait().await.ok().and_then(|s| s.code()).unwrap_or(-1)
+            } else {
+                exit_code
+            };
+            Ok::<_, String>((stdout_buf, stderr_buf, exit_code))
         };
 
-        match tokio::time::timeout(timeout, wait_fut).await {
-            Ok(Ok(())) => {}
+        let (stdout_buf, stderr_buf, exit_code) = match tokio::time::timeout(timeout, drain).await {
+            Ok(Ok(v)) => v,
             Ok(Err(msg)) => return ToolResult::err("bash", msg),
             Err(_) => {
                 let _ = child.kill().await;
                 let _ = child.wait().await;
                 return ToolResult::err("bash", format!("command timed out after {timeout_secs}s"));
             }
-        }
-
-        let mut stdout = String::new();
-        let mut stderr = String::new();
-        if let Some(mut out) = child.stdout.take() {
-            let mut buf = Vec::new();
-            let _ = out.read_to_end(&mut buf).await;
-            stdout = String::from_utf8_lossy(&buf).to_string();
-        }
-        if let Some(mut err) = child.stderr.take() {
-            let mut buf = Vec::new();
-            let _ = err.read_to_end(&mut buf).await;
-            stderr = String::from_utf8_lossy(&buf).to_string();
-        }
-        let exit_code = child.wait().await.ok().and_then(|s| s.code()).unwrap_or(-1);
+        };
+        let stdout = String::from_utf8_lossy(&stdout_buf).to_string();
+        let stderr = String::from_utf8_lossy(&stderr_buf).to_string();
 
         let mut result = String::new();
         if !stdout.is_empty() {

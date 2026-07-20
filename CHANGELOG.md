@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.3.20] — 2026-07-19
+
+### Security
+- Bash concurrent stdout/stderr drain (no pipe deadlock)
+- Tool results rewrite `id` to provider `tool_call_id`
+- IPC mutating methods require `RX4_IPC_TOKEN` (even if unset → deny mutators)
+- Seatbelt profile scoped file-read (not global `file-read*`)
+- Symlink-aware path canonicalize in userspace sandbox
+- `set_workspace_root` rebuilds sandbox roots
+- `web_fetch` honors `validate_network`
+- Userspace blocklist uses shared dangerous-shell helpers (`rm -rf /tmp` OK)
+- CLI `--approval` default `ask`; IPC `set_approver` default `always_deny`
+
 ## [0.3.19] — 2026-07-19
 
 ### Changed

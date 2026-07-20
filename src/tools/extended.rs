@@ -21,7 +21,7 @@ fn workspace_key(ctx: &ToolContext) -> String {
     ctx.workspace_root.to_string_lossy().into_owned()
 }
 
-pub(crate) fn exec_web_fetch(_ctx: Arc<ToolContext>, args: String) -> ToolFuture {
+pub(crate) fn exec_web_fetch(ctx: Arc<ToolContext>, args: String) -> ToolFuture {
     Box::pin(async move {
         let url = match parse_str_field(&args, "url") {
             Some(u) => u,
@@ -29,6 +29,12 @@ pub(crate) fn exec_web_fetch(_ctx: Arc<ToolContext>, args: String) -> ToolFuture
         };
         let max_bytes = parse_num_field(&args, "max_bytes").unwrap_or(100_000) as usize;
         let max_bytes = max_bytes.min(100_000);
+
+        if let Some(sb) = ctx.sandbox.as_ref() {
+            if let Err(e) = sb.validate_network() {
+                return ToolResult::err("web_fetch", e.to_string());
+            }
+        }
 
         #[cfg(feature = "providers")]
         {

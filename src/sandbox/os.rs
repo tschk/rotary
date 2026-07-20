@@ -66,9 +66,21 @@ impl SandboxProfileGenerator {
         lines.push("(deny default)".to_string());
         lines.push("(allow process-exec)".to_string());
         lines.push("(allow process-fork)".to_string());
-        lines.push("(allow file-read*)".to_string());
+        lines.push(format!("(allow file-read* (subpath \"{workspace}\"))"));
+        lines.push("(allow file-read* (subpath \"/usr\"))".to_string());
+        lines.push("(allow file-read* (subpath \"/bin\"))".to_string());
+        lines.push("(allow file-read* (subpath \"/sbin\"))".to_string());
+        lines.push("(allow file-read* (subpath \"/opt\"))".to_string());
+        lines.push("(allow file-read* (subpath \"/Library\"))".to_string());
+        lines.push("(allow file-read* (subpath \"/System\"))".to_string());
+        lines.push("(allow file-read* (subpath \"/private/var/db/dyld\"))".to_string());
+        lines.push("(allow file-read* (literal \"/dev/null\"))".to_string());
+        lines.push("(allow file-read* (literal \"/dev/urandom\"))".to_string());
         lines.push(format!("(allow file-write* (subpath \"{workspace}\"))"));
         if config.allow_tmp {
+            lines.push("(allow file-read* (subpath \"/tmp\"))".to_string());
+            lines.push("(allow file-read* (subpath \"/private/tmp\"))".to_string());
+            lines.push("(allow file-read* (subpath \"/var/tmp\"))".to_string());
             lines.push("(allow file-write* (subpath \"/tmp\"))".to_string());
             lines.push("(allow file-write* (subpath \"/private/tmp\"))".to_string());
             lines.push("(allow file-write* (subpath \"/var/tmp\"))".to_string());
@@ -83,6 +95,8 @@ impl SandboxProfileGenerator {
         lines.push(format!(
             "(deny file-read* (subpath \"{home}/.config/gcloud\"))"
         ));
+        lines.push(format!("(deny file-read* (subpath \"{home}/.netrc\"))"));
+        lines.push(format!("(deny file-read* (subpath \"{home}/.gnupg\"))"));
         lines.join("\n") + "\n"
     }
 

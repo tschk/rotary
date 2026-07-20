@@ -116,14 +116,35 @@ impl IpcServer {
         let method = req.get("method").and_then(|m| m.as_str()).unwrap_or("");
         let params = req.get("params").cloned().unwrap_or(Value::Null);
 
+        let required_token = std::env::var("RX4_IPC_TOKEN")
+            .ok()
+            .filter(|s| !s.is_empty());
+        let provided = params.get("token").and_then(|t| t.as_str()).unwrap_or("");
+        let mutating = matches!(
+            method,
+            "prompt"
+                | "set_scope"
+                | "set_policy"
+                | "set_approver"
+                | "clear_authorizer"
+                | "cancel"
+                | "reset"
+                | "load_session"
+                | "save_session"
+        );
         if method != "ping" {
-            if let Ok(token) = std::env::var("RX4_IPC_TOKEN") {
-                if !token.is_empty() {
-                    let provided = params.get("token").and_then(|t| t.as_str()).unwrap_or("");
-                    if provided != token {
-                        return error_response(id, -32000, "invalid or missing token");
-                    }
+            match &required_token {
+                Some(token) if provided != token => {
+                    return error_response(id, -32000, "invalid or missing token");
                 }
+                None if mutating => {
+                    return error_response(
+                        id,
+                        -32000,
+                        "RX4_IPC_TOKEN required for mutating IPC methods",
+                    );
+                }
+                _ => {}
             }
         }
 
@@ -204,7 +225,7 @@ impl IpcServer {
                 let mode = params
                     .get("mode")
                     .and_then(|m| m.as_str())
-                    .unwrap_or("always_allow");
+                    .unwrap_or("always_deny");
                 let mut agent = self.agent.lock().await;
                 match mode {
                     "always_allow" | "allow" => {

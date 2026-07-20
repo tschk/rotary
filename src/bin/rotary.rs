@@ -22,8 +22,8 @@ struct Cli {
     /// Scope (coding, research, plan, ask, computer_use)
     #[arg(long, global = true)]
     scope: Option<String>,
-    /// Tool approval mode for exec (and noninteractive): always_allow (default) | always_deny | ask
-    #[arg(long, global = true, default_value = "always_allow")]
+    /// Tool approval mode: ask (default) | always_allow | always_deny
+    #[arg(long, global = true, default_value = "ask")]
     approval: String,
     /// Elevate policy to FullAccess (also useful for computer_use scope)
     #[arg(long, global = true, default_value_t = false)]
@@ -579,7 +579,7 @@ fn run_exec(
             std::process::exit(1);
         }
         let mut agent = build_agent(model.as_deref(), scope.as_deref(), full_access);
-        // Default always_allow for CI; override with --approval always_deny|ask
+        // Default ask (fail closed without Approver); CI: --approval always_allow
         match approval {
             "always_deny" | "deny" => {
                 agent.set_approver(Arc::new(rx4::permissions::AlwaysDeny));

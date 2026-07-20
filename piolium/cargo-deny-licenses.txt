@@ -1,0 +1,3486 @@
+2026-07-20 00:01:15 [WARN] unable to find a config path, falling back to default config
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/aho-corasick-1.1.4/Cargo.toml:40:12
+   │
+40 │ license = "Unlicense OR MIT"
+   │            ━━━━━━━━━────━━━
+   │            │            │
+   │            │            rejected: license is not explicitly allowed
+   │            rejected: license is not explicitly allowed
+   │
+   ├ Unlicense - The Unlicense:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ aho-corasick v1.1.4
+     ├── globset v0.4.19
+     │   └── ignore v0.4.30
+     │       └── rx4 v0.3.19
+     ├── regex v1.13.1
+     │   ├── criterion v0.5.1
+     │   │   └── (dev) rx4 v0.3.19 (*)
+     │   └── rx4 v0.3.19 (*)
+     └── regex-automata v0.4.16
+         ├── globset v0.4.19 (*)
+         ├── ignore v0.4.30 (*)
+         └── regex v1.13.1 (*)
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/android_system_properties-0.1.5/Cargo.toml:22:12
+   │
+22 │ license = "MIT/Apache-2.0"
+   │            ━━━─━━━━━━━━━━
+   │            │   │
+   │            │   rejected: license is not explicitly allowed
+   │            rejected: license is not explicitly allowed
+   │
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ Apache-2.0 - Apache License 2.0:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ android_system_properties v0.1.5
+     └── iana-time-zone v0.1.65
+         └── chrono v0.4.45
+             └── rx4 v0.3.19
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/anstream-1.0.0/Cargo.toml:42:12
+   │
+42 │ license = "MIT OR Apache-2.0"
+   │            ━━━────━━━━━━━━━━
+   │            │      │
+   │            │      rejected: license is not explicitly allowed
+   │            rejected: license is not explicitly allowed
+   │
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ Apache-2.0 - Apache License 2.0:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ anstream v1.0.0
+     └── clap_builder v4.6.2
+         └── clap v4.6.2
+             ├── criterion v0.5.1
+             │   └── (dev) rx4 v0.3.19
+             └── rx4 v0.3.19 (*)
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/anstyle-1.0.14/Cargo.toml:41:12
+   │
+41 │ license = "MIT OR Apache-2.0"
+   │            ━━━────━━━━━━━━━━
+   │            │      │
+   │            │      rejected: license is not explicitly allowed
+   │            rejected: license is not explicitly allowed
+   │
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ Apache-2.0 - Apache License 2.0:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ anstyle v1.0.14
+     ├── anstream v1.0.0
+     │   └── clap_builder v4.6.2
+     │       └── clap v4.6.2
+     │           ├── criterion v0.5.1
+     │           │   └── (dev) rx4 v0.3.19
+     │           └── rx4 v0.3.19 (*)
+     ├── anstyle-wincon v3.0.11
+     │   └── anstream v1.0.0 (*)
+     └── clap_builder v4.6.2 (*)
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/anstyle-parse-1.0.0/Cargo.toml:41:12
+   │
+41 │ license = "MIT OR Apache-2.0"
+   │            ━━━────━━━━━━━━━━
+   │            │      │
+   │            │      rejected: license is not explicitly allowed
+   │            rejected: license is not explicitly allowed
+   │
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ Apache-2.0 - Apache License 2.0:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ anstyle-parse v1.0.0
+     └── anstream v1.0.0
+         └── clap_builder v4.6.2
+             └── clap v4.6.2
+                 ├── criterion v0.5.1
+                 │   └── (dev) rx4 v0.3.19
+                 └── rx4 v0.3.19 (*)
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/anstyle-query-1.1.5/Cargo.toml:42:12
+   │
+42 │ license = "MIT OR Apache-2.0"
+   │            ━━━────━━━━━━━━━━
+   │            │      │
+   │            │      rejected: license is not explicitly allowed
+   │            rejected: license is not explicitly allowed
+   │
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ Apache-2.0 - Apache License 2.0:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ anstyle-query v1.1.5
+     └── anstream v1.0.0
+         └── clap_builder v4.6.2
+             └── clap v4.6.2
+                 ├── criterion v0.5.1
+                 │   └── (dev) rx4 v0.3.19
+                 └── rx4 v0.3.19 (*)
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/anstyle-wincon-3.0.11/Cargo.toml:41:12
+   │
+41 │ license = "MIT OR Apache-2.0"
+   │            ━━━────━━━━━━━━━━
+   │            │      │
+   │            │      rejected: license is not explicitly allowed
+   │            rejected: license is not explicitly allowed
+   │
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ Apache-2.0 - Apache License 2.0:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ anstyle-wincon v3.0.11
+     └── anstream v1.0.0
+         └── clap_builder v4.6.2
+             └── clap v4.6.2
+                 ├── criterion v0.5.1
+                 │   └── (dev) rx4 v0.3.19
+                 └── rx4 v0.3.19 (*)
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/async-lock-3.4.2/Cargo.toml:38:12
+   │
+38 │ license = "Apache-2.0 OR MIT"
+   │            ━━━━━━━━━━────━━━
+   │            │             │
+   │            │             rejected: license is not explicitly allowed
+   │            rejected: license is not explicitly allowed
+   │
+   ├ Apache-2.0 - Apache License 2.0:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ async-lock v3.4.2
+     └── moka v0.12.15
+         └── rx4 v0.3.19
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/async-trait-0.1.91/Cargo.toml:33:12
+   │
+33 │ license = "MIT OR Apache-2.0"
+   │            ━━━────━━━━━━━━━━
+   │            │      │
+   │            │      rejected: license is not explicitly allowed
+   │            rejected: license is not explicitly allowed
+   │
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ Apache-2.0 - Apache License 2.0:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ async-trait v0.1.91
+     └── rx4 v0.3.19
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/autocfg-1.5.1/Cargo.toml:33:12
+   │
+33 │ license = "Apache-2.0 OR MIT"
+   │            ━━━━━━━━━━────━━━
+   │            │             │
+   │            │             rejected: license is not explicitly allowed
+   │            rejected: license is not explicitly allowed
+   │
+   ├ Apache-2.0 - Apache License 2.0:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ autocfg v1.5.1
+     └── (build) num-traits v0.2.19
+         ├── chrono v0.4.45
+         │   └── rx4 v0.3.19
+         ├── criterion v0.5.1
+         │   └── (dev) rx4 v0.3.19 (*)
+         └── plotters v0.3.7
+             └── criterion v0.5.1 (*)
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bitflags-2.13.1/Cargo.toml:41:12
+   │
+41 │ license = "MIT OR Apache-2.0"
+   │            ━━━────━━━━━━━━━━
+   │            │      │
+   │            │      rejected: license is not explicitly allowed
+   │            rejected: license is not explicitly allowed
+   │
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ Apache-2.0 - Apache License 2.0:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ bitflags v2.13.1
+     ├── redox_syscall v0.5.18
+     │   └── parking_lot_core v0.9.12
+     │       ├── dashmap v6.2.1
+     │       │   └── rx4 v0.3.19
+     │       └── parking_lot v0.12.5
+     │           ├── moka v0.12.15
+     │           │   └── rx4 v0.3.19 (*)
+     │           ├── rx4 v0.3.19 (*)
+     │           └── tokio v1.53.0
+     │               ├── rx4 v0.3.19 (*)
+     │               ├── tokio-stream v0.1.18
+     │               │   └── tokio-test v0.4.5
+     │               │       └── (dev) rx4 v0.3.19 (*)
+     │               └── tokio-test v0.4.5 (*)
+     └── rustix v1.1.4
+         └── tempfile v3.27.0
+             └── (dev) rx4 v0.3.19 (*)
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/block-buffer-0.10.4/Cargo.toml:28:12
+   │
+28 │ license = "MIT OR Apache-2.0"
+   │            ━━━────━━━━━━━━━━
+   │            │      │
+   │            │      rejected: license is not explicitly allowed
+   │            rejected: license is not explicitly allowed
+   │
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ Apache-2.0 - Apache License 2.0:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ block-buffer v0.10.4
+     └── digest v0.10.7
+         └── sha2 v0.10.9
+             └── rx4 v0.3.19
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bstr-1.13.0/Cargo.toml:44:12
+   │
+44 │ license = "MIT OR Apache-2.0"
+   │            ━━━────━━━━━━━━━━
+   │            │      │
+   │            │      rejected: license is not explicitly allowed
+   │            rejected: license is not explicitly allowed
+   │
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ Apache-2.0 - Apache License 2.0:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ bstr v1.13.0
+     └── globset v0.4.19
+         └── ignore v0.4.30
+             └── rx4 v0.3.19
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bumpalo-3.20.3/Cargo.toml:44:12
+   │
+44 │ license = "MIT OR Apache-2.0"
+   │            ━━━────━━━━━━━━━━
+   │            │      │
+   │            │      rejected: license is not explicitly allowed
+   │            rejected: license is not explicitly allowed
+   │
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ Apache-2.0 - Apache License 2.0:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ bumpalo v3.20.3
+     └── wasm-bindgen-macro-support v0.2.126
+         └── wasm-bindgen-macro v0.2.126
+             └── wasm-bindgen v0.2.126
+                 ├── chrono v0.4.45
+                 │   └── rx4 v0.3.19
+                 ├── iana-time-zone v0.1.65
+                 │   └── chrono v0.4.45 (*)
+                 ├── js-sys v0.3.103
+                 │   ├── chrono v0.4.45 (*)
+                 │   ├── iana-time-zone v0.1.65 (*)
+                 │   └── web-sys v0.3.103
+                 │       └── plotters v0.3.7
+                 │           └── criterion v0.5.1
+                 │               └── (dev) rx4 v0.3.19 (*)
+                 ├── plotters v0.3.7 (*)
+                 └── web-sys v0.3.103 (*)
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bytes-1.12.1/Cargo.toml:48:12
+   │
+48 │ license = "MIT"
+   │            ━━━
+   │            │
+   │            rejected: license is not explicitly allowed
+   │
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ bytes v1.12.1
+     └── tokio v1.53.0
+         ├── rx4 v0.3.19
+         ├── tokio-stream v0.1.18
+         │   └── tokio-test v0.4.5
+         │       └── (dev) rx4 v0.3.19 (*)
+         └── tokio-test v0.4.5 (*)
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cancellation-token-0.1.1/Cargo.toml:27:12
+   │
+27 │ license = "MIT OR Apache-2.0"
+   │            ━━━────━━━━━━━━━━
+   │            │      │
+   │            │      rejected: license is not explicitly allowed
+   │            rejected: license is not explicitly allowed
+   │
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ Apache-2.0 - Apache License 2.0:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ cancellation-token v0.1.1
+     └── rx4 v0.3.19
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cc-1.3.0/Cargo.toml:39:12
+   │
+39 │ license = "MIT OR Apache-2.0"
+   │            ━━━────━━━━━━━━━━
+   │            │      │
+   │            │      rejected: license is not explicitly allowed
+   │            rejected: license is not explicitly allowed
+   │
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ Apache-2.0 - Apache License 2.0:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ cc v1.3.0
+     └── (build) iana-time-zone-haiku v0.1.2
+         └── iana-time-zone v0.1.65
+             └── chrono v0.4.45
+                 └── rx4 v0.3.19
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cfg-if-1.0.4/Cargo.toml:30:12
+   │
+30 │ license = "MIT OR Apache-2.0"
+   │            ━━━────━━━━━━━━━━
+   │            │      │
+   │            │      rejected: license is not explicitly allowed
+   │            rejected: license is not explicitly allowed
+   │
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ Apache-2.0 - Apache License 2.0:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ cfg-if v1.0.4
+     ├── dashmap v6.2.1
+     │   └── rx4 v0.3.19
+     ├── getrandom v0.4.3
+     │   ├── tempfile v3.27.0
+     │   │   └── (dev) rx4 v0.3.19 (*)
+     │   └── uuid v1.24.0
+     │       ├── moka v0.12.15
+     │       │   └── rx4 v0.3.19 (*)
+     │       └── rx4 v0.3.19 (*)
+     ├── half v2.7.1
+     │   └── ciborium-ll v0.2.2
+     │       └── ciborium v0.2.2
+     │           └── criterion v0.5.1
+     │               └── (dev) rx4 v0.3.19 (*)
+     ├── js-sys v0.3.103
+     │   ├── chrono v0.4.45
+     │   │   └── rx4 v0.3.19 (*)
+     │   ├── iana-time-zone v0.1.65
+     │   │   └── chrono v0.4.45 (*)
+     │   └── web-sys v0.3.103
+     │       └── plotters v0.3.7
+     │           └── criterion v0.5.1 (*)
+     ├── parking_lot_core v0.9.12
+     │   ├── dashmap v6.2.1 (*)
+     │   └── parking_lot v0.12.5
+     │       ├── moka v0.12.15 (*)
+     │       ├── rx4 v0.3.19 (*)
+     │       └── tokio v1.53.0
+     │           ├── rx4 v0.3.19 (*)
+     │           ├── tokio-stream v0.1.18
+     │           │   └── tokio-test v0.4.5
+     │           │       └── (dev) rx4 v0.3.19 (*)
+     │           └── tokio-test v0.4.5 (*)
+     ├── sha2 v0.10.9
+     │   └── rx4 v0.3.19 (*)
+     └── wasm-bindgen v0.2.126
+         ├── chrono v0.4.45 (*)
+         ├── iana-time-zone v0.1.65 (*)
+         ├── js-sys v0.3.103 (*)
+         ├── plotters v0.3.7 (*)
+         └── web-sys v0.3.103 (*)
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/chrono-0.4.45/Cargo.toml:39:12
+   │
+39 │ license = "MIT OR Apache-2.0"
+   │            ━━━────━━━━━━━━━━
+   │            │      │
+   │            │      rejected: license is not explicitly allowed
+   │            rejected: license is not explicitly allowed
+   │
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ Apache-2.0 - Apache License 2.0:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ chrono v0.4.45
+     └── rx4 v0.3.19
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/clap-4.6.2/Cargo.toml:41:12
+   │
+41 │ license = "MIT OR Apache-2.0"
+   │            ━━━────━━━━━━━━━━
+   │            │      │
+   │            │      rejected: license is not explicitly allowed
+   │            rejected: license is not explicitly allowed
+   │
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ Apache-2.0 - Apache License 2.0:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ clap v4.6.2
+     ├── criterion v0.5.1
+     │   └── (dev) rx4 v0.3.19
+     └── rx4 v0.3.19 (*)
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/clap_builder-4.6.2/Cargo.toml:41:12
+   │
+41 │ license = "MIT OR Apache-2.0"
+   │            ━━━────━━━━━━━━━━
+   │            │      │
+   │            │      rejected: license is not explicitly allowed
+   │            rejected: license is not explicitly allowed
+   │
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ Apache-2.0 - Apache License 2.0:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ clap_builder v4.6.2
+     └── clap v4.6.2
+         ├── criterion v0.5.1
+         │   └── (dev) rx4 v0.3.19
+         └── rx4 v0.3.19 (*)
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/clap_derive-4.6.1/Cargo.toml:44:12
+   │
+44 │ license = "MIT OR Apache-2.0"
+   │            ━━━────━━━━━━━━━━
+   │            │      │
+   │            │      rejected: license is not explicitly allowed
+   │            rejected: license is not explicitly allowed
+   │
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ Apache-2.0 - Apache License 2.0:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ clap_derive v4.6.1
+     └── clap v4.6.2
+         ├── criterion v0.5.1
+         │   └── (dev) rx4 v0.3.19
+         └── rx4 v0.3.19 (*)
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/clap_lex-1.1.0/Cargo.toml:41:12
+   │
+41 │ license = "MIT OR Apache-2.0"
+   │            ━━━────━━━━━━━━━━
+   │            │      │
+   │            │      rejected: license is not explicitly allowed
+   │            rejected: license is not explicitly allowed
+   │
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ Apache-2.0 - Apache License 2.0:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ clap_lex v1.1.0
+     └── clap_builder v4.6.2
+         └── clap v4.6.2
+             ├── criterion v0.5.1
+             │   └── (dev) rx4 v0.3.19
+             └── rx4 v0.3.19 (*)
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/colorchoice-1.0.5/Cargo.toml:42:12
+   │
+42 │ license = "MIT OR Apache-2.0"
+   │            ━━━────━━━━━━━━━━
+   │            │      │
+   │            │      rejected: license is not explicitly allowed
+   │            rejected: license is not explicitly allowed
+   │
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ Apache-2.0 - Apache License 2.0:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ colorchoice v1.0.5
+     └── anstream v1.0.0
+         └── clap_builder v4.6.2
+             └── clap v4.6.2
+                 ├── criterion v0.5.1
+                 │   └── (dev) rx4 v0.3.19
+                 └── rx4 v0.3.19 (*)
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/concurrent-queue-2.5.0/Cargo.toml:33:12
+   │
+33 │ license = "Apache-2.0 OR MIT"
+   │            ━━━━━━━━━━────━━━
+   │            │             │
+   │            │             rejected: license is not explicitly allowed
+   │            rejected: license is not explicitly allowed
+   │
+   ├ Apache-2.0 - Apache License 2.0:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ concurrent-queue v2.5.0
+     └── event-listener v5.4.1
+         ├── async-lock v3.4.2
+         │   └── moka v0.12.15
+         │       └── rx4 v0.3.19
+         ├── event-listener-strategy v0.5.4
+         │   └── async-lock v3.4.2 (*)
+         └── moka v0.12.15 (*)
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/core-foundation-sys-0.8.7/Cargo.toml:25:12
+   │
+25 │ license = "MIT OR Apache-2.0"
+   │            ━━━────━━━━━━━━━━
+   │            │      │
+   │            │      rejected: license is not explicitly allowed
+   │            rejected: license is not explicitly allowed
+   │
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ Apache-2.0 - Apache License 2.0:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ core-foundation-sys v0.8.7
+     └── iana-time-zone v0.1.65
+         └── chrono v0.4.45
+             └── rx4 v0.3.19
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cpufeatures-0.2.17/Cargo.toml:37:12
+   │
+37 │ license = "MIT OR Apache-2.0"
+   │            ━━━────━━━━━━━━━━
+   │            │      │
+   │            │      rejected: license is not explicitly allowed
+   │            rejected: license is not explicitly allowed
+   │
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ Apache-2.0 - Apache License 2.0:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ cpufeatures v0.2.17
+     └── sha2 v0.10.9
+         └── rx4 v0.3.19
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/crossbeam-channel-0.5.16/Cargo.toml:38:12
+   │
+38 │ license = "MIT OR Apache-2.0"
+   │            ━━━────━━━━━━━━━━
+   │            │      │
+   │            │      rejected: license is not explicitly allowed
+   │            rejected: license is not explicitly allowed
+   │
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ Apache-2.0 - Apache License 2.0:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ crossbeam-channel v0.5.16
+     └── moka v0.12.15
+         └── rx4 v0.3.19
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/crossbeam-deque-0.8.7/Cargo.toml:37:12
+   │
+37 │ license = "MIT OR Apache-2.0"
+   │            ━━━────━━━━━━━━━━
+   │            │      │
+   │            │      rejected: license is not explicitly allowed
+   │            rejected: license is not explicitly allowed
+   │
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ Apache-2.0 - Apache License 2.0:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ crossbeam-deque v0.8.7
+     ├── ignore v0.4.30
+     │   └── rx4 v0.3.19
+     └── rayon-core v1.13.0
+         └── rayon v1.12.0
+             ├── criterion v0.5.1
+             │   └── (dev) rx4 v0.3.19 (*)
+             └── rx4 v0.3.19 (*)
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/crossbeam-epoch-0.9.20/Cargo.toml:37:12
+   │
+37 │ license = "MIT OR Apache-2.0"
+   │            ━━━────━━━━━━━━━━
+   │            │      │
+   │            │      rejected: license is not explicitly allowed
+   │            rejected: license is not explicitly allowed
+   │
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ Apache-2.0 - Apache License 2.0:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ crossbeam-epoch v0.9.20
+     ├── crossbeam-deque v0.8.7
+     │   ├── ignore v0.4.30
+     │   │   └── rx4 v0.3.19
+     │   └── rayon-core v1.13.0
+     │       └── rayon v1.12.0
+     │           ├── criterion v0.5.1
+     │           │   └── (dev) rx4 v0.3.19 (*)
+     │           └── rx4 v0.3.19 (*)
+     └── moka v0.12.15
+         └── rx4 v0.3.19 (*)
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/crossbeam-utils-0.8.22/Cargo.toml:38:12
+   │
+38 │ license = "MIT OR Apache-2.0"
+   │            ━━━────━━━━━━━━━━
+   │            │      │
+   │            │      rejected: license is not explicitly allowed
+   │            rejected: license is not explicitly allowed
+   │
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ Apache-2.0 - Apache License 2.0:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ crossbeam-utils v0.8.22
+     ├── concurrent-queue v2.5.0
+     │   └── event-listener v5.4.1
+     │       ├── async-lock v3.4.2
+     │       │   └── moka v0.12.15
+     │       │       └── rx4 v0.3.19
+     │       ├── event-listener-strategy v0.5.4
+     │       │   └── async-lock v3.4.2 (*)
+     │       └── moka v0.12.15 (*)
+     ├── crossbeam-channel v0.5.16
+     │   └── moka v0.12.15 (*)
+     ├── crossbeam-deque v0.8.7
+     │   ├── ignore v0.4.30
+     │   │   └── rx4 v0.3.19 (*)
+     │   └── rayon-core v1.13.0
+     │       └── rayon v1.12.0
+     │           ├── criterion v0.5.1
+     │           │   └── (dev) rx4 v0.3.19 (*)
+     │           └── rx4 v0.3.19 (*)
+     ├── crossbeam-epoch v0.9.20
+     │   ├── crossbeam-deque v0.8.7 (*)
+     │   └── moka v0.12.15 (*)
+     ├── dashmap v6.2.1
+     │   └── rx4 v0.3.19 (*)
+     ├── moka v0.12.15 (*)
+     └── rayon-core v1.13.0 (*)
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/crypto-common-0.1.7/Cargo.toml:34:12
+   │
+34 │ license = "MIT OR Apache-2.0"
+   │            ━━━────━━━━━━━━━━
+   │            │      │
+   │            │      rejected: license is not explicitly allowed
+   │            rejected: license is not explicitly allowed
+   │
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ Apache-2.0 - Apache License 2.0:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ crypto-common v0.1.7
+     └── digest v0.10.7
+         └── sha2 v0.10.9
+             └── rx4 v0.3.19
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/dashmap-6.2.1/Cargo.toml:38:12
+   │
+38 │ license = "MIT"
+   │            ━━━
+   │            │
+   │            rejected: license is not explicitly allowed
+   │
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ dashmap v6.2.1
+     └── rx4 v0.3.19
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/derive-ex-0.1.8/Cargo.toml:22:12
+   │
+22 │ license = "MIT OR Apache-2.0"
+   │            ━━━────━━━━━━━━━━
+   │            │      │
+   │            │      rejected: license is not explicitly allowed
+   │            rejected: license is not explicitly allowed
+   │
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ Apache-2.0 - Apache License 2.0:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ derive-ex v0.1.8
+     └── slabmap v0.2.1
+         └── cancellation-token v0.1.1
+             └── rx4 v0.3.19
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/digest-0.10.7/Cargo.toml:29:12
+   │
+29 │ license = "MIT OR Apache-2.0"
+   │            ━━━────━━━━━━━━━━
+   │            │      │
+   │            │      rejected: license is not explicitly allowed
+   │            rejected: license is not explicitly allowed
+   │
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ Apache-2.0 - Apache License 2.0:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ digest v0.10.7
+     └── sha2 v0.10.9
+         └── rx4 v0.3.19
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/either-1.16.0/Cargo.toml:36:12
+   │
+36 │ license = "MIT OR Apache-2.0"
+   │            ━━━────━━━━━━━━━━
+   │            │      │
+   │            │      rejected: license is not explicitly allowed
+   │            rejected: license is not explicitly allowed
+   │
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ Apache-2.0 - Apache License 2.0:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ either v1.16.0
+     ├── itertools v0.10.5
+     │   ├── criterion v0.5.1
+     │   │   └── (dev) rx4 v0.3.19
+     │   └── criterion-plot v0.5.0
+     │       └── criterion v0.5.1 (*)
+     └── rayon v1.12.0
+         ├── criterion v0.5.1 (*)
+         └── rx4 v0.3.19 (*)
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/equivalent-1.0.2/Cargo.toml:32:12
+   │
+32 │ license = "Apache-2.0 OR MIT"
+   │            ━━━━━━━━━━────━━━
+   │            │             │
+   │            │             rejected: license is not explicitly allowed
+   │            rejected: license is not explicitly allowed
+   │
+   ├ Apache-2.0 - Apache License 2.0:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ equivalent v1.0.2
+     └── moka v0.12.15
+         └── rx4 v0.3.19
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/errno-0.3.14/Cargo.toml:34:12
+   │
+34 │ license = "MIT OR Apache-2.0"
+   │            ━━━────━━━━━━━━━━
+   │            │      │
+   │            │      rejected: license is not explicitly allowed
+   │            rejected: license is not explicitly allowed
+   │
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ Apache-2.0 - Apache License 2.0:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ errno v0.3.14
+     ├── rustix v1.1.4
+     │   └── tempfile v3.27.0
+     │       └── (dev) rx4 v0.3.19
+     └── signal-hook-registry v1.4.8
+         └── tokio v1.53.0
+             ├── rx4 v0.3.19 (*)
+             ├── tokio-stream v0.1.18
+             │   └── tokio-test v0.4.5
+             │       └── (dev) rx4 v0.3.19 (*)
+             └── tokio-test v0.4.5 (*)
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/event-listener-5.4.1/Cargo.toml:41:12
+   │
+41 │ license = "Apache-2.0 OR MIT"
+   │            ━━━━━━━━━━────━━━
+   │            │             │
+   │            │             rejected: license is not explicitly allowed
+   │            rejected: license is not explicitly allowed
+   │
+   ├ Apache-2.0 - Apache License 2.0:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ event-listener v5.4.1
+     ├── async-lock v3.4.2
+     │   └── moka v0.12.15
+     │       └── rx4 v0.3.19
+     ├── event-listener-strategy v0.5.4
+     │   └── async-lock v3.4.2 (*)
+     └── moka v0.12.15 (*)
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/event-listener-strategy-0.5.4/Cargo.toml:38:12
+   │
+38 │ license = "Apache-2.0 OR MIT"
+   │            ━━━━━━━━━━────━━━
+   │            │             │
+   │            │             rejected: license is not explicitly allowed
+   │            rejected: license is not explicitly allowed
+   │
+   ├ Apache-2.0 - Apache License 2.0:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ event-listener-strategy v0.5.4
+     └── async-lock v3.4.2
+         └── moka v0.12.15
+             └── rx4 v0.3.19
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/find-msvc-tools-0.1.9/Cargo.toml:28:12
+   │
+28 │ license = "MIT OR Apache-2.0"
+   │            ━━━────━━━━━━━━━━
+   │            │      │
+   │            │      rejected: license is not explicitly allowed
+   │            rejected: license is not explicitly allowed
+   │
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ Apache-2.0 - Apache License 2.0:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ find-msvc-tools v0.1.9
+     └── cc v1.3.0
+         └── (build) iana-time-zone-haiku v0.1.2
+             └── iana-time-zone v0.1.65
+                 └── chrono v0.4.45
+                     └── rx4 v0.3.19
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/futures-core-0.3.33/Cargo.toml:28:12
+   │
+28 │ license = "MIT OR Apache-2.0"
+   │            ━━━────━━━━━━━━━━
+   │            │      │
+   │            │      rejected: license is not explicitly allowed
+   │            rejected: license is not explicitly allowed
+   │
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ Apache-2.0 - Apache License 2.0:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ futures-core v0.3.33
+     ├── futures-util v0.3.33
+     │   ├── js-sys v0.3.103
+     │   │   ├── chrono v0.4.45
+     │   │   │   └── rx4 v0.3.19
+     │   │   ├── iana-time-zone v0.1.65
+     │   │   │   └── chrono v0.4.45 (*)
+     │   │   └── web-sys v0.3.103
+     │   │       └── plotters v0.3.7
+     │   │           └── criterion v0.5.1
+     │   │               └── (dev) rx4 v0.3.19 (*)
+     │   └── moka v0.12.15
+     │       └── rx4 v0.3.19 (*)
+     ├── tokio-stream v0.1.18
+     │   └── tokio-test v0.4.5
+     │       └── (dev) rx4 v0.3.19 (*)
+     └── tokio-test v0.4.5 (*)
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/futures-macro-0.3.33/Cargo.toml:28:12
+   │
+28 │ license = "MIT OR Apache-2.0"
+   │            ━━━────━━━━━━━━━━
+   │            │      │
+   │            │      rejected: license is not explicitly allowed
+   │            rejected: license is not explicitly allowed
+   │
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ Apache-2.0 - Apache License 2.0:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ futures-macro v0.3.33
+     └── futures-util v0.3.33
+         ├── js-sys v0.3.103
+         │   ├── chrono v0.4.45
+         │   │   └── rx4 v0.3.19
+         │   ├── iana-time-zone v0.1.65
+         │   │   └── chrono v0.4.45 (*)
+         │   └── web-sys v0.3.103
+         │       └── plotters v0.3.7
+         │           └── criterion v0.5.1
+         │               └── (dev) rx4 v0.3.19 (*)
+         └── moka v0.12.15
+             └── rx4 v0.3.19 (*)
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/futures-task-0.3.33/Cargo.toml:28:12
+   │
+28 │ license = "MIT OR Apache-2.0"
+   │            ━━━────━━━━━━━━━━
+   │            │      │
+   │            │      rejected: license is not explicitly allowed
+   │            rejected: license is not explicitly allowed
+   │
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ Apache-2.0 - Apache License 2.0:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ futures-task v0.3.33
+     └── futures-util v0.3.33
+         ├── js-sys v0.3.103
+         │   ├── chrono v0.4.45
+         │   │   └── rx4 v0.3.19
+         │   ├── iana-time-zone v0.1.65
+         │   │   └── chrono v0.4.45 (*)
+         │   └── web-sys v0.3.103
+         │       └── plotters v0.3.7
+         │           └── criterion v0.5.1
+         │               └── (dev) rx4 v0.3.19 (*)
+         └── moka v0.12.15
+             └── rx4 v0.3.19 (*)
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/futures-util-0.3.33/Cargo.toml:28:12
+   │
+28 │ license = "MIT OR Apache-2.0"
+   │            ━━━────━━━━━━━━━━
+   │            │      │
+   │            │      rejected: license is not explicitly allowed
+   │            rejected: license is not explicitly allowed
+   │
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ Apache-2.0 - Apache License 2.0:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ futures-util v0.3.33
+     ├── js-sys v0.3.103
+     │   ├── chrono v0.4.45
+     │   │   └── rx4 v0.3.19
+     │   ├── iana-time-zone v0.1.65
+     │   │   └── chrono v0.4.45 (*)
+     │   └── web-sys v0.3.103
+     │       └── plotters v0.3.7
+     │           └── criterion v0.5.1
+     │               └── (dev) rx4 v0.3.19 (*)
+     └── moka v0.12.15
+         └── rx4 v0.3.19 (*)
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/generic-array-0.14.7/Cargo.toml:37:12
+   │
+37 │ license = "MIT"
+   │            ━━━
+   │            │
+   │            rejected: license is not explicitly allowed
+   │
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ generic-array v0.14.7
+     ├── block-buffer v0.10.4
+     │   └── digest v0.10.7
+     │       └── sha2 v0.10.9
+     │           └── rx4 v0.3.19
+     └── crypto-common v0.1.7
+         └── digest v0.10.7 (*)
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/getrandom-0.4.3/Cargo.toml:32:12
+   │
+32 │ license = "MIT OR Apache-2.0"
+   │            ━━━────━━━━━━━━━━
+   │            │      │
+   │            │      rejected: license is not explicitly allowed
+   │            rejected: license is not explicitly allowed
+   │
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ Apache-2.0 - Apache License 2.0:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ getrandom v0.4.3
+     ├── tempfile v3.27.0
+     │   └── (dev) rx4 v0.3.19
+     └── uuid v1.24.0
+         ├── moka v0.12.15
+         │   └── rx4 v0.3.19 (*)
+         └── rx4 v0.3.19 (*)
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/glob-0.3.3/Cargo.toml:30:12
+   │
+30 │ license = "MIT OR Apache-2.0"
+   │            ━━━────━━━━━━━━━━
+   │            │      │
+   │            │      rejected: license is not explicitly allowed
+   │            rejected: license is not explicitly allowed
+   │
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ Apache-2.0 - Apache License 2.0:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ glob v0.3.3
+     └── rx4 v0.3.19
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/globset-0.4.19/Cargo.toml:38:12
+   │
+38 │ license = "Unlicense OR MIT"
+   │            ━━━━━━━━━────━━━
+   │            │            │
+   │            │            rejected: license is not explicitly allowed
+   │            rejected: license is not explicitly allowed
+   │
+   ├ Unlicense - The Unlicense:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ globset v0.4.19
+     └── ignore v0.4.30
+         └── rx4 v0.3.19
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/hashbrown-0.14.5/Cargo.toml:34:12
+   │
+34 │ license = "MIT OR Apache-2.0"
+   │            ━━━────━━━━━━━━━━
+   │            │      │
+   │            │      rejected: license is not explicitly allowed
+   │            rejected: license is not explicitly allowed
+   │
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ Apache-2.0 - Apache License 2.0:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ hashbrown v0.14.5
+     └── dashmap v6.2.1
+         └── rx4 v0.3.19
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/heck-0.5.0/Cargo.toml:33:12
+   │
+33 │ license = "MIT OR Apache-2.0"
+   │            ━━━────━━━━━━━━━━
+   │            │      │
+   │            │      rejected: license is not explicitly allowed
+   │            rejected: license is not explicitly allowed
+   │
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ Apache-2.0 - Apache License 2.0:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ heck v0.5.0
+     └── clap_derive v4.6.1
+         └── clap v4.6.2
+             ├── criterion v0.5.1
+             │   └── (dev) rx4 v0.3.19
+             └── rx4 v0.3.19 (*)
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/iana-time-zone-0.1.65/Cargo.toml:39:12
+   │
+39 │ license = "MIT OR Apache-2.0"
+   │            ━━━────━━━━━━━━━━
+   │            │      │
+   │            │      rejected: license is not explicitly allowed
+   │            rejected: license is not explicitly allowed
+   │
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ Apache-2.0 - Apache License 2.0:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ iana-time-zone v0.1.65
+     └── chrono v0.4.45
+         └── rx4 v0.3.19
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/iana-time-zone-haiku-0.1.2/Cargo.toml:28:12
+   │
+28 │ license = "MIT OR Apache-2.0"
+   │            ━━━────━━━━━━━━━━
+   │            │      │
+   │            │      rejected: license is not explicitly allowed
+   │            rejected: license is not explicitly allowed
+   │
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ Apache-2.0 - Apache License 2.0:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ iana-time-zone-haiku v0.1.2
+     └── iana-time-zone v0.1.65
+         └── chrono v0.4.45
+             └── rx4 v0.3.19
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ignore-0.4.30/Cargo.toml:37:12
+   │
+37 │ license = "Unlicense OR MIT"
+   │            ━━━━━━━━━────━━━
+   │            │            │
+   │            │            rejected: license is not explicitly allowed
+   │            rejected: license is not explicitly allowed
+   │
+   ├ Unlicense - The Unlicense:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ ignore v0.4.30
+     └── rx4 v0.3.19
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/is_terminal_polyfill-1.70.2/Cargo.toml:37:12
+   │
+37 │ license = "MIT OR Apache-2.0"
+   │            ━━━────━━━━━━━━━━
+   │            │      │
+   │            │      rejected: license is not explicitly allowed
+   │            rejected: license is not explicitly allowed
+   │
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ Apache-2.0 - Apache License 2.0:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ is_terminal_polyfill v1.70.2
+     └── anstream v1.0.0
+         └── clap_builder v4.6.2
+             └── clap v4.6.2
+                 ├── criterion v0.5.1
+                 │   └── (dev) rx4 v0.3.19
+                 └── rx4 v0.3.19 (*)
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/itoa-1.0.18/Cargo.toml:34:12
+   │
+34 │ license = "MIT OR Apache-2.0"
+   │            ━━━────━━━━━━━━━━
+   │            │      │
+   │            │      rejected: license is not explicitly allowed
+   │            rejected: license is not explicitly allowed
+   │
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ Apache-2.0 - Apache License 2.0:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ itoa v1.0.18
+     └── serde_json v1.0.150
+         ├── criterion v0.5.1
+         │   └── (dev) rx4 v0.3.19
+         ├── rx4 v0.3.19 (*)
+         └── tinytemplate v1.2.1
+             └── criterion v0.5.1 (*)
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/js-sys-0.3.103/Cargo.toml:36:12
+   │
+36 │ license = "MIT OR Apache-2.0"
+   │            ━━━────━━━━━━━━━━
+   │            │      │
+   │            │      rejected: license is not explicitly allowed
+   │            rejected: license is not explicitly allowed
+   │
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ Apache-2.0 - Apache License 2.0:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ js-sys v0.3.103
+     ├── chrono v0.4.45
+     │   └── rx4 v0.3.19
+     ├── iana-time-zone v0.1.65
+     │   └── chrono v0.4.45 (*)
+     └── web-sys v0.3.103
+         └── plotters v0.3.7
+             └── criterion v0.5.1
+                 └── (dev) rx4 v0.3.19 (*)
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/libc-0.2.186/Cargo.toml:44:12
+   │
+44 │ license = "MIT OR Apache-2.0"
+   │            ━━━────━━━━━━━━━━
+   │            │      │
+   │            │      rejected: license is not explicitly allowed
+   │            rejected: license is not explicitly allowed
+   │
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ Apache-2.0 - Apache License 2.0:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ libc v0.2.186
+     ├── android_system_properties v0.1.5
+     │   └── iana-time-zone v0.1.65
+     │       └── chrono v0.4.45
+     │           └── rx4 v0.3.19
+     ├── cpufeatures v0.2.17
+     │   └── sha2 v0.10.9
+     │       └── rx4 v0.3.19 (*)
+     ├── errno v0.3.14
+     │   ├── rustix v1.1.4
+     │   │   └── tempfile v3.27.0
+     │   │       └── (dev) rx4 v0.3.19 (*)
+     │   └── signal-hook-registry v1.4.8
+     │       └── tokio v1.53.0
+     │           ├── rx4 v0.3.19 (*)
+     │           ├── tokio-stream v0.1.18
+     │           │   └── tokio-test v0.4.5
+     │           │       └── (dev) rx4 v0.3.19 (*)
+     │           └── tokio-test v0.4.5 (*)
+     ├── getrandom v0.4.3
+     │   ├── tempfile v3.27.0 (*)
+     │   └── uuid v1.24.0
+     │       ├── moka v0.12.15
+     │       │   └── rx4 v0.3.19 (*)
+     │       └── rx4 v0.3.19 (*)
+     ├── is-terminal v0.4.17
+     │   └── criterion v0.5.1
+     │       └── (dev) rx4 v0.3.19 (*)
+     ├── mio v1.2.2
+     │   └── tokio v1.53.0 (*)
+     ├── parking_lot_core v0.9.12
+     │   ├── dashmap v6.2.1
+     │   │   └── rx4 v0.3.19 (*)
+     │   └── parking_lot v0.12.5
+     │       ├── moka v0.12.15 (*)
+     │       ├── rx4 v0.3.19 (*)
+     │       └── tokio v1.53.0 (*)
+     ├── rustix v1.1.4 (*)
+     ├── signal-hook-registry v1.4.8 (*)
+     ├── socket2 v0.6.5
+     │   └── tokio v1.53.0 (*)
+     └── tokio v1.53.0 (*)
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/lock_api-0.4.14/Cargo.toml:36:12
+   │
+36 │ license = "MIT OR Apache-2.0"
+   │            ━━━────━━━━━━━━━━
+   │            │      │
+   │            │      rejected: license is not explicitly allowed
+   │            rejected: license is not explicitly allowed
+   │
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ Apache-2.0 - Apache License 2.0:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ lock_api v0.4.14
+     ├── dashmap v6.2.1
+     │   └── rx4 v0.3.19
+     └── parking_lot v0.12.5
+         ├── moka v0.12.15
+         │   └── rx4 v0.3.19 (*)
+         ├── rx4 v0.3.19 (*)
+         └── tokio v1.53.0
+             ├── rx4 v0.3.19 (*)
+             ├── tokio-stream v0.1.18
+             │   └── tokio-test v0.4.5
+             │       └── (dev) rx4 v0.3.19 (*)
+             └── tokio-test v0.4.5 (*)
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/log-0.4.33/Cargo.toml:32:12
+   │
+32 │ license = "MIT OR Apache-2.0"
+   │            ━━━────━━━━━━━━━━
+   │            │      │
+   │            │      rejected: license is not explicitly allowed
+   │            rejected: license is not explicitly allowed
+   │
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ Apache-2.0 - Apache License 2.0:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ log v0.4.33
+     ├── globset v0.4.19
+     │   └── ignore v0.4.30
+     │       └── rx4 v0.3.19
+     ├── iana-time-zone v0.1.65
+     │   └── chrono v0.4.45
+     │       └── rx4 v0.3.19 (*)
+     └── ignore v0.4.30 (*)
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/memchr-2.8.3/Cargo.toml:48:12
+   │
+48 │ license = "Unlicense OR MIT"
+   │            ━━━━━━━━━────━━━
+   │            │            │
+   │            │            rejected: license is not explicitly allowed
+   │            rejected: license is not explicitly allowed
+   │
+   ├ Unlicense - The Unlicense:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ memchr v2.8.3
+     ├── aho-corasick v1.1.4
+     │   ├── globset v0.4.19
+     │   │   └── ignore v0.4.30
+     │   │       └── rx4 v0.3.19
+     │   ├── regex v1.13.1
+     │   │   ├── criterion v0.5.1
+     │   │   │   └── (dev) rx4 v0.3.19 (*)
+     │   │   └── rx4 v0.3.19 (*)
+     │   └── regex-automata v0.4.16
+     │       ├── globset v0.4.19 (*)
+     │       ├── ignore v0.4.30 (*)
+     │       └── regex v1.13.1 (*)
+     ├── bstr v1.13.0
+     │   └── globset v0.4.19 (*)
+     ├── ignore v0.4.30 (*)
+     ├── regex v1.13.1 (*)
+     ├── regex-automata v0.4.16 (*)
+     └── serde_json v1.0.150
+         ├── criterion v0.5.1 (*)
+         ├── rx4 v0.3.19 (*)
+         └── tinytemplate v1.2.1
+             └── criterion v0.5.1 (*)
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/mio-1.2.2/Cargo.toml:45:12
+   │
+45 │ license = "MIT"
+   │            ━━━
+   │            │
+   │            rejected: license is not explicitly allowed
+   │
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ mio v1.2.2
+     └── tokio v1.53.0
+         ├── rx4 v0.3.19
+         ├── tokio-stream v0.1.18
+         │   └── tokio-test v0.4.5
+         │       └── (dev) rx4 v0.3.19 (*)
+         └── tokio-test v0.4.5 (*)
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/moka-0.12.15/Cargo.toml:48:13
+   │
+48 │ license = "(MIT OR Apache-2.0) AND Apache-2.0"
+   │            ─━━━────━━━━━━━━━━──────━━━━━━━━━━
+   │             │      │               │
+   │             │      │               rejected: license is not explicitly allowed
+   │             │      rejected: license is not explicitly allowed
+   │             rejected: license is not explicitly allowed
+   │
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ Apache-2.0 - Apache License 2.0:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ Apache-2.0 - Apache License 2.0:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ moka v0.12.15
+     └── rx4 v0.3.19
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/num-traits-0.2.19/Cargo.toml:36:12
+   │
+36 │ license = "MIT OR Apache-2.0"
+   │            ━━━────━━━━━━━━━━
+   │            │      │
+   │            │      rejected: license is not explicitly allowed
+   │            rejected: license is not explicitly allowed
+   │
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ Apache-2.0 - Apache License 2.0:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ num-traits v0.2.19
+     ├── chrono v0.4.45
+     │   └── rx4 v0.3.19
+     ├── criterion v0.5.1
+     │   └── (dev) rx4 v0.3.19 (*)
+     └── plotters v0.3.7
+         └── criterion v0.5.1 (*)
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/once_cell-1.21.4/Cargo.toml:41:12
+   │
+41 │ license = "MIT OR Apache-2.0"
+   │            ━━━────━━━━━━━━━━
+   │            │      │
+   │            │      rejected: license is not explicitly allowed
+   │            rejected: license is not explicitly allowed
+   │
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ Apache-2.0 - Apache License 2.0:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ once_cell v1.21.4
+     ├── criterion v0.5.1
+     │   └── (dev) rx4 v0.3.19
+     ├── dashmap v6.2.1
+     │   └── rx4 v0.3.19 (*)
+     ├── tempfile v3.27.0
+     │   └── (dev) rx4 v0.3.19 (*)
+     ├── tracing-core v0.1.36
+     │   └── tracing v0.1.44
+     │       └── rx4 v0.3.19 (*)
+     └── wasm-bindgen v0.2.126
+         ├── chrono v0.4.45
+         │   └── rx4 v0.3.19 (*)
+         ├── iana-time-zone v0.1.65
+         │   └── chrono v0.4.45 (*)
+         ├── js-sys v0.3.103
+         │   ├── chrono v0.4.45 (*)
+         │   ├── iana-time-zone v0.1.65 (*)
+         │   └── web-sys v0.3.103
+         │       └── plotters v0.3.7
+         │           └── criterion v0.5.1 (*)
+         ├── plotters v0.3.7 (*)
+         └── web-sys v0.3.103 (*)
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/once_cell_polyfill-1.70.2/Cargo.toml:37:12
+   │
+37 │ license = "MIT OR Apache-2.0"
+   │            ━━━────━━━━━━━━━━
+   │            │      │
+   │            │      rejected: license is not explicitly allowed
+   │            rejected: license is not explicitly allowed
+   │
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ Apache-2.0 - Apache License 2.0:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ once_cell_polyfill v1.70.2
+     └── anstyle-wincon v3.0.11
+         └── anstream v1.0.0
+             └── clap_builder v4.6.2
+                 └── clap v4.6.2
+                     ├── criterion v0.5.1
+                     │   └── (dev) rx4 v0.3.19
+                     └── rx4 v0.3.19 (*)
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/parking-2.2.1/Cargo.toml:39:12
+   │
+39 │ license = "Apache-2.0 OR MIT"
+   │            ━━━━━━━━━━────━━━
+   │            │             │
+   │            │             rejected: license is not explicitly allowed
+   │            rejected: license is not explicitly allowed
+   │
+   ├ Apache-2.0 - Apache License 2.0:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ parking v2.2.1
+     └── event-listener v5.4.1
+         ├── async-lock v3.4.2
+         │   └── moka v0.12.15
+         │       └── rx4 v0.3.19
+         ├── event-listener-strategy v0.5.4
+         │   └── async-lock v3.4.2 (*)
+         └── moka v0.12.15 (*)
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/parking_lot-0.12.5/Cargo.toml:34:12
+   │
+34 │ license = "MIT OR Apache-2.0"
+   │            ━━━────━━━━━━━━━━
+   │            │      │
+   │            │      rejected: license is not explicitly allowed
+   │            rejected: license is not explicitly allowed
+   │
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ Apache-2.0 - Apache License 2.0:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ parking_lot v0.12.5
+     ├── moka v0.12.15
+     │   └── rx4 v0.3.19
+     ├── rx4 v0.3.19 (*)
+     └── tokio v1.53.0
+         ├── rx4 v0.3.19 (*)
+         ├── tokio-stream v0.1.18
+         │   └── tokio-test v0.4.5
+         │       └── (dev) rx4 v0.3.19 (*)
+         └── tokio-test v0.4.5 (*)
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/parking_lot_core-0.9.12/Cargo.toml:34:12
+   │
+34 │ license = "MIT OR Apache-2.0"
+   │            ━━━────━━━━━━━━━━
+   │            │      │
+   │            │      rejected: license is not explicitly allowed
+   │            rejected: license is not explicitly allowed
+   │
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ Apache-2.0 - Apache License 2.0:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ parking_lot_core v0.9.12
+     ├── dashmap v6.2.1
+     │   └── rx4 v0.3.19
+     └── parking_lot v0.12.5
+         ├── moka v0.12.15
+         │   └── rx4 v0.3.19 (*)
+         ├── rx4 v0.3.19 (*)
+         └── tokio v1.53.0
+             ├── rx4 v0.3.19 (*)
+             ├── tokio-stream v0.1.18
+             │   └── tokio-test v0.4.5
+             │       └── (dev) rx4 v0.3.19 (*)
+             └── tokio-test v0.4.5 (*)
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pin-project-lite-0.2.17/Cargo.toml:41:12
+   │
+41 │ license = "Apache-2.0 OR MIT"
+   │            ━━━━━━━━━━────━━━
+   │            │             │
+   │            │             rejected: license is not explicitly allowed
+   │            rejected: license is not explicitly allowed
+   │
+   ├ Apache-2.0 - Apache License 2.0:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ pin-project-lite v0.2.17
+     ├── async-lock v3.4.2
+     │   └── moka v0.12.15
+     │       └── rx4 v0.3.19
+     ├── event-listener v5.4.1
+     │   ├── async-lock v3.4.2 (*)
+     │   ├── event-listener-strategy v0.5.4
+     │   │   └── async-lock v3.4.2 (*)
+     │   └── moka v0.12.15 (*)
+     ├── event-listener-strategy v0.5.4 (*)
+     ├── futures-util v0.3.33
+     │   ├── js-sys v0.3.103
+     │   │   ├── chrono v0.4.45
+     │   │   │   └── rx4 v0.3.19 (*)
+     │   │   ├── iana-time-zone v0.1.65
+     │   │   │   └── chrono v0.4.45 (*)
+     │   │   └── web-sys v0.3.103
+     │   │       └── plotters v0.3.7
+     │   │           └── criterion v0.5.1
+     │   │               └── (dev) rx4 v0.3.19 (*)
+     │   └── moka v0.12.15 (*)
+     ├── tokio v1.53.0
+     │   ├── rx4 v0.3.19 (*)
+     │   ├── tokio-stream v0.1.18
+     │   │   └── tokio-test v0.4.5
+     │   │       └── (dev) rx4 v0.3.19 (*)
+     │   └── tokio-test v0.4.5 (*)
+     ├── tokio-stream v0.1.18 (*)
+     └── tracing v0.1.44
+         └── rx4 v0.3.19 (*)
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/portable-atomic-1.14.0/Cargo.toml:41:12
+   │
+41 │ license = "Apache-2.0 OR MIT"
+   │            ━━━━━━━━━━────━━━
+   │            │             │
+   │            │             rejected: license is not explicitly allowed
+   │            rejected: license is not explicitly allowed
+   │
+   ├ Apache-2.0 - Apache License 2.0:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ portable-atomic v1.14.0
+     └── moka v0.12.15
+         └── rx4 v0.3.19
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/proc-macro2-1.0.107/Cargo.toml:35:12
+   │
+35 │ license = "MIT OR Apache-2.0"
+   │            ━━━────━━━━━━━━━━
+   │            │      │
+   │            │      rejected: license is not explicitly allowed
+   │            rejected: license is not explicitly allowed
+   │
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ Apache-2.0 - Apache License 2.0:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ proc-macro2 v1.0.107
+     ├── async-trait v0.1.91
+     │   └── rx4 v0.3.19
+     ├── clap_derive v4.6.1
+     │   └── clap v4.6.2
+     │       ├── criterion v0.5.1
+     │       │   └── (dev) rx4 v0.3.19 (*)
+     │       └── rx4 v0.3.19 (*)
+     ├── derive-ex v0.1.8
+     │   └── slabmap v0.2.1
+     │       └── cancellation-token v0.1.1
+     │           └── rx4 v0.3.19 (*)
+     ├── futures-macro v0.3.33
+     │   └── futures-util v0.3.33
+     │       ├── js-sys v0.3.103
+     │       │   ├── chrono v0.4.45
+     │       │   │   └── rx4 v0.3.19 (*)
+     │       │   ├── iana-time-zone v0.1.65
+     │       │   │   └── chrono v0.4.45 (*)
+     │       │   └── web-sys v0.3.103
+     │       │       └── plotters v0.3.7
+     │       │           └── criterion v0.5.1 (*)
+     │       └── moka v0.12.15
+     │           └── rx4 v0.3.19 (*)
+     ├── quote v1.0.47
+     │   ├── async-trait v0.1.91 (*)
+     │   ├── clap_derive v4.6.1 (*)
+     │   ├── derive-ex v0.1.8 (*)
+     │   ├── futures-macro v0.3.33 (*)
+     │   ├── serde_derive v1.0.229
+     │   │   ├── criterion v0.5.1 (*)
+     │   │   └── serde v1.0.229
+     │   │       ├── chrono v0.4.45 (*)
+     │   │       ├── ciborium v0.2.2
+     │   │       │   └── criterion v0.5.1 (*)
+     │   │       ├── criterion v0.5.1 (*)
+     │   │       ├── rx4 v0.3.19 (*)
+     │   │       └── tinytemplate v1.2.1
+     │   │           └── criterion v0.5.1 (*)
+     │   ├── structmeta v0.3.0
+     │   │   └── derive-ex v0.1.8 (*)
+     │   ├── structmeta-derive v0.3.0
+     │   │   └── structmeta v0.3.0 (*)
+     │   ├── syn v2.0.119
+     │   │   ├── clap_derive v4.6.1 (*)
+     │   │   ├── derive-ex v0.1.8 (*)
+     │   │   ├── futures-macro v0.3.33 (*)
+     │   │   ├── structmeta v0.3.0 (*)
+     │   │   ├── structmeta-derive v0.3.0 (*)
+     │   │   ├── tokio-macros v2.7.1
+     │   │   │   └── tokio v1.53.0
+     │   │   │       ├── rx4 v0.3.19 (*)
+     │   │   │       ├── tokio-stream v0.1.18
+     │   │   │       │   └── tokio-test v0.4.5
+     │   │   │       │       └── (dev) rx4 v0.3.19 (*)
+     │   │   │       └── tokio-test v0.4.5 (*)
+     │   │   ├── tracing-attributes v0.1.31
+     │   │   │   └── tracing v0.1.44
+     │   │   │       └── rx4 v0.3.19 (*)
+     │   │   ├── wasm-bindgen-macro-support v0.2.126
+     │   │   │   └── wasm-bindgen-macro v0.2.126
+     │   │   │       └── wasm-bindgen v0.2.126
+     │   │   │           ├── chrono v0.4.45 (*)
+     │   │   │           ├── iana-time-zone v0.1.65 (*)
+     │   │   │           ├── js-sys v0.3.103 (*)
+     │   │   │           ├── plotters v0.3.7 (*)
+     │   │   │           └── web-sys v0.3.103 (*)
+     │   │   ├── windows-implement v0.60.2
+     │   │   │   └── windows-core v0.62.2
+     │   │   │       └── iana-time-zone v0.1.65 (*)
+     │   │   ├── windows-interface v0.59.3
+     │   │   │   └── windows-core v0.62.2 (*)
+     │   │   └── zerocopy-derive v0.8.54
+     │   │       └── zerocopy v0.8.54
+     │   │           └── half v2.7.1
+     │   │               └── ciborium-ll v0.2.2
+     │   │                   └── ciborium v0.2.2 (*)
+     │   ├── syn v3.0.1
+     │   │   ├── async-trait v0.1.91 (*)
+     │   │   ├── serde_derive v1.0.229 (*)
+     │   │   └── thiserror-impl v2.0.19
+     │   │       └── thiserror v2.0.19
+     │   │           └── rx4 v0.3.19 (*)
+     │   ├── thiserror-impl v2.0.19 (*)
+     │   ├── tokio-macros v2.7.1 (*)
+     │   ├── tracing-attributes v0.1.31 (*)
+     │   ├── wasm-bindgen-macro v0.2.126 (*)
+     │   ├── wasm-bindgen-macro-support v0.2.126 (*)
+     │   ├── windows-implement v0.60.2 (*)
+     │   ├── windows-interface v0.59.3 (*)
+     │   └── zerocopy-derive v0.8.54 (*)
+     ├── serde_derive v1.0.229 (*)
+     ├── structmeta v0.3.0 (*)
+     ├── structmeta-derive v0.3.0 (*)
+     ├── syn v2.0.119 (*)
+     ├── syn v3.0.1 (*)
+     ├── thiserror-impl v2.0.19 (*)
+     ├── tokio-macros v2.7.1 (*)
+     ├── tracing-attributes v0.1.31 (*)
+     ├── wasm-bindgen-macro-support v0.2.126 (*)
+     ├── windows-implement v0.60.2 (*)
+     ├── windows-interface v0.59.3 (*)
+     └── zerocopy-derive v0.8.54 (*)
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/quote-1.0.47/Cargo.toml:32:12
+   │
+32 │ license = "MIT OR Apache-2.0"
+   │            ━━━────━━━━━━━━━━
+   │            │      │
+   │            │      rejected: license is not explicitly allowed
+   │            rejected: license is not explicitly allowed
+   │
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ Apache-2.0 - Apache License 2.0:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ quote v1.0.47
+     ├── async-trait v0.1.91
+     │   └── rx4 v0.3.19
+     ├── clap_derive v4.6.1
+     │   └── clap v4.6.2
+     │       ├── criterion v0.5.1
+     │       │   └── (dev) rx4 v0.3.19 (*)
+     │       └── rx4 v0.3.19 (*)
+     ├── derive-ex v0.1.8
+     │   └── slabmap v0.2.1
+     │       └── cancellation-token v0.1.1
+     │           └── rx4 v0.3.19 (*)
+     ├── futures-macro v0.3.33
+     │   └── futures-util v0.3.33
+     │       ├── js-sys v0.3.103
+     │       │   ├── chrono v0.4.45
+     │       │   │   └── rx4 v0.3.19 (*)
+     │       │   ├── iana-time-zone v0.1.65
+     │       │   │   └── chrono v0.4.45 (*)
+     │       │   └── web-sys v0.3.103
+     │       │       └── plotters v0.3.7
+     │       │           └── criterion v0.5.1 (*)
+     │       └── moka v0.12.15
+     │           └── rx4 v0.3.19 (*)
+     ├── serde_derive v1.0.229
+     │   ├── criterion v0.5.1 (*)
+     │   └── serde v1.0.229
+     │       ├── chrono v0.4.45 (*)
+     │       ├── ciborium v0.2.2
+     │       │   └── criterion v0.5.1 (*)
+     │       ├── criterion v0.5.1 (*)
+     │       ├── rx4 v0.3.19 (*)
+     │       └── tinytemplate v1.2.1
+     │           └── criterion v0.5.1 (*)
+     ├── structmeta v0.3.0
+     │   └── derive-ex v0.1.8 (*)
+     ├── structmeta-derive v0.3.0
+     │   └── structmeta v0.3.0 (*)
+     ├── syn v2.0.119
+     │   ├── clap_derive v4.6.1 (*)
+     │   ├── derive-ex v0.1.8 (*)
+     │   ├── futures-macro v0.3.33 (*)
+     │   ├── structmeta v0.3.0 (*)
+     │   ├── structmeta-derive v0.3.0 (*)
+     │   ├── tokio-macros v2.7.1
+     │   │   └── tokio v1.53.0
+     │   │       ├── rx4 v0.3.19 (*)
+     │   │       ├── tokio-stream v0.1.18
+     │   │       │   └── tokio-test v0.4.5
+     │   │       │       └── (dev) rx4 v0.3.19 (*)
+     │   │       └── tokio-test v0.4.5 (*)
+     │   ├── tracing-attributes v0.1.31
+     │   │   └── tracing v0.1.44
+     │   │       └── rx4 v0.3.19 (*)
+     │   ├── wasm-bindgen-macro-support v0.2.126
+     │   │   └── wasm-bindgen-macro v0.2.126
+     │   │       └── wasm-bindgen v0.2.126
+     │   │           ├── chrono v0.4.45 (*)
+     │   │           ├── iana-time-zone v0.1.65 (*)
+     │   │           ├── js-sys v0.3.103 (*)
+     │   │           ├── plotters v0.3.7 (*)
+     │   │           └── web-sys v0.3.103 (*)
+     │   ├── windows-implement v0.60.2
+     │   │   └── windows-core v0.62.2
+     │   │       └── iana-time-zone v0.1.65 (*)
+     │   ├── windows-interface v0.59.3
+     │   │   └── windows-core v0.62.2 (*)
+     │   └── zerocopy-derive v0.8.54
+     │       └── zerocopy v0.8.54
+     │           └── half v2.7.1
+     │               └── ciborium-ll v0.2.2
+     │                   └── ciborium v0.2.2 (*)
+     ├── syn v3.0.1
+     │   ├── async-trait v0.1.91 (*)
+     │   ├── serde_derive v1.0.229 (*)
+     │   └── thiserror-impl v2.0.19
+     │       └── thiserror v2.0.19
+     │           └── rx4 v0.3.19 (*)
+     ├── thiserror-impl v2.0.19 (*)
+     ├── tokio-macros v2.7.1 (*)
+     ├── tracing-attributes v0.1.31 (*)
+     ├── wasm-bindgen-macro v0.2.126 (*)
+     ├── wasm-bindgen-macro-support v0.2.126 (*)
+     ├── windows-implement v0.60.2 (*)
+     ├── windows-interface v0.59.3 (*)
+     └── zerocopy-derive v0.8.54 (*)
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/r-efi-6.0.0/Cargo.toml:39:12
+   │
+39 │ license = "MIT OR Apache-2.0 OR LGPL-2.1-or-later"
+   │            ━━━────━━━━━━━━━━────━━━━━━━━━━━━━━━━━
+   │            │      │             │
+   │            │      │             rejected: license is not explicitly allowed
+   │            │      rejected: license is not explicitly allowed
+   │            rejected: license is not explicitly allowed
+   │
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ Apache-2.0 - Apache License 2.0:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ LGPL-2.1-or-later - GNU Lesser General Public License v2.1 or later:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├   - Copyleft
+   ├ r-efi v6.0.0
+     └── getrandom v0.4.3
+         ├── tempfile v3.27.0
+         │   └── (dev) rx4 v0.3.19
+         └── uuid v1.24.0
+             ├── moka v0.12.15
+             │   └── rx4 v0.3.19 (*)
+             └── rx4 v0.3.19 (*)
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rayon-1.12.0/Cargo.toml:38:12
+   │
+38 │ license = "MIT OR Apache-2.0"
+   │            ━━━────━━━━━━━━━━
+   │            │      │
+   │            │      rejected: license is not explicitly allowed
+   │            rejected: license is not explicitly allowed
+   │
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ Apache-2.0 - Apache License 2.0:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ rayon v1.12.0
+     ├── criterion v0.5.1
+     │   └── (dev) rx4 v0.3.19
+     └── rx4 v0.3.19 (*)
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rayon-core-1.13.0/Cargo.toml:35:12
+   │
+35 │ license = "MIT OR Apache-2.0"
+   │            ━━━────━━━━━━━━━━
+   │            │      │
+   │            │      rejected: license is not explicitly allowed
+   │            rejected: license is not explicitly allowed
+   │
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ Apache-2.0 - Apache License 2.0:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ rayon-core v1.13.0
+     └── rayon v1.12.0
+         ├── criterion v0.5.1
+         │   └── (dev) rx4 v0.3.19
+         └── rx4 v0.3.19 (*)
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/redox_syscall-0.5.18/Cargo.toml:26:12
+   │
+26 │ license = "MIT"
+   │            ━━━
+   │            │
+   │            rejected: license is not explicitly allowed
+   │
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ redox_syscall v0.5.18
+     └── parking_lot_core v0.9.12
+         ├── dashmap v6.2.1
+         │   └── rx4 v0.3.19
+         └── parking_lot v0.12.5
+             ├── moka v0.12.15
+             │   └── rx4 v0.3.19 (*)
+             ├── rx4 v0.3.19 (*)
+             └── tokio v1.53.0
+                 ├── rx4 v0.3.19 (*)
+                 ├── tokio-stream v0.1.18
+                 │   └── tokio-test v0.4.5
+                 │       └── (dev) rx4 v0.3.19 (*)
+                 └── tokio-test v0.4.5 (*)
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/regex-1.13.1/Cargo.toml:51:12
+   │
+51 │ license = "MIT OR Apache-2.0"
+   │            ━━━────━━━━━━━━━━
+   │            │      │
+   │            │      rejected: license is not explicitly allowed
+   │            rejected: license is not explicitly allowed
+   │
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ Apache-2.0 - Apache License 2.0:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ regex v1.13.1
+     ├── criterion v0.5.1
+     │   └── (dev) rx4 v0.3.19
+     └── rx4 v0.3.19 (*)
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/regex-automata-0.4.16/Cargo.toml:55:12
+   │
+55 │ license = "MIT OR Apache-2.0"
+   │            ━━━────━━━━━━━━━━
+   │            │      │
+   │            │      rejected: license is not explicitly allowed
+   │            rejected: license is not explicitly allowed
+   │
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ Apache-2.0 - Apache License 2.0:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ regex-automata v0.4.16
+     ├── globset v0.4.19
+     │   └── ignore v0.4.30
+     │       └── rx4 v0.3.19
+     ├── ignore v0.4.30 (*)
+     └── regex v1.13.1
+         ├── criterion v0.5.1
+         │   └── (dev) rx4 v0.3.19 (*)
+         └── rx4 v0.3.19 (*)
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/regex-syntax-0.8.11/Cargo.toml:47:12
+   │
+47 │ license = "MIT OR Apache-2.0"
+   │            ━━━────━━━━━━━━━━
+   │            │      │
+   │            │      rejected: license is not explicitly allowed
+   │            rejected: license is not explicitly allowed
+   │
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ Apache-2.0 - Apache License 2.0:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ regex-syntax v0.8.11
+     ├── globset v0.4.19
+     │   └── ignore v0.4.30
+     │       └── rx4 v0.3.19
+     ├── regex v1.13.1
+     │   ├── criterion v0.5.1
+     │   │   └── (dev) rx4 v0.3.19 (*)
+     │   └── rx4 v0.3.19 (*)
+     └── regex-automata v0.4.16
+         ├── globset v0.4.19 (*)
+         ├── ignore v0.4.30 (*)
+         └── regex v1.13.1 (*)
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rustversion-1.0.23/Cargo.toml:32:12
+   │
+32 │ license = "MIT OR Apache-2.0"
+   │            ━━━────━━━━━━━━━━
+   │            │      │
+   │            │      rejected: license is not explicitly allowed
+   │            rejected: license is not explicitly allowed
+   │
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ Apache-2.0 - Apache License 2.0:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ rustversion v1.0.23
+     └── (build) wasm-bindgen v0.2.126
+         ├── chrono v0.4.45
+         │   └── rx4 v0.3.19
+         ├── iana-time-zone v0.1.65
+         │   └── chrono v0.4.45 (*)
+         ├── js-sys v0.3.103
+         │   ├── chrono v0.4.45 (*)
+         │   ├── iana-time-zone v0.1.65 (*)
+         │   └── web-sys v0.3.103
+         │       └── plotters v0.3.7
+         │           └── criterion v0.5.1
+         │               └── (dev) rx4 v0.3.19 (*)
+         ├── plotters v0.3.7 (*)
+         └── web-sys v0.3.103 (*)
+
+error[rejected]: failed to satisfy license requirements
+  ┌─ /Users/undivisible/projects/rotary/Cargo.toml:6:12
+  │
+6 │ license = "MPL-2.0"
+  │            ━━━━━━━
+  │            │
+  │            rejected: license is not explicitly allowed
+  │
+  ├ MPL-2.0 - Mozilla Public License 2.0:
+  ├   - OSI approved
+  ├   - FSF Free/Libre
+  ├   - Copyleft
+  ├ rx4 v0.3.19
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/same-file-1.0.6/Cargo.toml:24:12
+   │
+24 │ license = "Unlicense/MIT"
+   │            ━━━━━━━━━─━━━
+   │            │         │
+   │            │         rejected: license is not explicitly allowed
+   │            rejected: license is not explicitly allowed
+   │
+   ├ Unlicense - The Unlicense:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ same-file v1.0.6
+     ├── ignore v0.4.30
+     │   └── rx4 v0.3.19
+     └── walkdir v2.5.0
+         ├── criterion v0.5.1
+         │   └── (dev) rx4 v0.3.19 (*)
+         └── ignore v0.4.30 (*)
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/scopeguard-1.2.0/Cargo.toml:35:12
+   │
+35 │ license = "MIT OR Apache-2.0"
+   │            ━━━────━━━━━━━━━━
+   │            │      │
+   │            │      rejected: license is not explicitly allowed
+   │            rejected: license is not explicitly allowed
+   │
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ Apache-2.0 - Apache License 2.0:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ scopeguard v1.2.0
+     └── lock_api v0.4.14
+         ├── dashmap v6.2.1
+         │   └── rx4 v0.3.19
+         └── parking_lot v0.12.5
+             ├── moka v0.12.15
+             │   └── rx4 v0.3.19 (*)
+             ├── rx4 v0.3.19 (*)
+             └── tokio v1.53.0
+                 ├── rx4 v0.3.19 (*)
+                 ├── tokio-stream v0.1.18
+                 │   └── tokio-test v0.4.5
+                 │       └── (dev) rx4 v0.3.19 (*)
+                 └── tokio-test v0.4.5 (*)
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/Cargo.toml:41:12
+   │
+41 │ license = "MIT OR Apache-2.0"
+   │            ━━━────━━━━━━━━━━
+   │            │      │
+   │            │      rejected: license is not explicitly allowed
+   │            rejected: license is not explicitly allowed
+   │
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ Apache-2.0 - Apache License 2.0:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ serde v1.0.229
+     ├── chrono v0.4.45
+     │   └── rx4 v0.3.19
+     ├── ciborium v0.2.2
+     │   └── criterion v0.5.1
+     │       └── (dev) rx4 v0.3.19 (*)
+     ├── criterion v0.5.1 (*)
+     ├── rx4 v0.3.19 (*)
+     └── tinytemplate v1.2.1
+         └── criterion v0.5.1 (*)
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde_core-1.0.229/Cargo.toml:41:12
+   │
+41 │ license = "MIT OR Apache-2.0"
+   │            ━━━────━━━━━━━━━━
+   │            │      │
+   │            │      rejected: license is not explicitly allowed
+   │            rejected: license is not explicitly allowed
+   │
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ Apache-2.0 - Apache License 2.0:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ serde_core v1.0.229
+     ├── serde v1.0.229
+     │   ├── chrono v0.4.45
+     │   │   └── rx4 v0.3.19
+     │   ├── ciborium v0.2.2
+     │   │   └── criterion v0.5.1
+     │   │       └── (dev) rx4 v0.3.19 (*)
+     │   ├── criterion v0.5.1 (*)
+     │   ├── rx4 v0.3.19 (*)
+     │   └── tinytemplate v1.2.1
+     │       └── criterion v0.5.1 (*)
+     ├── serde_json v1.0.150
+     │   ├── criterion v0.5.1 (*)
+     │   ├── rx4 v0.3.19 (*)
+     │   └── tinytemplate v1.2.1 (*)
+     └── uuid v1.24.0
+         ├── moka v0.12.15
+         │   └── rx4 v0.3.19 (*)
+         └── rx4 v0.3.19 (*)
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde_derive-1.0.229/Cargo.toml:42:12
+   │
+42 │ license = "MIT OR Apache-2.0"
+   │            ━━━────━━━━━━━━━━
+   │            │      │
+   │            │      rejected: license is not explicitly allowed
+   │            rejected: license is not explicitly allowed
+   │
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ Apache-2.0 - Apache License 2.0:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ serde_derive v1.0.229
+     ├── criterion v0.5.1
+     │   └── (dev) rx4 v0.3.19
+     └── serde v1.0.229
+         ├── chrono v0.4.45
+         │   └── rx4 v0.3.19 (*)
+         ├── ciborium v0.2.2
+         │   └── criterion v0.5.1 (*)
+         ├── criterion v0.5.1 (*)
+         ├── rx4 v0.3.19 (*)
+         └── tinytemplate v1.2.1
+             └── criterion v0.5.1 (*)
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde_json-1.0.150/Cargo.toml:40:12
+   │
+40 │ license = "MIT OR Apache-2.0"
+   │            ━━━────━━━━━━━━━━
+   │            │      │
+   │            │      rejected: license is not explicitly allowed
+   │            rejected: license is not explicitly allowed
+   │
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ Apache-2.0 - Apache License 2.0:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ serde_json v1.0.150
+     ├── criterion v0.5.1
+     │   └── (dev) rx4 v0.3.19
+     ├── rx4 v0.3.19 (*)
+     └── tinytemplate v1.2.1
+         └── criterion v0.5.1 (*)
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sha2-0.10.9/Cargo.toml:39:12
+   │
+39 │ license = "MIT OR Apache-2.0"
+   │            ━━━────━━━━━━━━━━
+   │            │      │
+   │            │      rejected: license is not explicitly allowed
+   │            rejected: license is not explicitly allowed
+   │
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ Apache-2.0 - Apache License 2.0:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ sha2 v0.10.9
+     └── rx4 v0.3.19
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/shlex-2.0.1/Cargo.toml:37:12
+   │
+37 │ license = "MIT OR Apache-2.0"
+   │            ━━━────━━━━━━━━━━
+   │            │      │
+   │            │      rejected: license is not explicitly allowed
+   │            rejected: license is not explicitly allowed
+   │
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ Apache-2.0 - Apache License 2.0:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ shlex v2.0.1
+     └── cc v1.3.0
+         └── (build) iana-time-zone-haiku v0.1.2
+             └── iana-time-zone v0.1.65
+                 └── chrono v0.4.45
+                     └── rx4 v0.3.19
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/signal-hook-registry-1.4.8/Cargo.toml:34:12
+   │
+34 │ license = "MIT OR Apache-2.0"
+   │            ━━━────━━━━━━━━━━
+   │            │      │
+   │            │      rejected: license is not explicitly allowed
+   │            rejected: license is not explicitly allowed
+   │
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ Apache-2.0 - Apache License 2.0:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ signal-hook-registry v1.4.8
+     └── tokio v1.53.0
+         ├── rx4 v0.3.19
+         ├── tokio-stream v0.1.18
+         │   └── tokio-test v0.4.5
+         │       └── (dev) rx4 v0.3.19 (*)
+         └── tokio-test v0.4.5 (*)
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/slab-0.4.12/Cargo.toml:37:12
+   │
+37 │ license = "MIT"
+   │            ━━━
+   │            │
+   │            rejected: license is not explicitly allowed
+   │
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ slab v0.4.12
+     └── futures-util v0.3.33
+         ├── js-sys v0.3.103
+         │   ├── chrono v0.4.45
+         │   │   └── rx4 v0.3.19
+         │   ├── iana-time-zone v0.1.65
+         │   │   └── chrono v0.4.45 (*)
+         │   └── web-sys v0.3.103
+         │       └── plotters v0.3.7
+         │           └── criterion v0.5.1
+         │               └── (dev) rx4 v0.3.19 (*)
+         └── moka v0.12.15
+             └── rx4 v0.3.19 (*)
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/slabmap-0.2.1/Cargo.toml:30:12
+   │
+30 │ license = "MIT OR Apache-2.0"
+   │            ━━━────━━━━━━━━━━
+   │            │      │
+   │            │      rejected: license is not explicitly allowed
+   │            rejected: license is not explicitly allowed
+   │
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ Apache-2.0 - Apache License 2.0:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ slabmap v0.2.1
+     └── cancellation-token v0.1.1
+         └── rx4 v0.3.19
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/smallvec-1.15.2/Cargo.toml:41:12
+   │
+41 │ license = "MIT OR Apache-2.0"
+   │            ━━━────━━━━━━━━━━
+   │            │      │
+   │            │      rejected: license is not explicitly allowed
+   │            rejected: license is not explicitly allowed
+   │
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ Apache-2.0 - Apache License 2.0:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ smallvec v1.15.2
+     ├── moka v0.12.15
+     │   └── rx4 v0.3.19
+     └── parking_lot_core v0.9.12
+         ├── dashmap v6.2.1
+         │   └── rx4 v0.3.19 (*)
+         └── parking_lot v0.12.5
+             ├── moka v0.12.15 (*)
+             ├── rx4 v0.3.19 (*)
+             └── tokio v1.53.0
+                 ├── rx4 v0.3.19 (*)
+                 ├── tokio-stream v0.1.18
+                 │   └── tokio-test v0.4.5
+                 │       └── (dev) rx4 v0.3.19 (*)
+                 └── tokio-test v0.4.5 (*)
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/socket2-0.6.5/Cargo.toml:50:12
+   │
+50 │ license = "MIT OR Apache-2.0"
+   │            ━━━────━━━━━━━━━━
+   │            │      │
+   │            │      rejected: license is not explicitly allowed
+   │            rejected: license is not explicitly allowed
+   │
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ Apache-2.0 - Apache License 2.0:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ socket2 v0.6.5
+     └── tokio v1.53.0
+         ├── rx4 v0.3.19
+         ├── tokio-stream v0.1.18
+         │   └── tokio-test v0.4.5
+         │       └── (dev) rx4 v0.3.19 (*)
+         └── tokio-test v0.4.5 (*)
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/strsim-0.11.1/Cargo.toml:39:12
+   │
+39 │ license = "MIT"
+   │            ━━━
+   │            │
+   │            rejected: license is not explicitly allowed
+   │
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ strsim v0.11.1
+     └── clap_builder v4.6.2
+         └── clap v4.6.2
+             ├── criterion v0.5.1
+             │   └── (dev) rx4 v0.3.19
+             └── rx4 v0.3.19 (*)
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/structmeta-0.3.0/Cargo.toml:28:12
+   │
+28 │ license = "MIT OR Apache-2.0"
+   │            ━━━────━━━━━━━━━━
+   │            │      │
+   │            │      rejected: license is not explicitly allowed
+   │            rejected: license is not explicitly allowed
+   │
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ Apache-2.0 - Apache License 2.0:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ structmeta v0.3.0
+     └── derive-ex v0.1.8
+         └── slabmap v0.2.1
+             └── cancellation-token v0.1.1
+                 └── rx4 v0.3.19
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/structmeta-derive-0.3.0/Cargo.toml:28:12
+   │
+28 │ license = "MIT OR Apache-2.0"
+   │            ━━━────━━━━━━━━━━
+   │            │      │
+   │            │      rejected: license is not explicitly allowed
+   │            rejected: license is not explicitly allowed
+   │
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ Apache-2.0 - Apache License 2.0:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ structmeta-derive v0.3.0
+     └── structmeta v0.3.0
+         └── derive-ex v0.1.8
+             └── slabmap v0.2.1
+                 └── cancellation-token v0.1.1
+                     └── rx4 v0.3.19
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/syn-2.0.119/Cargo.toml:44:12
+   │
+44 │ license = "MIT OR Apache-2.0"
+   │            ━━━────━━━━━━━━━━
+   │            │      │
+   │            │      rejected: license is not explicitly allowed
+   │            rejected: license is not explicitly allowed
+   │
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ Apache-2.0 - Apache License 2.0:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ syn v2.0.119
+     ├── clap_derive v4.6.1
+     │   └── clap v4.6.2
+     │       ├── criterion v0.5.1
+     │       │   └── (dev) rx4 v0.3.19
+     │       └── rx4 v0.3.19 (*)
+     ├── derive-ex v0.1.8
+     │   └── slabmap v0.2.1
+     │       └── cancellation-token v0.1.1
+     │           └── rx4 v0.3.19 (*)
+     ├── futures-macro v0.3.33
+     │   └── futures-util v0.3.33
+     │       ├── js-sys v0.3.103
+     │       │   ├── chrono v0.4.45
+     │       │   │   └── rx4 v0.3.19 (*)
+     │       │   ├── iana-time-zone v0.1.65
+     │       │   │   └── chrono v0.4.45 (*)
+     │       │   └── web-sys v0.3.103
+     │       │       └── plotters v0.3.7
+     │       │           └── criterion v0.5.1 (*)
+     │       └── moka v0.12.15
+     │           └── rx4 v0.3.19 (*)
+     ├── structmeta v0.3.0
+     │   └── derive-ex v0.1.8 (*)
+     ├── structmeta-derive v0.3.0
+     │   └── structmeta v0.3.0 (*)
+     ├── tokio-macros v2.7.1
+     │   └── tokio v1.53.0
+     │       ├── rx4 v0.3.19 (*)
+     │       ├── tokio-stream v0.1.18
+     │       │   └── tokio-test v0.4.5
+     │       │       └── (dev) rx4 v0.3.19 (*)
+     │       └── tokio-test v0.4.5 (*)
+     ├── tracing-attributes v0.1.31
+     │   └── tracing v0.1.44
+     │       └── rx4 v0.3.19 (*)
+     ├── wasm-bindgen-macro-support v0.2.126
+     │   └── wasm-bindgen-macro v0.2.126
+     │       └── wasm-bindgen v0.2.126
+     │           ├── chrono v0.4.45 (*)
+     │           ├── iana-time-zone v0.1.65 (*)
+     │           ├── js-sys v0.3.103 (*)
+     │           ├── plotters v0.3.7 (*)
+     │           └── web-sys v0.3.103 (*)
+     ├── windows-implement v0.60.2
+     │   └── windows-core v0.62.2
+     │       └── iana-time-zone v0.1.65 (*)
+     ├── windows-interface v0.59.3
+     │   └── windows-core v0.62.2 (*)
+     └── zerocopy-derive v0.8.54
+         └── zerocopy v0.8.54
+             └── half v2.7.1
+                 └── ciborium-ll v0.2.2
+                     └── ciborium v0.2.2
+                         └── criterion v0.5.1 (*)
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/syn-3.0.1/Cargo.toml:44:12
+   │
+44 │ license = "MIT OR Apache-2.0"
+   │            ━━━────━━━━━━━━━━
+   │            │      │
+   │            │      rejected: license is not explicitly allowed
+   │            rejected: license is not explicitly allowed
+   │
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ Apache-2.0 - Apache License 2.0:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ syn v3.0.1
+     ├── async-trait v0.1.91
+     │   └── rx4 v0.3.19
+     ├── serde_derive v1.0.229
+     │   ├── criterion v0.5.1
+     │   │   └── (dev) rx4 v0.3.19 (*)
+     │   └── serde v1.0.229
+     │       ├── chrono v0.4.45
+     │       │   └── rx4 v0.3.19 (*)
+     │       ├── ciborium v0.2.2
+     │       │   └── criterion v0.5.1 (*)
+     │       ├── criterion v0.5.1 (*)
+     │       ├── rx4 v0.3.19 (*)
+     │       └── tinytemplate v1.2.1
+     │           └── criterion v0.5.1 (*)
+     └── thiserror-impl v2.0.19
+         └── thiserror v2.0.19
+             └── rx4 v0.3.19 (*)
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tagptr-0.2.0/Cargo.toml:24:12
+   │
+24 │ license = "MIT/Apache-2.0"
+   │            ━━━─━━━━━━━━━━
+   │            │   │
+   │            │   rejected: license is not explicitly allowed
+   │            rejected: license is not explicitly allowed
+   │
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ Apache-2.0 - Apache License 2.0:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ tagptr v0.2.0
+     └── moka v0.12.15
+         └── rx4 v0.3.19
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.19/Cargo.toml:36:12
+   │
+36 │ license = "MIT OR Apache-2.0"
+   │            ━━━────━━━━━━━━━━
+   │            │      │
+   │            │      rejected: license is not explicitly allowed
+   │            rejected: license is not explicitly allowed
+   │
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ Apache-2.0 - Apache License 2.0:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ thiserror v2.0.19
+     └── rx4 v0.3.19
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-impl-2.0.19/Cargo.toml:26:12
+   │
+26 │ license = "MIT OR Apache-2.0"
+   │            ━━━────━━━━━━━━━━
+   │            │      │
+   │            │      rejected: license is not explicitly allowed
+   │            rejected: license is not explicitly allowed
+   │
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ Apache-2.0 - Apache License 2.0:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ thiserror-impl v2.0.19
+     └── thiserror v2.0.19
+         └── rx4 v0.3.19
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.0/Cargo.toml:40:12
+   │
+40 │ license = "MIT"
+   │            ━━━
+   │            │
+   │            rejected: license is not explicitly allowed
+   │
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ tokio v1.53.0
+     ├── rx4 v0.3.19
+     ├── tokio-stream v0.1.18
+     │   └── tokio-test v0.4.5
+     │       └── (dev) rx4 v0.3.19 (*)
+     └── tokio-test v0.4.5 (*)
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-macros-2.7.1/Cargo.toml:30:12
+   │
+30 │ license = "MIT"
+   │            ━━━
+   │            │
+   │            rejected: license is not explicitly allowed
+   │
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ tokio-macros v2.7.1
+     └── tokio v1.53.0
+         ├── rx4 v0.3.19
+         ├── tokio-stream v0.1.18
+         │   └── tokio-test v0.4.5
+         │       └── (dev) rx4 v0.3.19 (*)
+         └── tokio-test v0.4.5 (*)
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tracing-0.1.44/Cargo.toml:44:12
+   │
+44 │ license = "MIT"
+   │            ━━━
+   │            │
+   │            rejected: license is not explicitly allowed
+   │
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ tracing v0.1.44
+     └── rx4 v0.3.19
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tracing-attributes-0.1.31/Cargo.toml:45:12
+   │
+45 │ license = "MIT"
+   │            ━━━
+   │            │
+   │            rejected: license is not explicitly allowed
+   │
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ tracing-attributes v0.1.31
+     └── tracing v0.1.44
+         └── rx4 v0.3.19
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tracing-core-0.1.36/Cargo.toml:39:12
+   │
+39 │ license = "MIT"
+   │            ━━━
+   │            │
+   │            rejected: license is not explicitly allowed
+   │
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ tracing-core v0.1.36
+     └── tracing v0.1.44
+         └── rx4 v0.3.19
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/typenum-1.20.1/Cargo.toml:39:12
+   │
+39 │ license = "MIT OR Apache-2.0"
+   │            ━━━────━━━━━━━━━━
+   │            │      │
+   │            │      rejected: license is not explicitly allowed
+   │            rejected: license is not explicitly allowed
+   │
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ Apache-2.0 - Apache License 2.0:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ typenum v1.20.1
+     ├── crypto-common v0.1.7
+     │   └── digest v0.10.7
+     │       └── sha2 v0.10.9
+     │           └── rx4 v0.3.19
+     └── generic-array v0.14.7
+         ├── block-buffer v0.10.4
+         │   └── digest v0.10.7 (*)
+         └── crypto-common v0.1.7 (*)
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/unicode-ident-1.0.24/Cargo.toml:36:13
+   │
+36 │ license = "(MIT OR Apache-2.0) AND Unicode-3.0"
+   │            ─━━━────━━━━━━━━━━──────━━━━━━━━━━━
+   │             │      │               │
+   │             │      │               rejected: license is not explicitly allowed
+   │             │      rejected: license is not explicitly allowed
+   │             rejected: license is not explicitly allowed
+   │
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ Apache-2.0 - Apache License 2.0:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ Unicode-3.0 - Unicode License v3:
+   ├   - OSI approved
+   ├ unicode-ident v1.0.24
+     ├── proc-macro2 v1.0.107
+     │   ├── async-trait v0.1.91
+     │   │   └── rx4 v0.3.19
+     │   ├── clap_derive v4.6.1
+     │   │   └── clap v4.6.2
+     │   │       ├── criterion v0.5.1
+     │   │       │   └── (dev) rx4 v0.3.19 (*)
+     │   │       └── rx4 v0.3.19 (*)
+     │   ├── derive-ex v0.1.8
+     │   │   └── slabmap v0.2.1
+     │   │       └── cancellation-token v0.1.1
+     │   │           └── rx4 v0.3.19 (*)
+     │   ├── futures-macro v0.3.33
+     │   │   └── futures-util v0.3.33
+     │   │       ├── js-sys v0.3.103
+     │   │       │   ├── chrono v0.4.45
+     │   │       │   │   └── rx4 v0.3.19 (*)
+     │   │       │   ├── iana-time-zone v0.1.65
+     │   │       │   │   └── chrono v0.4.45 (*)
+     │   │       │   └── web-sys v0.3.103
+     │   │       │       └── plotters v0.3.7
+     │   │       │           └── criterion v0.5.1 (*)
+     │   │       └── moka v0.12.15
+     │   │           └── rx4 v0.3.19 (*)
+     │   ├── quote v1.0.47
+     │   │   ├── async-trait v0.1.91 (*)
+     │   │   ├── clap_derive v4.6.1 (*)
+     │   │   ├── derive-ex v0.1.8 (*)
+     │   │   ├── futures-macro v0.3.33 (*)
+     │   │   ├── serde_derive v1.0.229
+     │   │   │   ├── criterion v0.5.1 (*)
+     │   │   │   └── serde v1.0.229
+     │   │   │       ├── chrono v0.4.45 (*)
+     │   │   │       ├── ciborium v0.2.2
+     │   │   │       │   └── criterion v0.5.1 (*)
+     │   │   │       ├── criterion v0.5.1 (*)
+     │   │   │       ├── rx4 v0.3.19 (*)
+     │   │   │       └── tinytemplate v1.2.1
+     │   │   │           └── criterion v0.5.1 (*)
+     │   │   ├── structmeta v0.3.0
+     │   │   │   └── derive-ex v0.1.8 (*)
+     │   │   ├── structmeta-derive v0.3.0
+     │   │   │   └── structmeta v0.3.0 (*)
+     │   │   ├── syn v2.0.119
+     │   │   │   ├── clap_derive v4.6.1 (*)
+     │   │   │   ├── derive-ex v0.1.8 (*)
+     │   │   │   ├── futures-macro v0.3.33 (*)
+     │   │   │   ├── structmeta v0.3.0 (*)
+     │   │   │   ├── structmeta-derive v0.3.0 (*)
+     │   │   │   ├── tokio-macros v2.7.1
+     │   │   │   │   └── tokio v1.53.0
+     │   │   │   │       ├── rx4 v0.3.19 (*)
+     │   │   │   │       ├── tokio-stream v0.1.18
+     │   │   │   │       │   └── tokio-test v0.4.5
+     │   │   │   │       │       └── (dev) rx4 v0.3.19 (*)
+     │   │   │   │       └── tokio-test v0.4.5 (*)
+     │   │   │   ├── tracing-attributes v0.1.31
+     │   │   │   │   └── tracing v0.1.44
+     │   │   │   │       └── rx4 v0.3.19 (*)
+     │   │   │   ├── wasm-bindgen-macro-support v0.2.126
+     │   │   │   │   └── wasm-bindgen-macro v0.2.126
+     │   │   │   │       └── wasm-bindgen v0.2.126
+     │   │   │   │           ├── chrono v0.4.45 (*)
+     │   │   │   │           ├── iana-time-zone v0.1.65 (*)
+     │   │   │   │           ├── js-sys v0.3.103 (*)
+     │   │   │   │           ├── plotters v0.3.7 (*)
+     │   │   │   │           └── web-sys v0.3.103 (*)
+     │   │   │   ├── windows-implement v0.60.2
+     │   │   │   │   └── windows-core v0.62.2
+     │   │   │   │       └── iana-time-zone v0.1.65 (*)
+     │   │   │   ├── windows-interface v0.59.3
+     │   │   │   │   └── windows-core v0.62.2 (*)
+     │   │   │   └── zerocopy-derive v0.8.54
+     │   │   │       └── zerocopy v0.8.54
+     │   │   │           └── half v2.7.1
+     │   │   │               └── ciborium-ll v0.2.2
+     │   │   │                   └── ciborium v0.2.2 (*)
+     │   │   ├── syn v3.0.1
+     │   │   │   ├── async-trait v0.1.91 (*)
+     │   │   │   ├── serde_derive v1.0.229 (*)
+     │   │   │   └── thiserror-impl v2.0.19
+     │   │   │       └── thiserror v2.0.19
+     │   │   │           └── rx4 v0.3.19 (*)
+     │   │   ├── thiserror-impl v2.0.19 (*)
+     │   │   ├── tokio-macros v2.7.1 (*)
+     │   │   ├── tracing-attributes v0.1.31 (*)
+     │   │   ├── wasm-bindgen-macro v0.2.126 (*)
+     │   │   ├── wasm-bindgen-macro-support v0.2.126 (*)
+     │   │   ├── windows-implement v0.60.2 (*)
+     │   │   ├── windows-interface v0.59.3 (*)
+     │   │   └── zerocopy-derive v0.8.54 (*)
+     │   ├── serde_derive v1.0.229 (*)
+     │   ├── structmeta v0.3.0 (*)
+     │   ├── structmeta-derive v0.3.0 (*)
+     │   ├── syn v2.0.119 (*)
+     │   ├── syn v3.0.1 (*)
+     │   ├── thiserror-impl v2.0.19 (*)
+     │   ├── tokio-macros v2.7.1 (*)
+     │   ├── tracing-attributes v0.1.31 (*)
+     │   ├── wasm-bindgen-macro-support v0.2.126 (*)
+     │   ├── windows-implement v0.60.2 (*)
+     │   ├── windows-interface v0.59.3 (*)
+     │   └── zerocopy-derive v0.8.54 (*)
+     ├── syn v2.0.119 (*)
+     ├── syn v3.0.1 (*)
+     └── wasm-bindgen-shared v0.2.126
+         ├── wasm-bindgen v0.2.126 (*)
+         └── wasm-bindgen-macro-support v0.2.126 (*)
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/utf8parse-0.2.2/Cargo.toml:37:12
+   │
+37 │ license = "Apache-2.0 OR MIT"
+   │            ━━━━━━━━━━────━━━
+   │            │             │
+   │            │             rejected: license is not explicitly allowed
+   │            rejected: license is not explicitly allowed
+   │
+   ├ Apache-2.0 - Apache License 2.0:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ utf8parse v0.2.2
+     ├── anstream v1.0.0
+     │   └── clap_builder v4.6.2
+     │       └── clap v4.6.2
+     │           ├── criterion v0.5.1
+     │           │   └── (dev) rx4 v0.3.19
+     │           └── rx4 v0.3.19 (*)
+     └── anstyle-parse v1.0.0
+         └── anstream v1.0.0 (*)
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/uuid-1.24.0/Cargo.toml:49:12
+   │
+49 │ license = "Apache-2.0 OR MIT"
+   │            ━━━━━━━━━━────━━━
+   │            │             │
+   │            │             rejected: license is not explicitly allowed
+   │            rejected: license is not explicitly allowed
+   │
+   ├ Apache-2.0 - Apache License 2.0:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ uuid v1.24.0
+     ├── moka v0.12.15
+     │   └── rx4 v0.3.19
+     └── rx4 v0.3.19 (*)
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/version_check-0.9.5/Cargo.toml:31:12
+   │
+31 │ license = "MIT/Apache-2.0"
+   │            ━━━─━━━━━━━━━━
+   │            │   │
+   │            │   rejected: license is not explicitly allowed
+   │            rejected: license is not explicitly allowed
+   │
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ Apache-2.0 - Apache License 2.0:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ version_check v0.9.5
+     └── (build) generic-array v0.14.7
+         ├── block-buffer v0.10.4
+         │   └── digest v0.10.7
+         │       └── sha2 v0.10.9
+         │           └── rx4 v0.3.19
+         └── crypto-common v0.1.7
+             └── digest v0.10.7 (*)
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/walkdir-2.5.0/Cargo.toml:33:12
+   │
+33 │ license = "Unlicense/MIT"
+   │            ━━━━━━━━━─━━━
+   │            │         │
+   │            │         rejected: license is not explicitly allowed
+   │            rejected: license is not explicitly allowed
+   │
+   ├ Unlicense - The Unlicense:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ walkdir v2.5.0
+     ├── criterion v0.5.1
+     │   └── (dev) rx4 v0.3.19
+     └── ignore v0.4.30
+         └── rx4 v0.3.19 (*)
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wasi-0.11.1+wasi-snapshot-preview1/Cargo.toml:34:12
+   │
+34 │ license = "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT"
+   │            ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━────━━━━━━━━━━────━━━
+   │            │                                 │             │
+   │            │                                 │             rejected: license is not explicitly allowed
+   │            │                                 rejected: license is not explicitly allowed
+   │            rejected: license is not explicitly allowed
+   │
+   ├ Apache-2.0 - Apache License 2.0:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ Apache-2.0 - Apache License 2.0:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ wasi v0.11.1+wasi-snapshot-preview1
+     └── mio v1.2.2
+         └── tokio v1.53.0
+             ├── rx4 v0.3.19
+             ├── tokio-stream v0.1.18
+             │   └── tokio-test v0.4.5
+             │       └── (dev) rx4 v0.3.19 (*)
+             └── tokio-test v0.4.5 (*)
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wasm-bindgen-0.2.126/Cargo.toml:36:12
+   │
+36 │ license = "MIT OR Apache-2.0"
+   │            ━━━────━━━━━━━━━━
+   │            │      │
+   │            │      rejected: license is not explicitly allowed
+   │            rejected: license is not explicitly allowed
+   │
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ Apache-2.0 - Apache License 2.0:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ wasm-bindgen v0.2.126
+     ├── chrono v0.4.45
+     │   └── rx4 v0.3.19
+     ├── iana-time-zone v0.1.65
+     │   └── chrono v0.4.45 (*)
+     ├── js-sys v0.3.103
+     │   ├── chrono v0.4.45 (*)
+     │   ├── iana-time-zone v0.1.65 (*)
+     │   └── web-sys v0.3.103
+     │       └── plotters v0.3.7
+     │           └── criterion v0.5.1
+     │               └── (dev) rx4 v0.3.19 (*)
+     ├── plotters v0.3.7 (*)
+     └── web-sys v0.3.103 (*)
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wasm-bindgen-macro-0.2.126/Cargo.toml:34:12
+   │
+34 │ license = "MIT OR Apache-2.0"
+   │            ━━━────━━━━━━━━━━
+   │            │      │
+   │            │      rejected: license is not explicitly allowed
+   │            rejected: license is not explicitly allowed
+   │
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ Apache-2.0 - Apache License 2.0:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ wasm-bindgen-macro v0.2.126
+     └── wasm-bindgen v0.2.126
+         ├── chrono v0.4.45
+         │   └── rx4 v0.3.19
+         ├── iana-time-zone v0.1.65
+         │   └── chrono v0.4.45 (*)
+         ├── js-sys v0.3.103
+         │   ├── chrono v0.4.45 (*)
+         │   ├── iana-time-zone v0.1.65 (*)
+         │   └── web-sys v0.3.103
+         │       └── plotters v0.3.7
+         │           └── criterion v0.5.1
+         │               └── (dev) rx4 v0.3.19 (*)
+         ├── plotters v0.3.7 (*)
+         └── web-sys v0.3.103 (*)
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wasm-bindgen-macro-support-0.2.126/Cargo.toml:32:12
+   │
+32 │ license = "MIT OR Apache-2.0"
+   │            ━━━────━━━━━━━━━━
+   │            │      │
+   │            │      rejected: license is not explicitly allowed
+   │            rejected: license is not explicitly allowed
+   │
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ Apache-2.0 - Apache License 2.0:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ wasm-bindgen-macro-support v0.2.126
+     └── wasm-bindgen-macro v0.2.126
+         └── wasm-bindgen v0.2.126
+             ├── chrono v0.4.45
+             │   └── rx4 v0.3.19
+             ├── iana-time-zone v0.1.65
+             │   └── chrono v0.4.45 (*)
+             ├── js-sys v0.3.103
+             │   ├── chrono v0.4.45 (*)
+             │   ├── iana-time-zone v0.1.65 (*)
+             │   └── web-sys v0.3.103
+             │       └── plotters v0.3.7
+             │           └── criterion v0.5.1
+             │               └── (dev) rx4 v0.3.19 (*)
+             ├── plotters v0.3.7 (*)
+             └── web-sys v0.3.103 (*)
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wasm-bindgen-shared-0.2.126/Cargo.toml:37:12
+   │
+37 │ license = "MIT OR Apache-2.0"
+   │            ━━━────━━━━━━━━━━
+   │            │      │
+   │            │      rejected: license is not explicitly allowed
+   │            rejected: license is not explicitly allowed
+   │
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ Apache-2.0 - Apache License 2.0:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ wasm-bindgen-shared v0.2.126
+     ├── wasm-bindgen v0.2.126
+     │   ├── chrono v0.4.45
+     │   │   └── rx4 v0.3.19
+     │   ├── iana-time-zone v0.1.65
+     │   │   └── chrono v0.4.45 (*)
+     │   ├── js-sys v0.3.103
+     │   │   ├── chrono v0.4.45 (*)
+     │   │   ├── iana-time-zone v0.1.65 (*)
+     │   │   └── web-sys v0.3.103
+     │   │       └── plotters v0.3.7
+     │   │           └── criterion v0.5.1
+     │   │               └── (dev) rx4 v0.3.19 (*)
+     │   ├── plotters v0.3.7 (*)
+     │   └── web-sys v0.3.103 (*)
+     └── wasm-bindgen-macro-support v0.2.126
+         └── wasm-bindgen-macro v0.2.126
+             └── wasm-bindgen v0.2.126 (*)
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/winapi-util-0.1.11/Cargo.toml:37:12
+   │
+37 │ license = "Unlicense OR MIT"
+   │            ━━━━━━━━━────━━━
+   │            │            │
+   │            │            rejected: license is not explicitly allowed
+   │            rejected: license is not explicitly allowed
+   │
+   ├ Unlicense - The Unlicense:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ winapi-util v0.1.11
+     ├── ignore v0.4.30
+     │   └── rx4 v0.3.19
+     ├── same-file v1.0.6
+     │   ├── ignore v0.4.30 (*)
+     │   └── walkdir v2.5.0
+     │       ├── criterion v0.5.1
+     │       │   └── (dev) rx4 v0.3.19 (*)
+     │       └── ignore v0.4.30 (*)
+     └── walkdir v2.5.0 (*)
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/windows-core-0.62.2/Cargo.toml:26:12
+   │
+26 │ license = "MIT OR Apache-2.0"
+   │            ━━━────━━━━━━━━━━
+   │            │      │
+   │            │      rejected: license is not explicitly allowed
+   │            rejected: license is not explicitly allowed
+   │
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ Apache-2.0 - Apache License 2.0:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ windows-core v0.62.2
+     └── iana-time-zone v0.1.65
+         └── chrono v0.4.45
+             └── rx4 v0.3.19
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/windows-implement-0.60.2/Cargo.toml:26:12
+   │
+26 │ license = "MIT OR Apache-2.0"
+   │            ━━━────━━━━━━━━━━
+   │            │      │
+   │            │      rejected: license is not explicitly allowed
+   │            rejected: license is not explicitly allowed
+   │
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ Apache-2.0 - Apache License 2.0:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ windows-implement v0.60.2
+     └── windows-core v0.62.2
+         └── iana-time-zone v0.1.65
+             └── chrono v0.4.45
+                 └── rx4 v0.3.19
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/windows-interface-0.59.3/Cargo.toml:26:12
+   │
+26 │ license = "MIT OR Apache-2.0"
+   │            ━━━────━━━━━━━━━━
+   │            │      │
+   │            │      rejected: license is not explicitly allowed
+   │            rejected: license is not explicitly allowed
+   │
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ Apache-2.0 - Apache License 2.0:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ windows-interface v0.59.3
+     └── windows-core v0.62.2
+         └── iana-time-zone v0.1.65
+             └── chrono v0.4.45
+                 └── rx4 v0.3.19
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/windows-link-0.2.1/Cargo.toml:26:12
+   │
+26 │ license = "MIT OR Apache-2.0"
+   │            ━━━────━━━━━━━━━━
+   │            │      │
+   │            │      rejected: license is not explicitly allowed
+   │            rejected: license is not explicitly allowed
+   │
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ Apache-2.0 - Apache License 2.0:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ windows-link v0.2.1
+     ├── chrono v0.4.45
+     │   └── rx4 v0.3.19
+     ├── parking_lot_core v0.9.12
+     │   ├── dashmap v6.2.1
+     │   │   └── rx4 v0.3.19 (*)
+     │   └── parking_lot v0.12.5
+     │       ├── moka v0.12.15
+     │       │   └── rx4 v0.3.19 (*)
+     │       ├── rx4 v0.3.19 (*)
+     │       └── tokio v1.53.0
+     │           ├── rx4 v0.3.19 (*)
+     │           ├── tokio-stream v0.1.18
+     │           │   └── tokio-test v0.4.5
+     │           │       └── (dev) rx4 v0.3.19 (*)
+     │           └── tokio-test v0.4.5 (*)
+     ├── windows-core v0.62.2
+     │   └── iana-time-zone v0.1.65
+     │       └── chrono v0.4.45 (*)
+     ├── windows-result v0.4.1
+     │   └── windows-core v0.62.2 (*)
+     ├── windows-strings v0.5.1
+     │   └── windows-core v0.62.2 (*)
+     └── windows-sys v0.61.2
+         ├── anstyle-query v1.1.5
+         │   └── anstream v1.0.0
+         │       └── clap_builder v4.6.2
+         │           └── clap v4.6.2
+         │               ├── criterion v0.5.1
+         │               │   └── (dev) rx4 v0.3.19 (*)
+         │               └── rx4 v0.3.19 (*)
+         ├── anstyle-wincon v3.0.11
+         │   └── anstream v1.0.0 (*)
+         ├── errno v0.3.14
+         │   ├── rustix v1.1.4
+         │   │   └── tempfile v3.27.0
+         │   │       └── (dev) rx4 v0.3.19 (*)
+         │   └── signal-hook-registry v1.4.8
+         │       └── tokio v1.53.0 (*)
+         ├── is-terminal v0.4.17
+         │   └── criterion v0.5.1 (*)
+         ├── mio v1.2.2
+         │   └── tokio v1.53.0 (*)
+         ├── rustix v1.1.4 (*)
+         ├── socket2 v0.6.5
+         │   └── tokio v1.53.0 (*)
+         ├── tempfile v3.27.0 (*)
+         ├── tokio v1.53.0 (*)
+         └── winapi-util v0.1.11
+             ├── ignore v0.4.30
+             │   └── rx4 v0.3.19 (*)
+             ├── same-file v1.0.6
+             │   ├── ignore v0.4.30 (*)
+             │   └── walkdir v2.5.0
+             │       ├── criterion v0.5.1 (*)
+             │       └── ignore v0.4.30 (*)
+             └── walkdir v2.5.0 (*)
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/windows-result-0.4.1/Cargo.toml:26:12
+   │
+26 │ license = "MIT OR Apache-2.0"
+   │            ━━━────━━━━━━━━━━
+   │            │      │
+   │            │      rejected: license is not explicitly allowed
+   │            rejected: license is not explicitly allowed
+   │
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ Apache-2.0 - Apache License 2.0:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ windows-result v0.4.1
+     └── windows-core v0.62.2
+         └── iana-time-zone v0.1.65
+             └── chrono v0.4.45
+                 └── rx4 v0.3.19
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/windows-strings-0.5.1/Cargo.toml:26:12
+   │
+26 │ license = "MIT OR Apache-2.0"
+   │            ━━━────━━━━━━━━━━
+   │            │      │
+   │            │      rejected: license is not explicitly allowed
+   │            rejected: license is not explicitly allowed
+   │
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ Apache-2.0 - Apache License 2.0:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ windows-strings v0.5.1
+     └── windows-core v0.62.2
+         └── iana-time-zone v0.1.65
+             └── chrono v0.4.45
+                 └── rx4 v0.3.19
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/windows-sys-0.61.2/Cargo.toml:26:12
+   │
+26 │ license = "MIT OR Apache-2.0"
+   │            ━━━────━━━━━━━━━━
+   │            │      │
+   │            │      rejected: license is not explicitly allowed
+   │            rejected: license is not explicitly allowed
+   │
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ Apache-2.0 - Apache License 2.0:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ windows-sys v0.61.2
+     ├── anstyle-query v1.1.5
+     │   └── anstream v1.0.0
+     │       └── clap_builder v4.6.2
+     │           └── clap v4.6.2
+     │               ├── criterion v0.5.1
+     │               │   └── (dev) rx4 v0.3.19
+     │               └── rx4 v0.3.19 (*)
+     ├── anstyle-wincon v3.0.11
+     │   └── anstream v1.0.0 (*)
+     ├── errno v0.3.14
+     │   ├── rustix v1.1.4
+     │   │   └── tempfile v3.27.0
+     │   │       └── (dev) rx4 v0.3.19 (*)
+     │   └── signal-hook-registry v1.4.8
+     │       └── tokio v1.53.0
+     │           ├── rx4 v0.3.19 (*)
+     │           ├── tokio-stream v0.1.18
+     │           │   └── tokio-test v0.4.5
+     │           │       └── (dev) rx4 v0.3.19 (*)
+     │           └── tokio-test v0.4.5 (*)
+     ├── is-terminal v0.4.17
+     │   └── criterion v0.5.1 (*)
+     ├── mio v1.2.2
+     │   └── tokio v1.53.0 (*)
+     ├── rustix v1.1.4 (*)
+     ├── socket2 v0.6.5
+     │   └── tokio v1.53.0 (*)
+     ├── tempfile v3.27.0 (*)
+     ├── tokio v1.53.0 (*)
+     └── winapi-util v0.1.11
+         ├── ignore v0.4.30
+         │   └── rx4 v0.3.19 (*)
+         ├── same-file v1.0.6
+         │   ├── ignore v0.4.30 (*)
+         │   └── walkdir v2.5.0
+         │       ├── criterion v0.5.1 (*)
+         │       └── ignore v0.4.30 (*)
+         └── walkdir v2.5.0 (*)
+
+error[rejected]: failed to satisfy license requirements
+   ┌─ /Users/undivisible/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/zmij-1.0.23/Cargo.toml:34:12
+   │
+34 │ license = "MIT"
+   │            ━━━
+   │            │
+   │            rejected: license is not explicitly allowed
+   │
+   ├ MIT - MIT License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ zmij v1.0.23
+     └── serde_json v1.0.150
+         ├── criterion v0.5.1
+         │   └── (dev) rx4 v0.3.19
+         ├── rx4 v0.3.19 (*)
+         └── tinytemplate v1.2.1
+             └── criterion v0.5.1 (*)
+
+licenses FAILED

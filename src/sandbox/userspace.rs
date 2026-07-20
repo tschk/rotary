@@ -133,6 +133,11 @@ impl SandboxManager {
         }
     }
 
+    /// Allow or deny network tools checked via [`Self::validate_network`].
+    pub fn set_allow_network(&mut self, allow: bool) {
+        self.allow_network = allow;
+    }
+
     /// Create a manager from a full [`SandboxConfig`].
     pub fn from_config(config: SandboxConfig) -> Self {
         Self {
@@ -304,11 +309,23 @@ impl SandboxManager {
     }
 
     fn canonicalize(&self, path: &Path) -> PathBuf {
-        if path.is_absolute() {
+        let abs = if path.is_absolute() {
             path.to_path_buf()
         } else {
             self.workspace_root.join(path)
+        };
+        // Resolve symlinks when path exists; for create targets resolve parent.
+        if let Ok(c) = std::fs::canonicalize(&abs) {
+            return c;
         }
+        if let Some(parent) = abs.parent() {
+            if let Ok(cp) = std::fs::canonicalize(parent) {
+                if let Some(name) = abs.file_name() {
+                    return cp.join(name);
+                }
+            }
+        }
+        abs
     }
 
     fn matches_allow(&self, path: &Path) -> bool {
@@ -416,20 +433,18 @@ fn is_temp_path(path: &Path) -> bool {
 }
 
 /// Returns true when `cmd` matches a known sandbox-escape pattern.
+/// Delegates root-wipe / pipe-to-shell detection to permissions helpers so
+/// `rm -rf /tmp/...` is not false-positive denied.
 fn is_blocked_command(cmd: &str) -> bool {
+    if crate::permissions::is_dangerous_shell_command(cmd) {
+        return true;
+    }
     let lower = cmd.to_lowercase();
     let patterns = [
-        "rm -rf /",
-        "rm -rf /*",
-        "rm -rf ~",
-        "rm -rf $home",
         "chmod 777",
         "chmod -r 777",
         "sudo ",
-        "sudo",
-        "su ",
         "su root",
-        "kill -9",
         "kill -9 -1",
         ":(){:|:&};:",
         "mkfs",
@@ -440,10 +455,6 @@ fn is_blocked_command(cmd: &str) -> bool {
         "init 0",
         "init 6",
         "> /dev/sda",
-        "curl | sh",
-        "curl | bash",
-        "wget | sh",
-        "wget | bash",
     ];
     patterns.iter().any(|p| lower.contains(p))
 }

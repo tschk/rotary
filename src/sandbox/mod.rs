@@ -43,7 +43,10 @@ mod tests {
         let mgr = SandboxManager::new(SandboxProfile::Workspace, workspace());
         let path = Path::new("/etc/passwd");
         let err = mgr.validate_path(path, false).unwrap_err();
-        assert_eq!(err, SandboxError::PathDenied("/etc/passwd".to_string()));
+        match err {
+            SandboxError::PathDenied(p) => assert!(p.ends_with("/etc/passwd"), "{p}"),
+            other => panic!("unexpected {other:?}"),
+        }
     }
 
     #[test]
@@ -152,9 +155,11 @@ mod tests {
     }
 
     #[test]
-    fn command_blocklist_denies_kill_9() {
+    fn command_blocklist_denies_kill_all() {
         let mgr = SandboxManager::new(SandboxProfile::Workspace, workspace());
-        assert!(mgr.validate_command("kill -9 1234").is_err());
+        // Single-pid kill is not sandbox-escape; kill -9 -1 is.
+        assert!(mgr.validate_command("kill -9 1234").is_ok());
+        assert!(mgr.validate_command("kill -9 -1").is_err());
     }
 
     #[test]
@@ -162,6 +167,7 @@ mod tests {
         let mgr = SandboxManager::new(SandboxProfile::Workspace, workspace());
         assert!(mgr.validate_command("cargo build").is_ok());
         assert!(mgr.validate_command("ls -la").is_ok());
+        assert!(mgr.validate_command("rm -rf /tmp/build").is_ok());
     }
 
     #[test]
@@ -226,7 +232,12 @@ mod tests {
         let violations = mgr.violations();
         assert_eq!(violations.len(), 1);
         assert_eq!(violations[0].kind, ViolationKind::Path);
-        assert_eq!(violations[0].path_or_command, "/etc/passwd");
+        // macOS may canonicalize /etc -> /private/etc
+        assert!(
+            violations[0].path_or_command.ends_with("/etc/passwd"),
+            "{}",
+            violations[0].path_or_command
+        );
     }
 
     #[test]

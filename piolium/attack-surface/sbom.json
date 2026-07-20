@@ -1,0 +1,30 @@
+{
+  "name": "rx4",
+  "version": "0.3.19",
+  "ecosystem": "cargo",
+  "security_relevant": [
+    {
+      "name": "tokio",
+      "why": "process spawn, runtime"
+    },
+    {
+      "name": "reqwest",
+      "why": "HTTP providers/web_fetch",
+      "feature": "providers/mcp"
+    },
+    {
+      "name": "rmcp/mcp",
+      "why": "external tool protocol",
+      "feature": "mcp"
+    },
+    {
+      "name": "rs_peekaboo",
+      "why": "computer use",
+      "feature": "computer-use"
+    }
+  ],
+  "audit": {
+    "cargo_audit_vulns": 0,
+    "deps": 272
+  }
+}
