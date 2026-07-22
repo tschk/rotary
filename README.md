@@ -105,7 +105,7 @@ flowchart TD
   `ToolExecutionStart`, `ToolExecutionEnd`, `TurnEnd`, `AgentEnd`, `Error`).
 - **5 scopes** — `coding`, `research`, `plan`, `ask`, `computer_use`.
 - **7 builtin tools** — `read`, `write`, `edit`, `bash`, `grep`, `find`, `ls`
-  (rayon parallel search).
+  (fff indexed search).
 - **13 computer-use tools** (`cu_*`) via
   [rs_peekaboo](https://crates.io/crates/rs_peekaboo) — native Rust, no FFI.
 - **MCP client** — JSON-RPC 2.0 over stdio; tools prefixed
@@ -168,7 +168,7 @@ flowchart TD
 | Feature | Default | Enables |
 |---|---|---|
 | `ipc` | yes | tokio runtime, Unix socket JSON-RPC server, LSP client |
-| `builtin-tools` | yes | read/write/edit/bash/grep/find/ls with rayon parallel search |
+| `builtin-tools` | yes | read/write/edit/bash/grep/find/ls with fff indexed search |
 | `computer-use` | no | rs_peekaboo `cu_*` tools (13 tools) |
 | `providers` | no | reqwest SSE streaming for OpenAI/Anthropic/Ollama/custom |
 | `memory` | no | SQLite-backed memory store |
