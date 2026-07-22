@@ -29,5 +29,5 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.88
-      # fff-search requires nightly AVX512 features — skip optional features for MSRV.
-      - run: cargo build
+      # fff-search -> neo_frizbee needs nightly AVX512; verify core compiles without it.
+      - run: cargo build --no-default-features --features ipc
