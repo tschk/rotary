@@ -7,6 +7,7 @@ use std::sync::{Arc, OnceLock};
 
 /// Validate a URL for web_fetch: reject loopback, link-local, private IPs,
 /// and cloud metadata endpoints. Returns Ok(()) if safe, Err(msg) if blocked.
+#[allow(dead_code)] // used when `providers` feature is enabled
 fn validate_fetch_url(url: &str) -> Result<(), String> {
     // Extract host from URL without external crate.
     let after_scheme = url.find("://").map(|i| &url[i + 3..]).unwrap_or(url);
