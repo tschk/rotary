@@ -136,6 +136,11 @@ mod duration_secs {
 
     pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Duration, D::Error> {
         let secs = f64::deserialize(d)?;
+        if !secs.is_finite() || secs < 0.0 {
+            return Err(serde::de::Error::custom(format!(
+                "invalid duration: {secs} (must be finite and non-negative)"
+            )));
+        }
         Ok(Duration::from_secs_f64(secs))
     }
 }
@@ -474,6 +479,38 @@ mod tests {
         assert_eq!(
             MultiAgentError::CoordinationError("c".to_string()).to_string(),
             "coordination error: c"
+        );
+    }
+
+    #[test]
+    fn duration_rejects_nan_via_team_result() {
+        let json = r#"{"name":"t","result":{"output":"","files_modified":[],"tool_calls":0},"duration":NaN}"#;
+        let result = serde_json::from_str::<super::TeamResult>(json);
+        assert!(result.is_err(), "NaN duration must be rejected");
+    }
+
+    #[test]
+    fn duration_rejects_infinity_via_team_result() {
+        let json = r#"{"name":"t","result":{"output":"","files_modified":[],"tool_calls":0},"duration":Infinity}"#;
+        let result = serde_json::from_str::<super::TeamResult>(json);
+        assert!(result.is_err(), "infinity duration must be rejected");
+    }
+
+    #[test]
+    fn duration_rejects_negative_via_team_result() {
+        let json = r#"{"name":"t","result":{"output":"","files_modified":[],"tool_calls":0},"duration":-1.0}"#;
+        let result = serde_json::from_str::<super::TeamResult>(json);
+        assert!(result.is_err(), "negative duration must be rejected");
+    }
+
+    #[test]
+    fn duration_accepts_valid_via_team_result() {
+        let json = r#"{"name":"t","result":{"output":"","files_modified":[],"tool_calls":0},"duration":1.5}"#;
+        let result = serde_json::from_str::<super::TeamResult>(json);
+        assert!(result.is_ok(), "valid duration must be accepted");
+        assert_eq!(
+            result.unwrap().duration,
+            std::time::Duration::from_millis(1500)
         );
     }
 }

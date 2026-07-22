@@ -406,6 +406,16 @@ impl GraphMemory {
 
     /// Load a graph from a JSON file.
     pub fn load(path: &Path) -> Result<Self, GraphMemoryError> {
+        // Reject oversized graph files before reading into memory.
+        const MAX_GRAPH_FILE_BYTES: u64 = 50 * 1024 * 1024; // 50 MB
+        if let Ok(meta) = std::fs::metadata(path) {
+            if meta.len() > MAX_GRAPH_FILE_BYTES {
+                return Err(GraphMemoryError::Io(format!(
+                    "graph file too large: {} bytes (max {MAX_GRAPH_FILE_BYTES})",
+                    meta.len()
+                )));
+            }
+        }
         let data = std::fs::read_to_string(path)?;
         let g: GraphMemory = serde_json::from_str(&data)?;
         // Advance the global counter past all loaded node IDs to prevent collisions.

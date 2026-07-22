@@ -85,8 +85,11 @@ impl DreamConsolidator {
         }
 
         let nodes: Vec<String> = graph.nodes.keys().cloned().collect();
-        for i in 0..nodes.len() {
-            for j in (i + 1)..nodes.len() {
+        // Cap new-edge inference to avoid O(n²) blowup on large graphs.
+        const MAX_CONSOLIDATION_NODES: usize = 2_000;
+        let limit = nodes.len().min(MAX_CONSOLIDATION_NODES);
+        for i in 0..limit {
+            for j in (i + 1)..limit {
                 let a = &nodes[i];
                 let b = &nodes[j];
                 let a_succs: HashSet<&String> =

@@ -10,6 +10,8 @@ use thiserror::Error;
 const EVENTS_FILE: &str = "events.jsonl";
 const PAYLOADS_DIR: &str = "payloads";
 const PAYLOAD_THRESHOLD: usize = 1024;
+/// Maximum file size for rollout events JSONL (10 MB).
+const MAX_ROLLOUT_FILE_BYTES: u64 = 10 * 1024 * 1024;
 
 #[derive(Debug, Error)]
 pub enum RolloutError {
@@ -167,6 +169,18 @@ impl RolloutManager {
     /// Load all entries previously written to `dir/rollout/events.jsonl`.
     pub fn load(dir: &Path) -> Result<Vec<RolloutEntry>> {
         let path = dir.join("rollout").join(EVENTS_FILE);
+        // Reject oversized rollout files before reading into memory.
+        if let Ok(meta) = fs::metadata(&path) {
+            if meta.len() > MAX_ROLLOUT_FILE_BYTES {
+                return Err(RolloutError::Io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!(
+                        "rollout file too large: {} bytes (max {MAX_ROLLOUT_FILE_BYTES})",
+                        meta.len()
+                    ),
+                )));
+            }
+        }
         let contents = fs::read_to_string(path)?;
         let mut entries = Vec::new();
         for line in contents.lines() {

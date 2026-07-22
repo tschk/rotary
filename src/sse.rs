@@ -12,6 +12,13 @@ use futures::StreamExt;
 /// Maximum total bytes of accumulated event data before a parse is rejected.
 pub const MAX_EVENT_DATA_BYTES: usize = 100 * 1024 * 1024;
 
+/// Maximum bytes the internal parser buffer may hold before feed() rejects.
+/// Prevents unbounded memory growth when events are never terminated.
+pub const MAX_SSE_BUFFER_BYTES: usize = 256 * 1024 * 1024;
+
+/// Maximum number of events a single stream adapter will collect.
+pub const MAX_STREAM_EVENTS: usize = 50_000;
+
 /// UTF-8 BOM byte sequence, stripped from the start of the stream.
 const UTF8_BOM: [u8; 3] = [0xEF, 0xBB, 0xBF];
 
@@ -22,6 +29,8 @@ pub enum SseError {
     ParseError(String),
     #[error("sse data limit exceeded ({MAX_EVENT_DATA_BYTES} bytes)")]
     DataLimitExceeded,
+    #[error("sse buffer limit exceeded ({MAX_SSE_BUFFER_BYTES} bytes)")]
+    BufferLimitExceeded,
     #[error("sse stream error: {0}")]
     StreamError(String),
 }
@@ -110,6 +119,18 @@ impl SseParser {
     pub fn feed(&mut self, chunk: &[u8]) -> Vec<SseEvent> {
         if chunk.is_empty() {
             return Vec::new();
+        }
+        if self.buf.len() + chunk.len() > MAX_SSE_BUFFER_BYTES {
+            self.buf.clear();
+            self.scan = 0;
+            self.has_fields = false;
+            self.current = SseEvent::message();
+            return vec![SseEvent {
+                event: Cow::Borrowed("error"),
+                data: "buffer limit exceeded".to_string(),
+                id: None,
+                retry: None,
+            }];
         }
         self.buf.extend_from_slice(chunk);
         self.process()
@@ -292,12 +313,21 @@ where
                 for ev in parser.feed(buf.as_ref()) {
                     if ev.event == "error" && ev.data == "data limit exceeded" {
                         out.push(Err(SseError::DataLimitExceeded));
+                    } else if ev.event == "error" && ev.data == "buffer limit exceeded" {
+                        out.push(Err(SseError::BufferLimitExceeded));
+                        return out;
                     } else {
                         out.push(Ok(ev));
                     }
                 }
             }
             Err(e) => out.push(Err(SseError::StreamError(e.to_string()))),
+        }
+        if out.len() >= MAX_STREAM_EVENTS {
+            out.push(Err(SseError::StreamError(format!(
+                "event count limit exceeded ({MAX_STREAM_EVENTS})"
+            ))));
+            return out;
         }
     }
     if let Some(ev) = parser.finish() {
@@ -355,6 +385,16 @@ mod tests {
         let chunk = format!("data: {big}\n\n");
         let events = p.feed(chunk.as_bytes());
         assert!(events.iter().any(|e| e.event == "error"));
+    }
+
+    #[test]
+    fn rejects_buffer_over_cap() {
+        let mut p = SseParser::new();
+        let big = vec![b'x'; MAX_SSE_BUFFER_BYTES + 1];
+        let events = p.feed(&big);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event, "error");
+        assert_eq!(events[0].data, "buffer limit exceeded");
     }
 
     #[test]

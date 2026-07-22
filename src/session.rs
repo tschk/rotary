@@ -4,6 +4,25 @@ use crate::provider::{Message, Role};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+/// Maximum file size in bytes for session JSONL files (10 MB).
+/// Rejects files larger than this to prevent unbounded memory allocation on import.
+const MAX_SESSION_FILE_BYTES: u64 = 10 * 1024 * 1024;
+
+/// Check file size before reading. Returns error if file exceeds limit.
+fn check_file_size(path: &std::path::Path) -> std::io::Result<()> {
+    let meta = std::fs::metadata(path)?;
+    if meta.len() > MAX_SESSION_FILE_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "session file too large: {} bytes (max {MAX_SESSION_FILE_BYTES})",
+                meta.len()
+            ),
+        ));
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Entry {
     pub id: u64,
@@ -84,6 +103,7 @@ impl Session {
     }
 
     pub fn load_jsonl(path: &std::path::Path) -> std::io::Result<Self> {
+        check_file_size(path)?;
         let content = std::fs::read_to_string(path)?;
         let id = path.file_stem().unwrap().to_string_lossy().to_string();
         let mut session = Self::new(id.clone(), id);
@@ -133,6 +153,7 @@ impl Session {
     /// Import from Codex/rollout-friendly JSONL produced by [`Self::export_codex_jsonl`]
     /// or a plain message stream with `role` + `content` fields.
     pub fn import_codex_jsonl(path: &std::path::Path) -> std::io::Result<Self> {
+        check_file_size(path)?;
         let content = std::fs::read_to_string(path)?;
         let fallback_id = path
             .file_stem()
