@@ -40,10 +40,12 @@ impl SkillRegistry {
     }
 
     /// Return skills whose trigger patterns match the prompt (case-insensitive).
+    /// Only Active skills are eligible — Stale/Archived skills never activate.
     pub fn match_prompt(&self, prompt: &str) -> Vec<&Skill> {
         let p = prompt.to_lowercase();
         self.skills
             .iter()
+            .filter(|s| s.state == crate::skill_engine::SkillState::Active)
             .filter(|s| {
                 s.trigger_patterns
                     .iter()

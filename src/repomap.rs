@@ -128,8 +128,24 @@ impl RepoMap {
 
     fn collect_source_files(&self) -> Vec<PathBuf> {
         let mut out = Vec::new();
+        let mut visited = std::collections::HashSet::new();
+        let ws_canonical = self
+            .workspace
+            .canonicalize()
+            .unwrap_or_else(|_| self.workspace.clone());
         let mut stack = vec![self.workspace.clone()];
         while let Some(dir) = stack.pop() {
+            // Canonicalize to resolve symlinks; reject if outside workspace or cycle.
+            let canonical = match fs::canonicalize(&dir) {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+            if !visited.insert(canonical.clone()) {
+                continue;
+            }
+            if !canonical.starts_with(&ws_canonical) {
+                continue;
+            }
             let entries = match fs::read_dir(&dir) {
                 Ok(e) => e,
                 Err(_) => continue,

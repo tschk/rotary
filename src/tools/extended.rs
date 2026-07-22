@@ -5,6 +5,60 @@ use crate::subagent::{SubagentConfig, SubagentManager};
 use dashmap::DashMap;
 use std::sync::{Arc, OnceLock};
 
+/// Validate a URL for web_fetch: reject loopback, link-local, private IPs,
+/// and cloud metadata endpoints. Returns Ok(()) if safe, Err(msg) if blocked.
+fn validate_fetch_url(url: &str) -> Result<(), String> {
+    // Extract host from URL without external crate.
+    let after_scheme = url.find("://").map(|i| &url[i + 3..]).unwrap_or(url);
+    let host = after_scheme
+        .split('@')
+        .next_back()
+        .unwrap_or(after_scheme)
+        .split('/')
+        .next()
+        .unwrap_or(after_scheme)
+        .split(':')
+        .next()
+        .unwrap_or(after_scheme)
+        .trim_start_matches('[')
+        .trim_end_matches(']');
+
+    if host.is_empty() {
+        return Err("URL has no host".into());
+    }
+
+    // Reject metadata endpoints.
+    if host == "169.254.169.254" || host == "metadata.google.internal" {
+        return Err("cloud metadata endpoint blocked".into());
+    }
+
+    // Reject localhost variants.
+    if host == "localhost" || host == "127.0.0.1" || host == "::1" || host == "0.0.0.0" {
+        return Err(format!("loopback host blocked: {host}"));
+    }
+
+    // Reject link-local.
+    if host.starts_with("169.254.") || host.starts_with("fe80:") {
+        return Err(format!("link-local address blocked: {host}"));
+    }
+
+    // Reject private networks.
+    if host.starts_with("10.") || host.starts_with("192.168.") {
+        return Err(format!("private network address blocked: {host}"));
+    }
+    if host.starts_with("172.") {
+        if let Some(octet) = host.split('.').nth(1) {
+            if let Ok(n) = octet.parse::<u8>() {
+                if (16..=31).contains(&n) {
+                    return Err(format!("private network address blocked: {host}"));
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 struct TodoItem {
     id: String,
@@ -38,6 +92,11 @@ pub(crate) fn exec_web_fetch(ctx: Arc<ToolContext>, args: String) -> ToolFuture 
 
         #[cfg(feature = "providers")]
         {
+            // Reject destinations that should not be fetched: loopback,
+            // link-local, private, and cloud-metadata addresses.
+            if let Err(e) = validate_fetch_url(&url) {
+                return ToolResult::err("web_fetch", e);
+            }
             let client = crate::http::global_client();
             match client.get(&url).send().await {
                 Ok(resp) => {

@@ -24,6 +24,7 @@ impl CodebaseScanner {
     }
 
     /// Scan only the provided changed files.
+    /// Rejects paths outside the configured workspace.
     pub fn scan_incremental(
         &self,
         changed_files: &[PathBuf],
@@ -35,11 +36,17 @@ impl CodebaseScanner {
             if !path.exists() {
                 continue;
             }
-            let rel = path
-                .strip_prefix(&self.workspace)
-                .unwrap_or(path)
-                .to_string_lossy()
-                .to_string();
+            // Reject paths outside workspace rather than falling back to absolute path.
+            let rel = match path.strip_prefix(&self.workspace) {
+                Ok(r) => r.to_string_lossy().to_string(),
+                Err(_) => {
+                    tracing::warn!(
+                        "scan_incremental: rejecting path outside workspace: {}",
+                        path.display()
+                    );
+                    continue;
+                }
+            };
             let content = match std::fs::read_to_string(path) {
                 Ok(c) => c,
                 Err(_) => continue,
@@ -95,6 +102,31 @@ impl CodebaseScanner {
     }
 
     fn collect_files(&self, dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), GraphMemoryError> {
+        let mut visited = std::collections::HashSet::new();
+        self.collect_files_inner(dir, out, &mut visited)
+    }
+
+    fn collect_files_inner(
+        &self,
+        dir: &Path,
+        out: &mut Vec<PathBuf>,
+        visited: &mut std::collections::HashSet<std::path::PathBuf>,
+    ) -> Result<(), GraphMemoryError> {
+        // Canonicalize to resolve symlinks; reject if outside workspace or already visited.
+        let canonical = match std::fs::canonicalize(dir) {
+            Ok(c) => c,
+            Err(_) => return Ok(()),
+        };
+        if !visited.insert(canonical.clone()) {
+            return Ok(()); // cycle — already visited
+        }
+        let ws_canonical = self
+            .workspace
+            .canonicalize()
+            .unwrap_or_else(|_| self.workspace.clone());
+        if !canonical.starts_with(&ws_canonical) {
+            return Ok(()); // symlink escapes workspace
+        }
         let entries = match std::fs::read_dir(dir) {
             Ok(e) => e,
             Err(_) => return Ok(()),
@@ -113,7 +145,7 @@ impl CodebaseScanner {
                 {
                     continue;
                 }
-                self.collect_files(&path, out)?;
+                self.collect_files_inner(&path, out, visited)?;
             } else if is_source_file(&path) {
                 out.push(path);
             }

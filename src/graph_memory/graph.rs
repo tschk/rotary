@@ -24,6 +24,12 @@ pub(crate) fn next_node_id() -> String {
     format!("n{}", n)
 }
 
+/// Advance the global node counter so newly generated IDs cannot collide
+/// with an existing numeric id. Call after loading a graph from disk.
+pub(crate) fn advance_node_counter_to(min_value: u64) {
+    NODE_COUNTER.fetch_max(min_value, Ordering::Relaxed);
+}
+
 /// Errors returned by graph memory operations.
 #[derive(Debug, Error)]
 pub enum GraphMemoryError {
@@ -402,6 +408,12 @@ impl GraphMemory {
     pub fn load(path: &Path) -> Result<Self, GraphMemoryError> {
         let data = std::fs::read_to_string(path)?;
         let g: GraphMemory = serde_json::from_str(&data)?;
+        // Advance the global counter past all loaded node IDs to prevent collisions.
+        for id in g.nodes.keys() {
+            if let Some(num) = id.strip_prefix('n').and_then(|s| s.parse::<u64>().ok()) {
+                advance_node_counter_to(num + 1);
+            }
+        }
         Ok(g)
     }
 

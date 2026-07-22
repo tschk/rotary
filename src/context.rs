@@ -17,11 +17,24 @@ const CANDIDATES: &[&str] = &[
 ];
 
 /// Load and merge all present instruction files under `dir` (first-match order).
+/// Rejects symlinked instruction files that resolve outside the workspace.
 pub fn load_project_instructions(dir: &Path) -> Option<ProjectInstructions> {
+    let canonical_dir = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
     let mut parts: Vec<(String, String)> = Vec::new();
     for candidate in CANDIDATES {
         let path = dir.join(candidate);
         if path.is_file() {
+            // Reject symlinks that escape the workspace.
+            if let Ok(canon) = path.canonicalize() {
+                if !canon.starts_with(&canonical_dir) {
+                    tracing::warn!(
+                        "rejecting symlinked instruction file outside workspace: {} -> {}",
+                        path.display(),
+                        canon.display()
+                    );
+                    continue;
+                }
+            }
             if let Ok(content) = std::fs::read_to_string(&path) {
                 if !content.trim().is_empty() {
                     parts.push((path.to_string_lossy().to_string(), content));
