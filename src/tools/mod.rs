@@ -1,5 +1,5 @@
 //! Built-in coding tools: read, write, edit, bash, grep, find, ls + extended tools.
-//! Uses rayon for parallel search (grok pattern).
+//! Uses fff for fast indexed file search.
 
 pub(crate) mod common;
 mod extended;
@@ -59,7 +59,7 @@ pub fn register_builtin_tools(registry: &mut ToolRegistry) {
     registry.register(
         ToolDefinition::new_fn(
             "find",
-            "Find files by glob pattern. Uses rayon for parallel traversal.",
+            "Find files by fuzzy/glob pattern. Uses fff indexed search.",
             r#"{"type":"object","properties":{"pattern":{"type":"string"},"path":{"type":"string"}},"required":["pattern"]}"#,
             fs::exec_find,
         )

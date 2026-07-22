@@ -7,9 +7,6 @@ use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 use tracing::debug;
 
-#[cfg(feature = "builtin-tools")]
-use rayon::prelude::*;
-
 pub(crate) fn exec_read(ctx: Arc<ToolContext>, args: String) -> ToolFuture {
     Box::pin(async move {
         let path = match parse_str_field(&args, "path") {
@@ -283,54 +280,63 @@ pub(crate) fn exec_grep(ctx: Arc<ToolContext>, args: String) -> ToolFuture {
 
         #[cfg(feature = "builtin-tools")]
         {
-            let regex = match regex::Regex::new(&pattern) {
-                Ok(r) => r,
-                Err(e) => return ToolResult::err("grep", format!("invalid regex: {e}")),
-            };
-
-            let files: Vec<std::path::PathBuf> = if full.is_file() {
-                vec![full.clone()]
+            let root = if full.is_file() {
+                full.parent().unwrap_or(&ctx.workspace_root).to_path_buf()
             } else {
-                collect_files(&full)
+                full
             };
 
-            let results: Vec<String> = files
-                .par_iter()
-                .filter_map(|file| {
-                    let content = std::fs::read_to_string(file).ok()?;
-                    let lines: Vec<&str> = content.lines().collect();
-                    let mut matches = Vec::new();
-                    for (i, line) in lines.iter().enumerate() {
-                        if regex.is_match(line) {
-                            let start = i.saturating_sub(context);
-                            let end = (i + context + 1).min(lines.len());
-                            for (j, ctx_line) in lines[start..end].iter().enumerate() {
-                                let line_num = start + j + 1;
-                                let marker = if start + j == i { ">" } else { " " };
-                                matches.push(format!(
-                                    "{marker} {:>6}\t{}:{line_num}\t{ctx_line}",
-                                    "",
-                                    file.file_name()?.to_string_lossy(),
-                                    line_num = line_num
-                                ));
-                            }
-                            if context > 0 && end < lines.len() {
-                                matches.push("  ---".to_string());
-                            }
-                        }
+            let shared = match crate::search::picker_for(root) {
+                Ok(p) => p,
+                Err(e) => return ToolResult::err("grep", e),
+            };
+
+            let result = tokio::task::spawn_blocking(move || {
+                let guard = shared.read().map_err(|e| e.to_string())?;
+                let picker = guard.as_ref().ok_or("picker missing")?;
+                let query = fff_search::parse_grep_query(&pattern);
+                let options = fff_search::GrepSearchOptions {
+                    before_context: context,
+                    after_context: context,
+                    page_limit: 100,
+                    ..Default::default()
+                };
+                let grep_result = picker.grep(&query, &options);
+
+                let mut out = String::new();
+                for m in &grep_result.matches {
+                    let file = &grep_result.files[m.file_index];
+                    let path = file.absolute_path(picker, &picker.base_path);
+                    let path_str = path.to_string_lossy();
+                    for (i, line) in m.context_before.iter().enumerate() {
+                        let num = m.line_number as usize - m.context_before.len() + i;
+                        out.push_str(&format!("  {num:>6}\t{path_str}\t{line}\n"));
                     }
-                    if matches.is_empty() {
-                        None
-                    } else {
-                        Some(matches.join("\n"))
+                    out.push_str(&format!(
+                        "> {line_number:>6}\t{path_str}\t{line_content}\n",
+                        line_number = m.line_number,
+                        line_content = m.line_content
+                    ));
+                    for (i, line) in m.context_after.iter().enumerate() {
+                        let num = m.line_number as usize + 1 + i;
+                        out.push_str(&format!("  {num:>6}\t{path_str}\t{line}\n"));
                     }
+                    if context > 0 && !m.context_after.is_empty() {
+                        out.push_str("  ---\n");
+                    }
+                }
+                Ok::<_, String>(if out.is_empty() {
+                    "(no matches)".to_string()
+                } else {
+                    out
                 })
-                .collect();
+            })
+            .await
+            .unwrap_or_else(|e| Err(format!("search task failed: {e}")));
 
-            if results.is_empty() {
-                ToolResult::ok("grep", "(no matches)")
-            } else {
-                ToolResult::ok("grep", results.join("\n"))
+            match result {
+                Ok(content) => ToolResult::ok("grep", content),
+                Err(e) => ToolResult::err("grep", e),
             }
         }
 
@@ -356,29 +362,43 @@ pub(crate) fn exec_find(ctx: Arc<ToolContext>, args: String) -> ToolFuture {
 
         #[cfg(feature = "builtin-tools")]
         {
-            let files = collect_files(&full);
-            let glob_pattern = match glob::Pattern::new(&pattern) {
+            let shared = match crate::search::picker_for(full) {
                 Ok(p) => p,
-                Err(e) => return ToolResult::err("find", format!("invalid glob: {e}")),
+                Err(e) => return ToolResult::err("find", e),
             };
 
-            let matched: Vec<String> = files
-                .par_iter()
-                .filter_map(|f| {
-                    let name = f.file_name()?.to_string_lossy().to_string();
-                    let path_str = f.to_string_lossy().to_string();
-                    if glob_pattern.matches(&name) || glob_pattern.matches(&path_str) {
-                        Some(path_str)
-                    } else {
-                        None
-                    }
-                })
-                .collect();
+            let result = tokio::task::spawn_blocking(move || {
+                let guard = shared.read().map_err(|e| e.to_string())?;
+                let picker = guard.as_ref().ok_or("picker missing")?;
+                let parser = fff_search::QueryParser::<fff_search::FileSearchConfig>::default();
+                let query = parser.parse(&pattern);
+                let options = fff_search::FuzzySearchOptions {
+                    max_threads: 0,
+                    pagination: fff_search::PaginationArgs {
+                        offset: 0,
+                        limit: 100,
+                    },
+                    ..Default::default()
+                };
+                let search_result = picker.fuzzy_search(&query, None, options);
 
-            if matched.is_empty() {
-                ToolResult::ok("find", "(no files found)")
-            } else {
-                ToolResult::ok("find", matched.join("\n"))
+                let mut out = Vec::new();
+                for item in search_result.items {
+                    let path = item.absolute_path(picker, &picker.base_path);
+                    out.push(path.to_string_lossy().into_owned());
+                }
+                Ok::<_, String>(if out.is_empty() {
+                    "(no files found)".to_string()
+                } else {
+                    out.join("\n")
+                })
+            })
+            .await
+            .unwrap_or_else(|e| Err(format!("search task failed: {e}")));
+
+            match result {
+                Ok(content) => ToolResult::ok("find", content),
+                Err(e) => ToolResult::err("find", e),
             }
         }
 
@@ -430,37 +450,4 @@ pub(crate) fn exec_ls(ctx: Arc<ToolContext>, args: String) -> ToolFuture {
             Err(e) => ToolResult::err("ls", format!("{e}")),
         }
     })
-}
-
-#[cfg(feature = "builtin-tools")]
-pub(crate) fn collect_files(root: &std::path::Path) -> Vec<std::path::PathBuf> {
-    use rayon::prelude::*;
-    let mut files = Vec::new();
-
-    if root.is_file() {
-        files.push(root.to_path_buf());
-        return files;
-    }
-
-    #[cfg(feature = "builtin-tools")]
-    {
-        let walker = ignore::WalkBuilder::new(root)
-            .hidden(false)
-            .git_ignore(true)
-            .build();
-
-        let entries: Vec<_> = walker.filter_map(|e| e.ok()).collect();
-        files = entries
-            .par_iter()
-            .filter_map(|e| {
-                if e.file_type()?.is_file() {
-                    Some(e.path().to_path_buf())
-                } else {
-                    None
-                }
-            })
-            .collect();
-    }
-
-    files
 }

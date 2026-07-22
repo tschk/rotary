@@ -49,6 +49,8 @@ pub mod repomap;
 pub mod rollout;
 pub mod routing;
 pub mod sandbox;
+#[cfg(feature = "fff")]
+pub mod search;
 pub mod secrets;
 pub mod session;
 #[cfg(feature = "skills")]

@@ -24,12 +24,13 @@ computer-use = ["dep:rs_peekaboo"]
 # Agent loop always needs tokio (JoinSet / sleep). IPC adds net/process extras.
 ipc = ["tokio/net", "tokio/io-util", "tokio/sync", "tokio/process", "tokio/rt-multi-thread", "dep:cancellation-token"]
 providers = ["dep:reqwest", "dep:eventsource-stream", "dep:futures"]
-builtin-tools = ["dep:rayon", "dep:glob", "dep:ignore", "dep:regex"]
+builtin-tools = [ "dep:regex", "fff"]
 memory = ["dep:rusqlite"]
 mcp = ["tokio/process", "tokio/io-util", "tokio/sync", "dep:reqwest", "reqwest/json", "reqwest/rustls-tls", "dep:futures"]
 sqlite-sessions = ["dep:rusqlite"]
 graph-memory = []
 skills = ["dep:serde_yaml", "dep:dirs"]
+fff = ["dep:fff-search"]
 
 [dependencies]
 serde = { version = "1", features = ["derive", "rc"] }
@@ -53,12 +54,8 @@ cancellation-token = { version = "0.1", optional = true }
 reqwest = { version = "0.12", features = ["json", "stream", "blocking"], default-features = false, optional = true }
 eventsource-stream = { version = "0.2", optional = true }
 futures = { version = "0.3", optional = true }
-
-# Optional — builtin-tools
-rayon = { version = "1", optional = true }
-glob = { version = "0.3", optional = true }
-ignore = { version = "0.4", optional = true }
 regex = { version = "1", optional = true }
+fff-search = { version = "0.10.2-nightly.686a849", optional = true }
 
 # Optional — computer-use
 rs_peekaboo = { version = "0.3.2", optional = true }

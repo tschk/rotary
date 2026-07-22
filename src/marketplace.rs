@@ -360,7 +360,7 @@ impl PluginInstaller {
 
         // Re-check blocklist against the final on-disk identity (alias mismatch).
         let final_name = sanitize_plugin_name(&on_disk_manifest.name)?;
-        if self.blocklist.is_blocked(&final_name) {
+        if self.blocklist.is_blocked(final_name) {
             let _ = std::fs::remove_dir_all(&target);
             return Err(MarketplaceError::InstallFailed(format!(
                 "plugin {final_name} (on-disk identity) is blocklisted"
