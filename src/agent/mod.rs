@@ -9,6 +9,7 @@ mod tool_types;
 pub use tool_types::*;
 
 use crate::compaction::{apply_compaction, estimate_messages, CompactionConfig};
+use crate::cost::{PricingRegistry, SessionCost, TokenUsage};
 use crate::guardrails::plan_tool_effect_batches;
 use crate::hooks::HookRegistry;
 use crate::mode::{self, Profile, Scope};
@@ -18,6 +19,7 @@ use moka::future::Cache;
 use parking_lot::RwLock;
 use serde::Serialize;
 use std::sync::Arc;
+use std::time::Instant;
 #[cfg(feature = "providers")]
 use tracing::error;
 use tracing::{debug, info, warn};
@@ -50,9 +52,52 @@ pub enum Event {
     },
     AgentEnd,
     Error(String),
+    BudgetExceeded {
+        reason: String,
+    },
 }
 
 pub type Subscriber = Arc<dyn Fn(&Event) + Send + Sync>;
+
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct AgentBudget {
+    pub max_cost: Option<f64>,
+    pub max_duration_seconds: Option<u64>,
+    pub reserve_budget: Option<f64>,
+    pub reserve_budget_fraction: Option<f64>,
+}
+
+impl AgentBudget {
+    pub fn effective_max_cost(&self) -> Option<f64> {
+        let max = self.max_cost?;
+        let reserve = match (self.reserve_budget, self.reserve_budget_fraction) {
+            (Some(usd), Some(frac)) => usd + (max * frac),
+            (Some(usd), None) => usd,
+            (None, Some(frac)) => max * frac,
+            (None, None) => 0.0,
+        };
+        Some((max - reserve).max(0.0))
+    }
+
+    pub fn exceeded(&self, start: Option<Instant>, total_cost: f64) -> Option<String> {
+        if let Some(max_dur) = self.max_duration_seconds {
+            if let Some(start) = start {
+                let elapsed = start.elapsed().as_secs();
+                if elapsed >= max_dur {
+                    return Some(format!("time budget exceeded: {elapsed}s >= {max_dur}s"));
+                }
+            }
+        }
+        if let Some(max) = self.effective_max_cost() {
+            if total_cost >= max {
+                return Some(format!(
+                    "cost budget exceeded: ${total_cost:.4} >= ${max:.4}"
+                ));
+            }
+        }
+        None
+    }
+}
 
 /// The agent — owns the loop, tools, provider, policy, scope, hooks, cache.
 pub struct Agent {
@@ -91,6 +136,10 @@ pub struct Agent {
     subscribers: Vec<Subscriber>,
     pub messages: RwLock<Vec<Message>>,
     tool_cache: Cache<String, ToolResult>,
+    pub budget: Option<AgentBudget>,
+    pub pricing_registry: PricingRegistry,
+    session_cost: SessionCost,
+    budget_start: Option<Instant>,
 }
 
 impl Agent {
@@ -130,6 +179,10 @@ impl Agent {
                 .time_to_live(std::time::Duration::from_secs(3600))
                 .time_to_idle(std::time::Duration::from_secs(900))
                 .build(),
+            budget: None,
+            pricing_registry: PricingRegistry::new(),
+            session_cost: SessionCost::new(),
+            budget_start: None,
         };
         // Always attach userspace workspace sandbox (path confinement for FS tools).
         agent.ensure_userspace_sandbox();
@@ -273,6 +326,28 @@ impl Agent {
         self.os_sandbox = Some(os);
     }
 
+    pub fn set_budget(&mut self, budget: AgentBudget) {
+        self.budget = Some(budget);
+    }
+
+    pub fn set_pricing_registry(&mut self, registry: PricingRegistry) {
+        self.pricing_registry = registry;
+    }
+
+    pub fn total_cost(&self) -> f64 {
+        self.session_cost.total_cost()
+    }
+
+    pub fn session_cost(&self) -> &SessionCost {
+        &self.session_cost
+    }
+
+    fn check_budget(&self) -> Option<String> {
+        self.budget
+            .as_ref()
+            .and_then(|b| b.exceeded(self.budget_start, self.session_cost.total_cost()))
+    }
+
     /// Attach userspace workspace path sandbox if missing.
     pub fn ensure_userspace_sandbox(&mut self) {
         if self.sandbox.is_none() {
@@ -372,6 +447,7 @@ impl Agent {
 
         self.messages.write().push(Message::user(text));
         self.emit(Event::AgentStart);
+        self.budget_start = Some(Instant::now());
 
         let provider = self.provider.clone().ok_or(AgentError::NoProvider)?;
         let mut tool_ctx = ToolContext::new(self.workspace_root.clone());
@@ -393,6 +469,12 @@ impl Agent {
         let ctx = Arc::new(tool_ctx);
 
         for iteration in 0..self.max_tool_iterations {
+            if let Some(reason) = self.check_budget() {
+                self.emit(Event::BudgetExceeded {
+                    reason: reason.clone(),
+                });
+                return Err(AgentError::BudgetExceeded(reason));
+            }
             self.emit(Event::TurnStart { turn: iteration });
 
             let messages: Vec<Message> = self.messages.read().clone();
@@ -501,7 +583,26 @@ impl Agent {
             if !assistant_content.is_empty() {
                 self.messages
                     .write()
-                    .push(Message::assistant(assistant_content));
+                    .push(Message::assistant(assistant_content.clone()));
+            }
+
+            let input_tokens = estimate_messages(&messages);
+            let output_tokens = assistant_content.chars().count() / 3;
+            self.session_cost.record(
+                &self.model,
+                TokenUsage {
+                    input_tokens,
+                    output_tokens,
+                    cache_read_tokens: 0,
+                    cache_write_tokens: 0,
+                },
+                &self.pricing_registry,
+            );
+            if let Some(reason) = self.check_budget() {
+                self.emit(Event::BudgetExceeded {
+                    reason: reason.clone(),
+                });
+                return Err(AgentError::BudgetExceeded(reason));
             }
 
             if tool_calls.is_empty() {
@@ -1076,4 +1177,6 @@ pub enum AgentError {
     NoProvider,
     #[error("agent cancelled")]
     Cancelled,
+    #[error("budget exceeded: {0}")]
+    BudgetExceeded(String),
 }

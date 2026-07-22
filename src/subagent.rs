@@ -9,7 +9,7 @@
 //! [`crate::agent::Agent`] loop. Without a provider, the subagent still
 //! records a completed run (prompt accepted, no LLM turns).
 
-use crate::agent::{Agent, ToolRegistry};
+use crate::agent::{Agent, AgentBudget, ToolRegistry};
 use crate::permissions::{PermissionMode, Policy};
 use crate::provider::Provider;
 use chrono::{DateTime, Utc};
@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -30,6 +31,8 @@ pub enum SubagentError {
     NotFound(String),
     #[error("subagent already running: {0}")]
     AlreadyRunning(String),
+    #[error("subagent limit exceeded: {0}")]
+    LimitExceeded(String),
     #[error("git error: {0}")]
     GitError(String),
 }
@@ -48,6 +51,28 @@ pub enum SubagentStatus {
     Failed,
     /// Cancelled by the parent.
     Cancelled,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SubagentLimits {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_depth: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_children: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_descendants: Option<usize>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SubagentBudget {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_cost: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_duration_seconds: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reserve_budget: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reserve_budget_fraction: Option<f64>,
 }
 
 /// Declarative configuration for a subagent.
@@ -71,6 +96,16 @@ pub struct SubagentConfig {
     /// When true, create an isolated work directory under `.rx4/worktrees/`.
     #[serde(default)]
     pub workspace_isolation: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_id: Option<String>,
+    #[serde(default)]
+    pub limits: SubagentLimits,
+    #[serde(default)]
+    pub budget: SubagentBudget,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_contract: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_seconds: Option<u64>,
 }
 
 fn default_max_steps() -> usize {
@@ -88,6 +123,11 @@ impl Default for SubagentConfig {
             denied_tools: None,
             permission_mode: None,
             workspace_isolation: false,
+            parent_id: None,
+            limits: SubagentLimits::default(),
+            budget: SubagentBudget::default(),
+            task_contract: None,
+            timeout_seconds: None,
         }
     }
 }
@@ -105,6 +145,10 @@ pub struct SubagentResult {
     /// Error message if the subagent failed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    #[serde(default)]
+    pub cost: f64,
+    #[serde(default)]
+    pub duration_seconds: u64,
 }
 
 impl SubagentResult {
@@ -114,6 +158,8 @@ impl SubagentResult {
             files_modified: vec![],
             tool_calls: 0,
             error: None,
+            cost: 0.0,
+            duration_seconds: 0,
         }
     }
 }
@@ -130,6 +176,12 @@ struct SubagentState {
     worktree_path: Option<PathBuf>,
     #[allow(dead_code)]
     spawned_at: DateTime<Utc>,
+    parent_id: Option<String>,
+    children: Vec<String>,
+    depth: usize,
+    remaining_depth: Option<usize>,
+    descendant_count: usize,
+    limits: SubagentLimits,
 }
 
 /// Handle to a spawned subagent. Cheap to clone — all state is shared.
@@ -166,6 +218,22 @@ impl SubagentHandle {
         self.state.lock().worktree_path.clone()
     }
 
+    pub fn parent_id(&self) -> Option<String> {
+        self.state.lock().parent_id.clone()
+    }
+
+    pub fn children(&self) -> Vec<String> {
+        self.state.lock().children.clone()
+    }
+
+    pub fn depth(&self) -> usize {
+        self.state.lock().depth
+    }
+
+    pub fn descendant_count(&self) -> usize {
+        self.state.lock().descendant_count
+    }
+
     /// Block asynchronously until the subagent completes and return its result.
     #[cfg(feature = "ipc")]
     pub async fn wait(&self) -> SubagentResult {
@@ -181,11 +249,13 @@ impl SubagentHandle {
                         files_modified: vec![],
                         tool_calls: 0,
                         error: Some("no result recorded".to_string()),
+                        cost: 0.0,
+                        duration_seconds: 0,
                     });
                 }
             }
             tokio::task::yield_now().await;
-            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            tokio::time::sleep(Duration::from_millis(5)).await;
         }
     }
 
@@ -197,6 +267,8 @@ impl SubagentHandle {
             files_modified: vec![],
             tool_calls: 0,
             error: Some("no result recorded".to_string()),
+            cost: 0.0,
+            duration_seconds: 0,
         })
     }
 
@@ -213,6 +285,7 @@ impl SubagentHandle {
 #[derive(Default)]
 pub struct SubagentManager {
     subagents: HashMap<String, SubagentHandle>,
+    parents: HashMap<String, Option<String>>,
     provider: Option<Arc<dyn Provider>>,
     tools: Option<Arc<ToolRegistry>>,
 }
@@ -221,6 +294,7 @@ impl std::fmt::Debug for SubagentManager {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SubagentManager")
             .field("subagents", &self.subagents.len())
+            .field("parents", &self.parents.len())
             .field("has_provider", &self.provider.is_some())
             .finish()
     }
@@ -258,63 +332,20 @@ impl SubagentManager {
         prompt: &str,
         parent_workspace: &Path,
     ) -> Result<SubagentHandle, SubagentError> {
-        let id = Uuid::new_v4().to_string();
-        let worktree_path = if config.workspace_isolation {
-            Some(self.create_worktree(&id, parent_workspace)?)
+        let (handle, workspace) = self.begin_spawn(&config, prompt, parent_workspace)?;
+        let started = Instant::now();
+        let mut result = if let Some(provider) = self.provider.clone() {
+            run_agent_subagent(provider, self.tools.clone(), &config, prompt, &workspace)
+                .map_err(SubagentError::SpawnFailed)?
         } else {
-            None
+            SubagentResult::offline(&config.name, prompt)
         };
-
-        let workspace = worktree_path
-            .clone()
-            .unwrap_or_else(|| parent_workspace.to_path_buf());
-
-        let state = Arc::new(Mutex::new(SubagentState {
-            id: id.clone(),
-            name: config.name.clone(),
-            status: SubagentStatus::Pending,
-            result: None,
-            worktree_path: worktree_path.clone(),
-            spawned_at: Utc::now(),
-        }));
-        let handle = SubagentHandle {
-            id: id.clone(),
-            name: config.name.clone(),
-            state,
-        };
-
-        handle.transition(SubagentStatus::Running, None);
-
-        let result = if let Some(provider) = self.provider.clone() {
-            match run_agent_subagent(provider, self.tools.clone(), &config, prompt, &workspace) {
-                Ok(r) => {
-                    handle.transition(SubagentStatus::Completed, Some(r.clone()));
-                    r
-                }
-                Err(e) => {
-                    let r = SubagentResult {
-                        output: String::new(),
-                        files_modified: vec![],
-                        tool_calls: 0,
-                        error: Some(e),
-                    };
-                    handle.transition(SubagentStatus::Failed, Some(r.clone()));
-                    r
-                }
-            }
+        self.finish_spawn(&handle, &mut result, started);
+        if result.error.is_some() {
+            handle.transition(SubagentStatus::Failed, Some(result));
         } else {
-            let r = SubagentResult::offline(&config.name, prompt);
-            handle.transition(SubagentStatus::Completed, Some(r.clone()));
-            r
-        };
-
-        let _ = result;
-
-        if let Some(path) = worktree_path {
-            let _ = self.cleanup_worktree(&path);
+            handle.transition(SubagentStatus::Completed, Some(result));
         }
-
-        self.subagents.insert(id, handle.clone());
         Ok(handle)
     }
 
@@ -326,68 +357,21 @@ impl SubagentManager {
         prompt: &str,
         parent_workspace: &Path,
     ) -> Result<SubagentHandle, SubagentError> {
-        let id = Uuid::new_v4().to_string();
-        let worktree_path = if config.workspace_isolation {
-            Some(self.create_worktree(&id, parent_workspace)?)
+        let (handle, workspace) = self.begin_spawn(&config, prompt, parent_workspace)?;
+        let started = Instant::now();
+        let mut result = if let Some(provider) = self.provider.clone() {
+            run_agent_subagent_async(provider, self.tools.clone(), &config, prompt, &workspace)
+                .await
+                .map_err(SubagentError::SpawnFailed)?
         } else {
-            None
+            SubagentResult::offline(&config.name, prompt)
         };
-        let workspace = worktree_path
-            .clone()
-            .unwrap_or_else(|| parent_workspace.to_path_buf());
-
-        let state = Arc::new(Mutex::new(SubagentState {
-            id: id.clone(),
-            name: config.name.clone(),
-            status: SubagentStatus::Pending,
-            result: None,
-            worktree_path: worktree_path.clone(),
-            spawned_at: Utc::now(),
-        }));
-        let handle = SubagentHandle {
-            id: id.clone(),
-            name: config.name.clone(),
-            state,
-        };
-        handle.transition(SubagentStatus::Running, None);
-
-        let result = if let Some(provider) = self.provider.clone() {
-            match run_agent_subagent_async(
-                provider,
-                self.tools.clone(),
-                &config,
-                prompt,
-                &workspace,
-            )
-            .await
-            {
-                Ok(r) => {
-                    handle.transition(SubagentStatus::Completed, Some(r.clone()));
-                    r
-                }
-                Err(e) => {
-                    let r = SubagentResult {
-                        output: String::new(),
-                        files_modified: vec![],
-                        tool_calls: 0,
-                        error: Some(e),
-                    };
-                    handle.transition(SubagentStatus::Failed, Some(r.clone()));
-                    r
-                }
-            }
+        self.finish_spawn(&handle, &mut result, started);
+        if result.error.is_some() {
+            handle.transition(SubagentStatus::Failed, Some(result));
         } else {
-            let r = SubagentResult::offline(&config.name, prompt);
-            handle.transition(SubagentStatus::Completed, Some(r.clone()));
-            r
-        };
-        let _ = result;
-
-        if let Some(path) = worktree_path {
-            let _ = self.cleanup_worktree(&path);
+            handle.transition(SubagentStatus::Completed, Some(result));
         }
-
-        self.subagents.insert(id, handle.clone());
         Ok(handle)
     }
 
@@ -435,13 +419,143 @@ impl SubagentManager {
         self.subagents.values().map(|h| h.wait_sync()).collect()
     }
 
-    fn create_worktree(&self, id: &str, parent_workspace: &Path) -> Result<PathBuf, SubagentError> {
+    fn begin_spawn(
+        &mut self,
+        config: &SubagentConfig,
+        prompt: &str,
+        parent_workspace: &Path,
+    ) -> Result<(SubagentHandle, PathBuf), SubagentError> {
+        let id = Uuid::new_v4().to_string();
+        let worktree_path = if config.workspace_isolation {
+            Some(self.create_worktree(&id, config, prompt, parent_workspace)?)
+        } else {
+            None
+        };
+        let workspace = worktree_path
+            .clone()
+            .unwrap_or_else(|| parent_workspace.to_path_buf());
+
+        let (depth, parent_remaining) = self.resolve_parent(&config.parent_id)?;
+        if parent_remaining == Some(0) {
+            return Err(SubagentError::LimitExceeded(
+                "parent max-depth reached".to_string(),
+            ));
+        }
+
+        let mut remaining = config.limits.max_depth;
+        if let Some(pr) = parent_remaining {
+            let child_limit = pr.saturating_sub(1);
+            remaining = match remaining {
+                Some(r) => Some(r.min(child_limit)),
+                None => Some(child_limit),
+            };
+        }
+
+        if let Some(parent_id) = &config.parent_id {
+            let parent = self
+                .subagents
+                .get(parent_id)
+                .ok_or_else(|| SubagentError::NotFound(parent_id.clone()))?;
+            {
+                let guard = parent.state.lock();
+                if let Some(max) = guard.limits.max_children {
+                    if guard.children.len() >= max {
+                        return Err(SubagentError::LimitExceeded(format!(
+                            "max-children ({max}) reached for parent {parent_id}"
+                        )));
+                    }
+                }
+                if let Some(max) = guard.limits.max_descendants {
+                    if guard.descendant_count >= max {
+                        return Err(SubagentError::LimitExceeded(format!(
+                            "max-descendants ({max}) reached for parent {parent_id}"
+                        )));
+                    }
+                }
+            }
+            parent.state.lock().children.push(id.clone());
+            self.increment_descendants(parent_id);
+        }
+
+        let state = Arc::new(Mutex::new(SubagentState {
+            id: id.clone(),
+            name: config.name.clone(),
+            status: SubagentStatus::Pending,
+            result: None,
+            worktree_path: worktree_path.clone(),
+            spawned_at: Utc::now(),
+            parent_id: config.parent_id.clone(),
+            children: Vec::new(),
+            depth,
+            remaining_depth: remaining,
+            descendant_count: 0,
+            limits: config.limits.clone(),
+        }));
+        let handle = SubagentHandle {
+            id: id.clone(),
+            name: config.name.clone(),
+            state,
+        };
+
+        self.subagents.insert(id.clone(), handle.clone());
+        self.parents.insert(id.clone(), config.parent_id.clone());
+        handle.transition(SubagentStatus::Running, None);
+        Ok((handle, workspace))
+    }
+
+    fn finish_spawn(&self, handle: &SubagentHandle, result: &mut SubagentResult, started: Instant) {
+        result.duration_seconds = started.elapsed().as_secs();
+        if let Some(path) = handle.worktree_path() {
+            let _ = self.cleanup_worktree(&path);
+        }
+    }
+
+    fn resolve_parent(
+        &self,
+        parent_id: &Option<String>,
+    ) -> Result<(usize, Option<usize>), SubagentError> {
+        match parent_id {
+            None => Ok((0, None)),
+            Some(pid) => {
+                let parent = self
+                    .subagents
+                    .get(pid)
+                    .ok_or_else(|| SubagentError::NotFound(pid.clone()))?;
+                let guard = parent.state.lock();
+                Ok((guard.depth + 1, guard.remaining_depth))
+            }
+        }
+    }
+
+    fn increment_descendants(&mut self, child_id: &str) {
+        let mut current = self.parents.get(child_id).cloned().flatten();
+        while let Some(parent_id) = current {
+            if let Some(handle) = self.subagents.get(&parent_id) {
+                handle.state.lock().descendant_count += 1;
+            }
+            current = self.parents.get(&parent_id).cloned().flatten();
+        }
+    }
+
+    fn create_worktree(
+        &self,
+        id: &str,
+        config: &SubagentConfig,
+        prompt: &str,
+        parent_workspace: &Path,
+    ) -> Result<PathBuf, SubagentError> {
         let worktrees_dir = parent_workspace.join(".rx4").join("worktrees");
         std::fs::create_dir_all(&worktrees_dir)
             .map_err(|e| SubagentError::GitError(format!("create worktrees dir: {e}")))?;
         let path = worktrees_dir.join(id);
         std::fs::create_dir_all(&path)
             .map_err(|e| SubagentError::GitError(format!("create worktree dir: {e}")))?;
+        let contract = config
+            .task_contract
+            .clone()
+            .unwrap_or_else(|| default_node_contract(config, prompt));
+        let node_path = path.join("NODE.md");
+        let _ = std::fs::write(&node_path, contract);
         Ok(path)
     }
 
@@ -449,6 +563,18 @@ impl SubagentManager {
         std::fs::remove_dir_all(path)
             .map_err(|e| SubagentError::GitError(format!("remove worktree dir: {e}")))
     }
+}
+
+fn default_node_contract(config: &SubagentConfig, prompt: &str) -> String {
+    format!(
+        "# Node: {}\n\n## Prompt\n\n{}\n\n## Limits\n\n- max_steps: {}\n- max_depth: {:?}\n- max_children: {:?}\n- max_descendants: {:?}\n",
+        config.name,
+        prompt,
+        config.max_steps,
+        config.limits.max_depth,
+        config.limits.max_children,
+        config.limits.max_descendants
+    )
 }
 
 fn policy_from_config(config: &SubagentConfig) -> Policy {
@@ -488,9 +614,21 @@ fn build_child_agent(
     agent.set_policy(policy_from_config(config));
     agent.set_workspace_root(workspace);
     if let Some(tools) = tools {
-        // ToolRegistry is not Clone; rebuild empty and let host pass Arc only.
-        // When Arc tools provided, set via clone of Arc if Agent accepts Arc.
         agent.tools = tools;
+    }
+    if config.budget.max_cost.is_some()
+        || config.budget.max_duration_seconds.is_some()
+        || config.timeout_seconds.is_some()
+    {
+        agent.budget = Some(AgentBudget {
+            max_cost: config.budget.max_cost,
+            max_duration_seconds: config
+                .budget
+                .max_duration_seconds
+                .or(config.timeout_seconds),
+            reserve_budget: config.budget.reserve_budget,
+            reserve_budget_fraction: config.budget.reserve_budget_fraction,
+        });
     }
     agent
 }
@@ -512,7 +650,7 @@ fn run_agent_subagent(
             .map_err(|e| e.to_string())?;
         rt.block_on(async move {
             let mut agent = build_child_agent(provider, tools, &config, &workspace);
-            agent.prompt(&prompt).await.map_err(|e| e.to_string())?;
+            let prompt_result = agent.prompt(&prompt).await;
             let messages = agent.messages.read().clone();
             let tool_calls = messages
                 .iter()
@@ -524,11 +662,14 @@ fn run_agent_subagent(
                 .find(|m| m.role == crate::provider::Role::Assistant)
                 .map(|m| m.content.clone())
                 .unwrap_or_default();
+            let error = prompt_result.err().map(|e| e.to_string());
             Ok(SubagentResult {
                 output,
                 files_modified: vec![],
                 tool_calls,
-                error: None,
+                error,
+                cost: agent.total_cost(),
+                duration_seconds: 0,
             })
         })
     })
@@ -544,8 +685,9 @@ async fn run_agent_subagent_async(
     prompt: &str,
     workspace: &Path,
 ) -> Result<SubagentResult, String> {
+    let started = Instant::now();
     let mut agent = build_child_agent(provider, tools, config, workspace);
-    agent.prompt(prompt).await.map_err(|e| e.to_string())?;
+    let prompt_result = agent.prompt(prompt).await;
     let messages = agent.messages.read().clone();
     let tool_calls = messages
         .iter()
@@ -557,11 +699,14 @@ async fn run_agent_subagent_async(
         .find(|m| m.role == crate::provider::Role::Assistant)
         .map(|m| m.content.clone())
         .unwrap_or_default();
+    let error = prompt_result.err().map(|e| e.to_string());
     Ok(SubagentResult {
         output,
         files_modified: vec![],
         tool_calls,
-        error: None,
+        error,
+        cost: agent.total_cost(),
+        duration_seconds: started.elapsed().as_secs(),
     })
 }
 
@@ -595,6 +740,7 @@ mod tests {
             denied_tools: Some(vec!["bash".to_string()]),
             permission_mode: Some(PermissionMode::ReadOnly),
             workspace_isolation: true,
+            ..SubagentConfig::default()
         };
         assert_eq!(c.name, "reviewer");
         assert_eq!(c.max_steps, 10);
@@ -657,6 +803,12 @@ mod tests {
             result: None,
             worktree_path: None,
             spawned_at: Utc::now(),
+            parent_id: None,
+            children: Vec::new(),
+            depth: 0,
+            remaining_depth: None,
+            descendant_count: 0,
+            limits: SubagentLimits::default(),
         }));
         let handle = SubagentHandle {
             id: "x".to_string(),

@@ -85,8 +85,8 @@ pub mod lsp;
 pub mod marketplace;
 
 pub use agent::{
-    normalize_tool_name, Agent, Event, ToolCall, ToolContext, ToolDefinition, ToolEffect,
-    ToolExecuteBox, ToolExecuteFn, ToolExecutor, ToolFuture, ToolRegistry, ToolResult,
+    normalize_tool_name, Agent, AgentBudget, Event, ToolCall, ToolContext, ToolDefinition,
+    ToolEffect, ToolExecuteBox, ToolExecuteFn, ToolExecutor, ToolFuture, ToolRegistry, ToolResult,
 };
 #[cfg(feature = "skills")]
 pub use background_review::{
@@ -165,7 +165,8 @@ pub use skill_engine::{
 pub use slash::{help_text as slash_help_text, parse as parse_slash, Command as SlashCommand};
 pub use sse::{SseError, SseEvent, SseParser};
 pub use subagent::{
-    SubagentConfig, SubagentError, SubagentHandle, SubagentManager, SubagentResult, SubagentStatus,
+    SubagentBudget, SubagentConfig, SubagentError, SubagentHandle, SubagentLimits, SubagentManager,
+    SubagentResult, SubagentStatus,
 };
 pub use tools::{register_builtin_tools, register_spawn_agent_tool};
 pub use work_pack::{WorkPack, WorkPackError};

@@ -205,6 +205,8 @@ pub fn register_spawn_agent_tool(
                                     files_modified: vec![],
                                     tool_calls: 0,
                                     error: Some(e.to_string()),
+                                    cost: 0.0,
+                                    duration_seconds: 0,
                                 });
                             let body = serde_json::json!({
                                 "id": id,
