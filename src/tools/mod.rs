@@ -1,7 +1,7 @@
 //! Built-in coding tools: read, write, edit, bash, grep, find, ls + extended tools.
 //! Uses rayon for parallel search (grok pattern).
 
-mod common;
+pub(crate) mod common;
 mod extended;
 mod fs;
 

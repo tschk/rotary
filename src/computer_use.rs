@@ -29,15 +29,15 @@ pub fn register_tools(registry: &mut ToolRegistry) {
         name: "cu_see".into(),
         description: "Capture UI snapshot (optional app filter, mode, path, retina).".into(),
         parameters_json: r#"{"type":"object","properties":{"app":{"type":"string"},"mode":{"type":"string"},"path":{"type":"string"},"retina":{"type":"boolean"}}}"#.into(),
-        execute: ToolExecutor::Boxed(Box::new(|_ctx, args| Box::pin(exec_see(args)))),
-        effect: ToolEffect::Process,
+        execute: ToolExecutor::Boxed(Box::new(|ctx, args| Box::pin(exec_see(ctx, args)))),
+        effect: ToolEffect::Write,
     });
     registry.register(ToolDefinition {
         name: "cu_image".into(),
         description: "Screenshot screen/window/menu to path.".into(),
         parameters_json: r#"{"type":"object","properties":{"mode":{"type":"string"},"path":{"type":"string"},"retina":{"type":"boolean"},"app":{"type":"string"}}}"#.into(),
-        execute: ToolExecutor::Boxed(Box::new(|_ctx, args| Box::pin(exec_image(args)))),
-        effect: ToolEffect::Process,
+        execute: ToolExecutor::Boxed(Box::new(|ctx, args| Box::pin(exec_image(ctx, args)))),
+        effect: ToolEffect::Write,
     });
     registry.register(ToolDefinition {
         name: "cu_click".into(),
@@ -135,14 +135,19 @@ async fn exec_call(args: String) -> ToolResult {
     dispatch(method, &a)
 }
 
-async fn exec_see(args: String) -> ToolResult {
+async fn exec_see(ctx: std::sync::Arc<crate::agent::ToolContext>, args: String) -> ToolResult {
     let v = parse_args(&args);
     let app = v.get("app").and_then(|a| a.as_str());
     let mode = ImageMode::parse(v.get("mode").and_then(|m| m.as_str()).unwrap_or("screen"));
-    let path = v
-        .get("path")
-        .and_then(|p| p.as_str())
-        .map(std::path::PathBuf::from);
+    let path = if let Some(p) = v.get("path").and_then(|p| p.as_str()) {
+        let resolved = match crate::tools::common::resolve_write_path(&ctx, p) {
+            Ok(r) => r,
+            Err(e) => return ToolResult::err("cu_see", e),
+        };
+        Some(resolved)
+    } else {
+        None
+    };
     let retina = v.get("retina").and_then(|r| r.as_bool()).unwrap_or(true);
     match peekaboo().see(app, mode, path, retina) {
         Ok(snap) => ToolResult::ok(
@@ -154,12 +159,17 @@ async fn exec_see(args: String) -> ToolResult {
     }
 }
 
-async fn exec_image(args: String) -> ToolResult {
+async fn exec_image(ctx: std::sync::Arc<crate::agent::ToolContext>, args: String) -> ToolResult {
     let v = parse_args(&args);
-    let path = v
-        .get("path")
-        .and_then(|p| p.as_str())
-        .map(std::path::PathBuf::from);
+    let path = if let Some(p) = v.get("path").and_then(|p| p.as_str()) {
+        let resolved = match crate::tools::common::resolve_write_path(&ctx, p) {
+            Ok(r) => r,
+            Err(e) => return ToolResult::err("cu_image", e),
+        };
+        Some(resolved)
+    } else {
+        None
+    };
     let retina = v.get("retina").and_then(|r| r.as_bool()).unwrap_or(true);
     if let Some(app) = v.get("app").and_then(|a| a.as_str()) {
         return json_result(

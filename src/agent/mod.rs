@@ -74,6 +74,9 @@ pub struct Agent {
     pub workspace_root: std::path::PathBuf,
     pub sandbox: Option<Arc<crate::sandbox::SandboxManager>>,
     pub os_sandbox: Option<Arc<crate::sandbox::OsSandboxRunner>>,
+    /// True when policy requested OS sandboxing but setup failed. Shell tools
+    /// must refuse execution rather than silently falling through to bare bash.
+    os_sandbox_failed: bool,
     #[cfg(feature = "skills")]
     pub skill_registry: Option<crate::skill_engine::SkillRegistry>,
     #[cfg(feature = "skills")]
@@ -109,6 +112,7 @@ impl Agent {
             workspace_root: std::env::current_dir().unwrap_or_else(|_| ".".into()),
             sandbox: None,
             os_sandbox: None,
+            os_sandbox_failed: false,
             #[cfg(feature = "skills")]
             skill_registry: None,
             #[cfg(feature = "skills")]
@@ -132,9 +136,10 @@ impl Agent {
         // OS sandbox when policy requests it — fail closed (no silent bare bash).
         if agent.policy.enable_os_sandbox {
             if let Err(e) = agent.enable_os_sandbox() {
-                // Keep userspace; mark policy so hosts see isolation is partial.
-                agent.policy.enable_os_sandbox = false;
-                tracing::warn!("OS sandbox unavailable, userspace only: {e}");
+                // Do NOT clear enable_os_sandbox — hosts must see the requested
+                // policy. Track the failure so shell tools refuse execution.
+                agent.os_sandbox_failed = true;
+                tracing::warn!("OS sandbox unavailable — shell tools will be blocked: {e}");
             }
         }
         agent
@@ -155,10 +160,10 @@ impl Agent {
     pub fn set_policy(&mut self, policy: Policy) {
         self.policy = policy;
         self.ensure_userspace_sandbox();
-        if self.policy.enable_os_sandbox && self.os_sandbox.is_none() {
+        if self.policy.enable_os_sandbox && self.os_sandbox.is_none() && !self.os_sandbox_failed {
             if let Err(e) = self.enable_os_sandbox() {
-                self.policy.enable_os_sandbox = false;
-                tracing::warn!("OS sandbox unavailable, userspace only: {e}");
+                self.os_sandbox_failed = true;
+                tracing::warn!("OS sandbox unavailable — shell tools will be blocked: {e}");
             }
         }
         // Custom Authorizer snapshots are NOT auto-refreshed — clear if present.
@@ -173,10 +178,10 @@ impl Agent {
         // Scope changes mode/sandbox only — keep host shell lists / allowlists.
         self.policy.apply_scope(&profile.policy);
         self.ensure_userspace_sandbox();
-        if self.policy.enable_os_sandbox && self.os_sandbox.is_none() {
+        if self.policy.enable_os_sandbox && self.os_sandbox.is_none() && !self.os_sandbox_failed {
             if let Err(e) = self.enable_os_sandbox() {
-                self.policy.enable_os_sandbox = false;
-                tracing::warn!("OS sandbox unavailable, userspace only: {e}");
+                self.os_sandbox_failed = true;
+                tracing::warn!("OS sandbox unavailable — shell tools will be blocked: {e}");
             }
         }
         if self.authorizer.is_some() {
@@ -230,10 +235,11 @@ impl Agent {
         sb.set_allow_network(true);
         self.sandbox = Some(std::sync::Arc::new(sb));
         self.os_sandbox = None;
+        self.os_sandbox_failed = false;
         if self.policy.enable_os_sandbox {
             if let Err(e) = self.enable_os_sandbox() {
-                self.policy.enable_os_sandbox = false;
-                tracing::warn!("OS sandbox unavailable after workspace change: {e}");
+                self.os_sandbox_failed = true;
+                tracing::warn!("OS sandbox unavailable after workspace change — shell tools will be blocked: {e}");
             }
         }
     }
@@ -369,6 +375,7 @@ impl Agent {
 
         let provider = self.provider.clone().ok_or(AgentError::NoProvider)?;
         let mut tool_ctx = ToolContext::new(self.workspace_root.clone());
+        tool_ctx.os_sandbox_required = self.policy.enable_os_sandbox && self.os_sandbox.is_none();
         #[cfg(feature = "ipc")]
         {
             tool_ctx.cancellation = self.turn_cancellation.reset();

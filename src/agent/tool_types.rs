@@ -100,6 +100,9 @@ pub struct ToolContext {
     pub cancellation: CancellationToken,
     pub sandbox: Option<std::sync::Arc<crate::sandbox::SandboxManager>>,
     pub os_sandbox: Option<std::sync::Arc<crate::sandbox::OsSandboxRunner>>,
+    /// When true, policy requested OS sandboxing but the runner was unavailable.
+    /// Shell tools must refuse execution rather than falling through to bare bash.
+    pub os_sandbox_required: bool,
     /// Optional provider so nested tools (e.g. spawn_agent) can run an agent loop.
     pub provider: Option<Arc<dyn Provider>>,
     /// Optional tool registry for nested agent runs.
@@ -119,6 +122,7 @@ impl ToolContext {
             cancellation: CancellationToken::new(false),
             sandbox: None,
             os_sandbox: None,
+            os_sandbox_required: false,
             provider: None,
             tools: None,
             pending_scope: None,

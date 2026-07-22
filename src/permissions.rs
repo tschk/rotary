@@ -392,8 +392,11 @@ pub fn authorize_with_workspace(
             {
                 return Decision::Deny;
             }
-            // Allow: every segment matches some allow pattern (host-owned lists).
+            // Reject auto-allow when command contains syntax the matcher cannot
+            // conservatively understand (command substitution, backticks,
+            // redirections, newlines). Fall through to mode decision / Ask.
             if !policy.shell_allow.is_empty()
+                && !has_unsupported_shell_syntax(&cmd)
                 && shell_command_matches_all(&cmd, &policy.shell_allow)
             {
                 return Decision::Allow;
@@ -449,8 +452,6 @@ pub fn is_read_only_tool(name: &str) -> bool {
             | "find_files"
             | "grep"
             | "code_intel"
-            | "cu_see"
-            | "cu_image"
             | "cu_list"
             | "web_fetch"
             | "enter_plan_mode"
@@ -485,6 +486,76 @@ pub fn command_from_args(arguments: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// Returns true when `command` contains shell syntax that auto-allow rules
+/// cannot conservatively understand: command substitution, backtick expansion,
+/// redirections, or newline-separated commands.  When this returns true,
+/// automatic allow matching must yield Ask/Deny — never Allow.
+/// Returns true when `command` contains shell syntax that auto-allow rules
+/// cannot conservatively understand: command substitution, backtick expansion,
+/// redirections, or newline-separated commands.  When this returns true,
+/// automatic allow matching must yield Ask/Deny -- never Allow.
+/// Returns true when `command` contains shell syntax that auto-allow rules
+/// cannot conservatively understand: command substitution, backtick expansion,
+/// redirections, or newline-separated commands.  When this returns true,
+/// automatic allow matching must yield Ask/Deny -- never Allow.
+pub fn has_unsupported_shell_syntax(command: &str) -> bool {
+    let bytes = command.as_bytes();
+    let len = bytes.len();
+    let mut i = 0;
+    let mut in_single = false;
+    let mut in_double = false;
+    while i < len {
+        let c = bytes[i];
+        if in_single {
+            if c == 0x5c {
+                i += 2;
+                continue;
+            }
+            if c == 0x27 {
+                in_single = false;
+            }
+            i += 1;
+            continue;
+        }
+        if in_double {
+            if c == 0x5c {
+                i += 2;
+                continue;
+            }
+            if c == 0x22 {
+                in_double = false;
+            }
+            if c == 0x24 && i + 1 < len && bytes[i + 1] == 0x28 {
+                return true;
+            }
+            i += 1;
+            continue;
+        }
+        match c {
+            0x5c => {
+                i += 2;
+                continue;
+            }
+            0x27 => {
+                in_single = true;
+                i += 1;
+                continue;
+            }
+            0x22 => {
+                in_double = true;
+                i += 1;
+                continue;
+            }
+            0x24 if i + 1 < len && bytes[i + 1] == 0x28 => return true,
+            0x60 | 0x3e | 0x3c => return true,
+            0x0a | 0x0d => return true,
+            _ => {}
+        }
+        i += 1;
+    }
+    false
 }
 
 /// Glob-ish match: `*` = any substring, case-sensitive on remaining parts.

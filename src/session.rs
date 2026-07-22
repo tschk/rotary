@@ -69,6 +69,9 @@ impl Session {
     }
 
     pub fn save_jsonl(&self, dir: &std::path::Path) -> std::io::Result<PathBuf> {
+        // Validate ID before it becomes a filename.
+        crate::tools::common::validate_identifier(&self.id)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
         std::fs::create_dir_all(dir)?;
         let path = dir.join(format!("{}.jsonl", self.id));
         let mut content = String::new();
@@ -148,6 +151,11 @@ impl Session {
             let ty = v.get("type").and_then(|t| t.as_str()).unwrap_or("");
             if ty == "session_meta" {
                 if let Some(s) = v.get("id").and_then(|x| x.as_str()) {
+                    // Validate imported ID before accepting it.
+                    if let Err(e) = crate::tools::common::validate_identifier(s) {
+                        tracing::warn!("rejecting malicious session id '{s}': {e}");
+                        continue;
+                    }
                     id = s.to_string();
                     session.id = id.clone();
                 }

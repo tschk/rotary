@@ -391,7 +391,8 @@ mod tests {
         };
         let wrapped = runner.wrap_command("cat", &["file.txt"]);
         let ro_bind_count = wrapped.iter().filter(|s| *s == "--ro-bind").count();
-        assert_eq!(ro_bind_count, 3);
+        // 6 system dirs (usr, lib, lib64, bin, sbin, etc) + 2 extra = 8
+        assert_eq!(ro_bind_count, 8);
         assert!(wrapped.contains(&"/opt/data".to_string()));
         assert!(wrapped.contains(&"/usr/local".to_string()));
     }

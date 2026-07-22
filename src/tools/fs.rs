@@ -125,6 +125,14 @@ pub(crate) fn exec_bash(ctx: Arc<ToolContext>, args: String) -> ToolFuture {
         let cwd = parse_str_field(&args, "cwd");
         let timeout_secs = parse_num_field(&args, "timeout").unwrap_or(120);
 
+        // Fail closed: policy requires OS sandbox but runner unavailable.
+        if ctx.os_sandbox_required && ctx.os_sandbox.is_none() {
+            return ToolResult::err(
+                "bash",
+                "OS sandbox required but unavailable — shell execution blocked",
+            );
+        }
+
         if let Some(sb) = ctx.sandbox.as_ref() {
             if let Err(e) = sb.validate_command(&command) {
                 return ToolResult::err("bash", e.to_string());

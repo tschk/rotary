@@ -457,6 +457,10 @@ impl SkillEngine {
     pub fn save(&self) -> Result<(), SkillError> {
         std::fs::create_dir_all(&self.skills_dir)?;
         for skill in self.skills.values() {
+            // Validate ID before it becomes a filename.
+            crate::tools::common::validate_identifier(&skill.id).map_err(|e| {
+                SkillError::Extraction(format!("invalid skill id '{}': {e}", skill.id))
+            })?;
             let path = self.skills_dir.join(format!("{}.json", skill.id));
             let json = serde_json::to_string_pretty(skill)?;
             std::fs::write(path, json)?;
@@ -499,6 +503,15 @@ impl SkillEngine {
                 Some("json") => {
                     let data = std::fs::read_to_string(&path)?;
                     let skill: Skill = serde_json::from_str(&data)?;
+                    // Validate ID from on-disk file before accepting.
+                    if let Err(e) = crate::tools::common::validate_identifier(&skill.id) {
+                        tracing::warn!(
+                            "rejecting skill with invalid id '{}' from {}: {e}",
+                            skill.id,
+                            path.display()
+                        );
+                        continue;
+                    }
                     self.skills.insert(skill.id.clone(), skill);
                 }
                 Some("md") => {
@@ -530,6 +543,9 @@ impl SkillEngine {
             .id
             .take()
             .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        // Validate ID before accepting — prevents path traversal via malicious SKILL.md.
+        crate::tools::common::validate_identifier(&id)
+            .map_err(|e| SkillError::Extraction(format!("invalid skill id '{id}': {e}")))?;
         let now = Utc::now();
         let created_at = fm
             .created_at

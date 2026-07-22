@@ -185,17 +185,38 @@ impl OsSandboxRunner {
             }
             OsSandbox::LinuxBubblewrap => {
                 let workspace = self.config.workspace.display().to_string();
+                // Private-by-default: mount only essential system paths + workspace.
+                // Do NOT bind host root — that would expose all of /home, /root, etc.
                 let mut v: Vec<String> = vec![
                     "bwrap".to_string(),
+                    // Essential runtime directories read-only.
                     "--ro-bind".to_string(),
-                    "/".to_string(),
-                    "/".to_string(),
+                    "/usr".to_string(),
+                    "/usr".to_string(),
+                    "--ro-bind".to_string(),
+                    "/lib".to_string(),
+                    "/lib".to_string(),
+                    "--ro-bind".to_string(),
+                    "/lib64".to_string(),
+                    "/lib64".to_string(),
+                    "--ro-bind".to_string(),
+                    "/bin".to_string(),
+                    "/bin".to_string(),
+                    "--ro-bind".to_string(),
+                    "/sbin".to_string(),
+                    "/sbin".to_string(),
+                    "--ro-bind".to_string(),
+                    "/etc".to_string(),
+                    "/etc".to_string(),
+                    // Device and process filesystems.
                     "--dev".to_string(),
                     "/dev".to_string(),
                     "--proc".to_string(),
                     "/proc".to_string(),
+                    // Temp storage.
                     "--tmpfs".to_string(),
                     "/tmp".to_string(),
+                    // Workspace mounted read-write.
                     "--bind".to_string(),
                     workspace.clone(),
                     workspace,
