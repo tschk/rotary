@@ -1038,6 +1038,26 @@ mod tests {
         assert_eq!(result.id, "call_xyz");
         assert_eq!(result.content, "ok");
     }
+
+    // === Security regression tests ===
+
+    #[tokio::test]
+    async fn h1_os_sandbox_required_flag_blocks_bash() {
+        // When policy requires OS sandbox but runner is absent, bash must be blocked.
+        let mut agent = Agent::new();
+        agent.set_policy(Policy::workspace_write()); // enable_os_sandbox = true
+                                                     // Simulate failed sandbox setup.
+        agent.os_sandbox_failed = true;
+        let ctx = std::sync::Arc::new({
+            let mut tc = ToolContext::new(agent.workspace_root.clone());
+            tc.os_sandbox_required = true;
+            tc
+        });
+        let result = crate::tools::fs::exec_bash(ctx, r#"{"command":"echo hi"}"#.to_string());
+        let result = result.await;
+        assert!(result.is_error);
+        assert!(result.content.contains("OS sandbox required"));
+    }
 }
 
 impl Default for Agent {

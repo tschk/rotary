@@ -507,4 +507,25 @@ mod tests {
         assert!(contents.contains("(version 1)"));
         let _ = std::fs::remove_file(&path);
     }
+
+    // === Security regression tests ===
+
+    #[test]
+    fn h5_bubblewrap_no_host_root_bind() {
+        // The Linux profile must NOT bind host root — that would expose
+        // /home, /root, /etc/ssh, etc.
+        let config = OsSandboxConfig::new(OsSandbox::LinuxBubblewrap, workspace());
+        let runner = OsSandboxRunner {
+            config,
+            profile_path: None,
+        };
+        let wrapped = runner.wrap_command("ls", &["-la"]);
+        // No single --ro-bind / / entry.
+        let has_root_bind = wrapped
+            .windows(3)
+            .any(|w| w[0] == "--ro-bind" && w[1] == "/" && w[2] == "/");
+        assert!(!has_root_bind, "bubblewrap must not bind host root");
+        // Workspace must be present.
+        assert!(wrapped.contains(&"--bind".to_string()));
+    }
 }

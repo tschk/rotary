@@ -1197,4 +1197,61 @@ mod tests {
         drop(rx2);
         assert_eq!(approver2.approve(&call), Decision::Deny);
     }
+
+    // === Security regression tests ===
+
+    #[test]
+    fn h3_unsupported_syntax_blocks_auto_allow() {
+        // Commands with command substitution must not auto-allow.
+        let p = Policy::workspace_write().with_shell_allow(["git *", "echo *", "cargo *"]);
+        // Simple allowed command.
+        assert_eq!(
+            authorize(&p, "bash", r#"{"command":"git status"}"#, None),
+            Decision::Allow
+        );
+        // Command substitution — must NOT auto-allow.
+        assert_ne!(
+            authorize(&p, "bash", r#"{"command":"echo $(cat /etc/passwd)"}"#, None),
+            Decision::Allow
+        );
+        // Backtick — must NOT auto-allow.
+        assert_ne!(
+            authorize(&p, "bash", r#"{"command":"echo `whoami`"}"#, None),
+            Decision::Allow
+        );
+        // Redirection — must NOT auto-allow.
+        assert_ne!(
+            authorize(&p, "bash", r#"{"command":"echo hi > /tmp/x"}"#, None),
+            Decision::Allow
+        );
+    }
+
+    #[test]
+    fn h3_quoted_literal_not_affected() {
+        // A quoted single-quote or dollar-sign inside quotes is not syntax.
+        assert!(!has_unsupported_shell_syntax(r#"echo 'hello world'"#));
+        assert!(!has_unsupported_shell_syntax(r#"echo \"$HOME\""#));
+    }
+
+    #[test]
+    fn h3_backtick_triggers_unsupported() {
+        assert!(has_unsupported_shell_syntax("echo `whoami`"));
+    }
+
+    #[test]
+    fn h3_newline_triggers_unsupported() {
+        assert!(has_unsupported_shell_syntax("echo hi\necho bye"));
+    }
+
+    #[test]
+    fn h3_redirection_triggers_unsupported() {
+        assert!(has_unsupported_shell_syntax("echo hi > /tmp/x"));
+        assert!(has_unsupported_shell_syntax("cat < /etc/passwd"));
+    }
+
+    #[test]
+    fn h2_cu_see_not_read_only() {
+        assert!(!is_read_only_tool("cu_see"));
+        assert!(!is_read_only_tool("cu_image"));
+    }
 }

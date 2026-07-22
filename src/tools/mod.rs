@@ -3,7 +3,7 @@
 
 pub(crate) mod common;
 mod extended;
-mod fs;
+pub(crate) mod fs;
 
 use crate::agent::{ToolDefinition, ToolEffect, ToolRegistry, ToolResult};
 use crate::subagent::{SubagentConfig, SubagentManager};
