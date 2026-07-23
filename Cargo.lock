@@ -2252,6 +2252,7 @@ dependencies = [
  "tokio-test",
  "tracing",
  "uuid",
+ "zkr",
 ]
 
 [[package]]
@@ -3485,6 +3486,17 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "zkr"
+version = "0.3.1"
+dependencies = [
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.19",
 ]
 
 [[package]]

@@ -52,6 +52,8 @@ pub mod sandbox;
 #[cfg(feature = "fff")]
 pub mod search;
 pub mod secrets;
+#[cfg(feature = "zkr-memory")]
+pub mod self_improve;
 pub mod session;
 #[cfg(feature = "skills")]
 pub mod skill_curator;

@@ -131,6 +131,8 @@ pub struct Agent {
     /// When true and graph_memory is set, run one dream consolidation after each prompt.
     #[cfg(feature = "graph-memory")]
     pub auto_dream: bool,
+    #[cfg(feature = "zkr-memory")]
+    pub self_improve: Option<crate::self_improve::SelfImprove>,
     #[cfg(feature = "ipc")]
     turn_cancellation: CancellationHandle,
     subscribers: Vec<Subscriber>,
@@ -170,6 +172,8 @@ impl Agent {
             graph_memory: None,
             #[cfg(feature = "graph-memory")]
             auto_dream: false,
+            #[cfg(feature = "zkr-memory")]
+            self_improve: None,
             #[cfg(feature = "ipc")]
             turn_cancellation: CancellationHandle::new(),
             subscribers: Vec::new(),
@@ -295,6 +299,12 @@ impl Agent {
                 tracing::warn!("OS sandbox unavailable after workspace change — shell tools will be blocked: {e}");
             }
         }
+    }
+
+    /// Attach a `zkr`-backed self-improvement loop.
+    #[cfg(feature = "zkr-memory")]
+    pub fn set_self_improve(&mut self, improve: crate::self_improve::SelfImprove) {
+        self.self_improve = Some(improve);
     }
 
     #[cfg(feature = "ipc")]
@@ -468,6 +478,8 @@ impl Agent {
         tool_ctx.pending_scope = Some(Arc::clone(&pending_scope));
         let ctx = Arc::new(tool_ctx);
 
+        #[cfg(feature = "zkr-memory")]
+        let mut tool_error_seen = false;
         for iteration in 0..self.max_tool_iterations {
             if let Some(reason) = self.check_budget() {
                 self.emit(Event::BudgetExceeded {
@@ -478,6 +490,20 @@ impl Agent {
             self.emit(Event::TurnStart { turn: iteration });
 
             let messages: Vec<Message> = self.messages.read().clone();
+            #[cfg(feature = "zkr-memory")]
+            let system = if let Some(improve) = &self.self_improve {
+                let base = self.system_prompt.as_deref().unwrap_or("");
+                match improve.augment(text, base).await {
+                    Ok(augmented) => Some(augmented),
+                    Err(error) => {
+                        warn!("self-improve augmentation failed: {error}");
+                        self.system_prompt.clone()
+                    }
+                }
+            } else {
+                self.system_prompt.clone()
+            };
+            #[cfg(not(feature = "zkr-memory"))]
             let system = self.system_prompt.clone();
 
             #[allow(unused_mut)]
@@ -607,11 +633,32 @@ impl Agent {
 
             if tool_calls.is_empty() {
                 self.emit(Event::TurnEnd { turn: iteration });
+
+                #[cfg(feature = "zkr-memory")]
+                if let Some(improve) = &self.self_improve {
+                    let outcome = if tool_error_seen { "error" } else { "success" };
+                    let lesson = if tool_error_seen {
+                        "avoid repeating the failing tool"
+                    } else {
+                        "continue the current strategy"
+                    };
+                    if let Err(error) = improve
+                        .record(text, &assistant_content, outcome, lesson)
+                        .await
+                    {
+                        warn!("self-improve reflection failed: {error}");
+                    }
+                }
+
                 break;
             }
 
             let results = self.execute_tools_parallel(&tool_calls, &ctx).await;
             for result in &results {
+                #[cfg(feature = "zkr-memory")]
+                {
+                    tool_error_seen |= result.is_error;
+                }
                 self.messages
                     .write()
                     .push(Message::tool(&result.id, &result.content));

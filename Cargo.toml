@@ -29,6 +29,7 @@ memory = ["dep:rusqlite"]
 mcp = ["tokio/process", "tokio/io-util", "tokio/sync", "dep:reqwest", "reqwest/json", "reqwest/rustls-tls", "dep:futures"]
 sqlite-sessions = ["dep:rusqlite"]
 graph-memory = []
+zkr-memory = ["dep:zkr"]
 skills = ["dep:serde_yaml", "dep:dirs"]
 fff = ["dep:fff-search"]
 
@@ -62,6 +63,7 @@ rs_peekaboo = { version = "0.3.2", optional = true }
 
 # Optional — memory / sqlite-sessions
 rusqlite = { version = "0.37", features = ["bundled"], optional = true }
+zkr = { version = "0.3.1", path = "../zkr", optional = true }
 
 # Skill frontmatter parsing (skill_engine) and home-dir resolution.
 serde_yaml = { version = "0.9", optional = true }
