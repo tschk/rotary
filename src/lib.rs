@@ -41,6 +41,8 @@ pub mod mode;
 pub mod model_router;
 pub mod multiagent;
 pub mod permissions;
+#[cfg(feature = "personality")]
+pub mod personality;
 pub mod plugin;
 pub mod prompt_cache;
 pub mod provider;
@@ -174,6 +176,12 @@ pub use subagent::{
 };
 pub use tools::{register_builtin_tools, register_spawn_agent_tool};
 pub use work_pack::{WorkPack, WorkPackError};
+
+#[cfg(feature = "personality")]
+pub use personality::{
+    ConversationEvent, MindHypothesis, ObservationFinding, ObservationSeverity, PersonaBlueprint,
+    Personality, SocialSignal, TurnAction, TurnDecision, VoiceCard,
+};
 
 #[cfg(feature = "mcp")]
 pub use mcp::{McpClient, McpError, McpRegistry, McpResourceInfo, McpToolInfo};

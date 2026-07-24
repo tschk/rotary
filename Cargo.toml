@@ -30,6 +30,7 @@ mcp = ["tokio/process", "tokio/io-util", "tokio/sync", "dep:reqwest", "reqwest/j
 sqlite-sessions = ["dep:rusqlite"]
 graph-memory = []
 zkr-memory = ["dep:zkr"]
+personality = ["zkr-memory"]
 skills = ["dep:serde_yaml", "dep:dirs"]
 fff = ["dep:fff-search"]
 

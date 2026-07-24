@@ -133,6 +133,8 @@ pub struct Agent {
     pub auto_dream: bool,
     #[cfg(feature = "zkr-memory")]
     pub self_improve: Option<crate::self_improve::SelfImprove>,
+    #[cfg(feature = "personality")]
+    pub personality: Option<crate::personality::Personality>,
     #[cfg(feature = "ipc")]
     turn_cancellation: CancellationHandle,
     subscribers: Vec<Subscriber>,
@@ -174,6 +176,8 @@ impl Agent {
             auto_dream: false,
             #[cfg(feature = "zkr-memory")]
             self_improve: None,
+            #[cfg(feature = "personality")]
+            personality: None,
             #[cfg(feature = "ipc")]
             turn_cancellation: CancellationHandle::new(),
             subscribers: Vec::new(),
@@ -305,6 +309,12 @@ impl Agent {
     #[cfg(feature = "zkr-memory")]
     pub fn set_self_improve(&mut self, improve: crate::self_improve::SelfImprove) {
         self.self_improve = Some(improve);
+    }
+
+    /// Attach a `zkr`-backed personality behavioral runtime.
+    #[cfg(feature = "personality")]
+    pub fn set_personality(&mut self, personality: crate::personality::Personality) {
+        self.personality = Some(personality);
     }
 
     #[cfg(feature = "ipc")]
@@ -506,6 +516,21 @@ impl Agent {
             #[cfg(not(feature = "zkr-memory"))]
             let system = self.system_prompt.clone();
 
+            // Personality augmentation chains after self-improve (or base prompt).
+            #[cfg(feature = "personality")]
+            let system = if let Some(pers) = &self.personality {
+                let base = system.as_deref().unwrap_or("");
+                match pers.augment(text, base).await {
+                    Ok(augmented) => Some(augmented),
+                    Err(error) => {
+                        warn!("personality augmentation failed: {error}");
+                        system
+                    }
+                }
+            } else {
+                system
+            };
+
             #[allow(unused_mut)]
             let mut tool_calls: Vec<ToolCall> = Vec::new();
             #[allow(unused_assignments)]
@@ -647,6 +672,35 @@ impl Agent {
                         .await
                     {
                         warn!("self-improve reflection failed: {error}");
+                    }
+                }
+
+                #[cfg(feature = "personality")]
+                if let Some(pers) = &self.personality {
+                    let action = if tool_error_seen {
+                        crate::personality::TurnAction::StaySilent
+                    } else {
+                        crate::personality::TurnAction::Speak
+                    };
+                    let decision = crate::personality::TurnDecision {
+                        epoch: iteration as u64,
+                        action,
+                        strategy: "agent_loop".to_string(),
+                        addressee: None,
+                        confidence_basis_points: if tool_error_seen { 3000 } else { 8000 },
+                        rationale: assistant_content.chars().take(200).collect(),
+                    };
+                    if let Err(error) = pers.record_turn(&decision).await {
+                        warn!("personality turn recording failed: {error}");
+                    }
+                    let event = crate::personality::ConversationEvent {
+                        epoch: iteration as u64,
+                        participant: "user".to_string(),
+                        event_kind: "message".to_string(),
+                        content: text.chars().take(500).collect(),
+                    };
+                    if let Err(error) = pers.record_event(&event).await {
+                        warn!("personality event recording failed: {error}");
                     }
                 }
 
