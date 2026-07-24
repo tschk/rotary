@@ -1,6 +1,6 @@
 [package]
 name = "rx4"
-version = "0.3.25"
+version = "0.4.0"
 edition = "2021"
 rust-version = "1.88"
 license = "MPL-2.0"
@@ -64,7 +64,7 @@ rs_peekaboo = { version = "0.3.2", optional = true }
 
 # Optional — memory / sqlite-sessions
 rusqlite = { version = "0.37", features = ["bundled"], optional = true }
-zkr = { version = "0.3.1", path = "../zkr", optional = true }
+zkr = { version = "0.4.0", path = "../zkr", optional = true }
 
 # Skill frontmatter parsing (skill_engine) and home-dir resolution.
 serde_yaml = { version = "0.9", optional = true }
