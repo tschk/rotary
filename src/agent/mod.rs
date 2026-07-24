@@ -469,6 +469,34 @@ impl Agent {
         self.emit(Event::AgentStart);
         self.budget_start = Some(Instant::now());
 
+        // Route the incoming user event through the personality turn router.
+        // This evaluates hard rules (mentions, commands, rate limits, consecutive
+        // turns) + learned policy, records the decision, and derives social
+        // signals — all automatically before the first turn.
+        #[cfg(feature = "personality")]
+        if let Some(pers) = &self.personality {
+            let event = crate::personality::ConversationEvent {
+                epoch: 0,
+                participant: "user".to_string(),
+                event_kind: "message".to_string(),
+                content: text.chars().take(500).collect(),
+            };
+            match pers.route_event(&event).await {
+                Ok(result) => {
+                    debug!(
+                        "personality router: {:?} via {} (confidence {}bps) — {}",
+                        result.decision.action,
+                        result.decision.strategy,
+                        result.decision.confidence_basis_points,
+                        result.decision.rationale
+                    );
+                }
+                Err(error) => {
+                    warn!("personality routing failed: {error}");
+                }
+            }
+        }
+
         let provider = self.provider.clone().ok_or(AgentError::NoProvider)?;
         let mut tool_ctx = ToolContext::new(self.workspace_root.clone());
         tool_ctx.os_sandbox_required = self.policy.enable_os_sandbox && self.os_sandbox.is_none();
@@ -677,30 +705,61 @@ impl Agent {
 
                 #[cfg(feature = "personality")]
                 if let Some(pers) = &self.personality {
-                    let action = if tool_error_seen {
-                        crate::personality::TurnAction::StaySilent
-                    } else {
-                        crate::personality::TurnAction::Speak
+                    let epoch = (iteration + 1) as u64;
+
+                    // Record the assistant's response as a conversation event.
+                    // Signals are derived automatically inside record_event.
+                    let assistant_event = crate::personality::ConversationEvent {
+                        epoch,
+                        participant: "agent".to_string(),
+                        event_kind: if tool_error_seen { "error" } else { "message" }.to_string(),
+                        content: assistant_content.chars().take(500).collect(),
                     };
-                    let decision = crate::personality::TurnDecision {
-                        epoch: iteration as u64,
-                        action,
-                        strategy: "agent_loop".to_string(),
-                        addressee: None,
-                        confidence_basis_points: if tool_error_seen { 3000 } else { 8000 },
-                        rationale: assistant_content.chars().take(200).collect(),
-                    };
-                    if let Err(error) = pers.record_turn(&decision).await {
-                        warn!("personality turn recording failed: {error}");
+                    if let Err(error) = pers.record_event(&assistant_event).await {
+                        warn!("personality assistant event recording failed: {error}");
                     }
-                    let event = crate::personality::ConversationEvent {
-                        epoch: iteration as u64,
+
+                    // Assess risk of the candidate reply toward the user.
+                    let risk = pers.assess_risk("user", &assistant_content).await;
+                    if risk.recommendation == crate::personality::RiskRecommendation::Abort {
+                        warn!(
+                            "personality risk assessment: ABORT (overall {}bps) — {:?}",
+                            risk.overall_risk_basis_points, risk
+                        );
+                    } else if risk.recommendation == crate::personality::RiskRecommendation::Refine
+                    {
+                        debug!(
+                            "personality risk assessment: REFINE (overall {}bps)",
+                            risk.overall_risk_basis_points
+                        );
+                    }
+
+                    // Record a ToM hypothesis about the user based on this turn.
+                    let hyp = crate::personality::MindHypothesis {
                         participant: "user".to_string(),
-                        event_kind: "message".to_string(),
-                        content: text.chars().take(500).collect(),
+                        belief: format!(
+                            "user sent: {}",
+                            text.chars().take(100).collect::<String>()
+                        ),
+                        emotion: if tool_error_seen {
+                            Some("frustrated".into())
+                        } else {
+                            None
+                        },
+                        goal: None,
+                        predicted_reaction: Some(
+                            if tool_error_seen {
+                                "likely frustrated by errors"
+                            } else {
+                                "likely satisfied with response"
+                            }
+                            .into(),
+                        ),
+                        confidence_basis_points: if tool_error_seen { 4000 } else { 7000 },
+                        valid_until: None,
                     };
-                    if let Err(error) = pers.record_event(&event).await {
-                        warn!("personality event recording failed: {error}");
+                    if let Err(error) = pers.record_hypothesis(&hyp).await {
+                        warn!("personality ToM recording failed: {error}");
                     }
                 }
 
@@ -722,6 +781,36 @@ impl Agent {
             }
 
             self.emit(Event::TurnEnd { turn: iteration });
+        }
+
+        // Personality observability: analyze the conversation window after the
+        // prompt completes. Computes participation balance, error rate, and
+        // generates evidence-cited findings with recommendations.
+        #[cfg(feature = "personality")]
+        if let Some(pers) = &self.personality {
+            let scope = format!(
+                "prompt-{}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos()
+            );
+            match pers.analyze_conversation(&scope).await {
+                Ok(health) => {
+                    if !health.findings.is_empty() {
+                        info!(
+                            "personality observability: {} findings for {} (balance={:.2}, error_rate={:.2})",
+                            health.findings.len(),
+                            health.scope,
+                            health.participation_balance,
+                            health.error_rate
+                        );
+                    }
+                }
+                Err(error) => {
+                    warn!("personality observability analysis failed: {error}");
+                }
+            }
         }
 
         #[cfg(feature = "graph-memory")]

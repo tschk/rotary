@@ -179,8 +179,10 @@ pub use work_pack::{WorkPack, WorkPackError};
 
 #[cfg(feature = "personality")]
 pub use personality::{
-    ConversationEvent, MindHypothesis, ObservationFinding, ObservationSeverity, PersonaBlueprint,
-    Personality, SocialSignal, TurnAction, TurnDecision, VoiceCard,
+    CalibrationRecord, ConversationEvent, ConversationHealth, MindHypothesis, ObservationFinding,
+    ObservationSeverity, PersonaBlueprint, PersonaValidation, Personality, RiskAssessment,
+    RiskRecommendation, RouterResult, RouterRules, SignalSummary, SocialSignal, TurnAction,
+    TurnDecision, VoiceCard,
 };
 
 #[cfg(feature = "mcp")]
