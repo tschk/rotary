@@ -561,12 +561,13 @@ impl Agent {
 
             #[allow(unused_mut)]
             let mut tool_calls: Vec<ToolCall> = Vec::new();
-            #[allow(unused_assignments)]
-            let mut assistant_content = String::new();
 
             self.emit(Event::MessageStart {
                 role: Role::Assistant,
             });
+
+            #[cfg(feature = "providers")]
+            let mut assistant_content = String::new();
 
             #[cfg(feature = "providers")]
             {
@@ -647,12 +648,10 @@ impl Agent {
             }
 
             #[cfg(not(feature = "providers"))]
-            {
+            let assistant_content = {
                 let _ = (&provider, &messages, &system);
-                assistant_content =
-                    "[providers feature not enabled — enable with --features providers]"
-                        .to_string();
-            }
+                "[providers feature not enabled — enable with --features providers]".to_string()
+            };
 
             self.emit(Event::MessageEnd {
                 role: Role::Assistant,
