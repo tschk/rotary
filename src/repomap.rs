@@ -518,16 +518,42 @@ fn extract_generic(content: &str) -> Vec<SymbolDef> {
     out
 }
 
+fn is_word_char(c: char) -> bool {
+    c.is_alphanumeric() || c == '_'
+}
+
 fn contains_word(content: &str, word: &str) -> bool {
     if word.is_empty() {
         return false;
     }
     #[cfg(feature = "builtin-tools")]
     {
-        if let Ok(re) = regex::Regex::new(&format!(r"\b{}\b", regex::escape(word))) {
-            return re.is_match(content);
+        let mut start = 0;
+        while let Some(idx) = content[start..].find(word) {
+            let i = start + idx;
+
+            let left_ok = if i == 0 {
+                true
+            } else {
+                let prev_char = content[..i].chars().next_back().unwrap();
+                !is_word_char(prev_char)
+            };
+
+            let right_ok = if i + word.len() == content.len() {
+                true
+            } else {
+                let next_char = content[i + word.len()..].chars().next().unwrap();
+                !is_word_char(next_char)
+            };
+
+            if left_ok && right_ok {
+                return true;
+            }
+            start = i + word.chars().next().unwrap().len_utf8();
         }
+        return false;
     }
+    #[allow(unreachable_code)]
     contains_word_naive(content, word)
 }
 
