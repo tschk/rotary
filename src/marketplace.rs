@@ -880,6 +880,13 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "providers")]
+    fn test_fetch_error_on_invalid_url() {
+        let err = MarketplaceIndex::fetch("http://127.0.0.1:0/index.json").unwrap_err();
+        assert!(matches!(err, MarketplaceError::Fetch(_)));
+    }
+
+    #[test]
     fn test_install_aborts_on_mismatch() {
         let tmp = TempDir::new().unwrap();
         let install_dir = tmp.path().join("plugins");
