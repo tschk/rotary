@@ -976,7 +976,10 @@ mod tests {
         let result = McpClient::connect_stdio("node", &["-v"]).await;
         match result {
             Err(McpError::Spawn(e)) => {
-                assert!(!e.contains("not in the allowlist"), "Expected node to be allowed");
+                assert!(
+                    !e.contains("not in the allowlist"),
+                    "Expected node to be allowed"
+                );
             }
             _ => {} // Ok or other errors are fine
         }
@@ -987,7 +990,10 @@ mod tests {
         let result = McpClient::connect_stdio("bash", &["-c", "echo hello"]).await;
         match result {
             Err(McpError::Spawn(e)) => {
-                assert!(e.contains("not in the allowlist"), "Expected bash to be disallowed");
+                assert!(
+                    e.contains("not in the allowlist"),
+                    "Expected bash to be disallowed"
+                );
             }
             other => panic!("Expected Spawn error, got {:?}", other.err()),
         }
@@ -998,7 +1004,10 @@ mod tests {
         let result = McpClient::connect_stdio("/bin/bash", &["-c", "echo hello"]).await;
         match result {
             Err(McpError::Spawn(e)) => {
-                assert!(e.contains("not in the allowlist"), "Expected /bin/bash to be disallowed");
+                assert!(
+                    e.contains("not in the allowlist"),
+                    "Expected /bin/bash to be disallowed"
+                );
             }
             other => panic!("Expected Spawn error, got {:?}", other.err()),
         }
@@ -1009,7 +1018,10 @@ mod tests {
         let result = McpClient::connect_stdio("/usr/local/bin/node", &["-v"]).await;
         match result {
             Err(McpError::Spawn(e)) => {
-                assert!(!e.contains("not in the allowlist"), "Expected /usr/local/bin/node to be allowed");
+                assert!(
+                    !e.contains("not in the allowlist"),
+                    "Expected /usr/local/bin/node to be allowed"
+                );
             }
             _ => {} // Ok or other errors are fine
         }
