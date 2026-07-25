@@ -8,6 +8,21 @@ use std::path::PathBuf;
 /// Rejects files larger than this to prevent unbounded memory allocation on import.
 const MAX_SESSION_FILE_BYTES: u64 = 10 * 1024 * 1024;
 
+#[cfg(unix)]
+fn write_secure(path: &std::path::Path, contents: impl AsRef<[u8]>) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true).mode(0o600);
+    let mut file = options.open(path)?;
+    file.write_all(contents.as_ref())
+}
+
+#[cfg(not(unix))]
+fn write_secure(path: &std::path::Path, contents: impl AsRef<[u8]>) -> std::io::Result<()> {
+    std::fs::write(path, contents)
+}
+
 /// Check file size before reading. Returns error if file exceeds limit.
 fn check_file_size(path: &std::path::Path) -> std::io::Result<()> {
     let meta = std::fs::metadata(path)?;
@@ -98,7 +113,7 @@ impl Session {
             content.push_str(&serde_json::to_string(entry).unwrap());
             content.push('\n');
         }
-        std::fs::write(&path, content)?;
+        write_secure(&path, content)?;
         Ok(path)
     }
 
@@ -147,7 +162,7 @@ impl Session {
             out.push_str(&line.to_string());
             out.push('\n');
         }
-        std::fs::write(path, out)
+        write_secure(path, out)
     }
 
     /// Import from Codex/rollout-friendly JSONL produced by [`Self::export_codex_jsonl`]
