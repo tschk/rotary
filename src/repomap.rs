@@ -206,11 +206,12 @@ impl RepoMap {
                 Some(c) => c,
                 None => continue,
             };
+            let words = get_file_words(content);
             for (name, targets) in &symbol_to_files {
                 if targets.len() == 1 && targets.contains(&i) {
                     continue;
                 }
-                if contains_word(content, name) {
+                if words.contains(name.as_str()) {
                     for &t in targets {
                         if t != i {
                             adj[i].insert(t);
@@ -254,11 +255,12 @@ impl RepoMap {
                 Ok(c) => c,
                 Err(_) => continue,
             };
+            let words = get_file_words(&content);
             for sym in symbols {
                 if name_to_files.get(&sym.name).map(|s| s.len()).unwrap_or(0) <= 1 {
                     continue;
                 }
-                if contains_word(&content, &sym.name) {
+                if words.contains(sym.name.as_str()) {
                     *counts.entry(sym.name.clone()).or_insert(0) += 1;
                 }
             }
@@ -518,38 +520,25 @@ fn extract_generic(content: &str) -> Vec<SymbolDef> {
     out
 }
 
-fn contains_word(content: &str, word: &str) -> bool {
-    if word.is_empty() {
-        return false;
-    }
-    #[cfg(feature = "builtin-tools")]
-    {
-        if let Ok(re) = regex::Regex::new(&format!(r"\b{}\b", regex::escape(word))) {
-            return re.is_match(content);
-        }
-    }
-    contains_word_naive(content, word)
-}
+fn get_file_words(content: &str) -> HashSet<&str> {
+    let mut words = HashSet::new();
+    let mut start = None;
 
-fn contains_word_naive(content: &str, word: &str) -> bool {
-    let bytes = content.as_bytes();
-    let w = word.as_bytes();
-    if w.is_empty() || bytes.len() < w.len() {
-        return false;
-    }
-    let is_boundary = |b: u8| !((b as char).is_alphanumeric() || b == b'_');
-    let mut i = 0;
-    while i + w.len() <= bytes.len() {
-        if &bytes[i..i + w.len()] == w {
-            let left_ok = i == 0 || is_boundary(bytes[i - 1]);
-            let right_ok = i + w.len() == bytes.len() || is_boundary(bytes[i + w.len()]);
-            if left_ok && right_ok {
-                return true;
+    for (i, c) in content.char_indices() {
+        let is_alnum = c.is_alphanumeric() || c == '_';
+        if is_alnum {
+            if start.is_none() {
+                start = Some(i);
             }
+        } else if let Some(s) = start {
+            words.insert(&content[s..i]);
+            start = None;
         }
-        i += 1;
     }
-    false
+    if let Some(s) = start {
+        words.insert(&content[s..]);
+    }
+    words
 }
 
 fn pagerank(adj: &[Vec<usize>]) -> Vec<f64> {
@@ -776,9 +765,18 @@ type Server struct {}
     }
 
     #[test]
-    fn contains_word_matches_identifiers() {
-        assert!(contains_word_naive("foo bar baz", "bar"));
-        assert!(!contains_word_naive("foobar baz", "bar"));
-        assert!(contains_word("fn main() {}", "main"));
+    fn get_file_words_matches_identifiers() {
+        let words = get_file_words("foo bar baz");
+        assert!(words.contains("bar"));
+        assert!(words.contains("foo"));
+        assert!(words.contains("baz"));
+
+        let words2 = get_file_words("foobar baz");
+        assert!(!words2.contains("bar"));
+        assert!(words2.contains("foobar"));
+
+        let words3 = get_file_words("fn main() {}");
+        assert!(words3.contains("main"));
+        assert!(words3.contains("fn"));
     }
 }
