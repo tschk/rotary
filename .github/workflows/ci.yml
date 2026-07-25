@@ -18,6 +18,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - run: git clone https://github.com/tschk/zkr ../zkr
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo fmt --check
       - run: cargo clippy --all-targets --all-features -- -D warnings
@@ -28,6 +29,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - run: git clone https://github.com/tschk/zkr ../zkr
       - uses: dtolnay/rust-toolchain@1.88
       # fff-search -> neo_frizbee needs nightly AVX512; verify core compiles without it.
       - run: cargo build --no-default-features --features ipc
