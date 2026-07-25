@@ -455,3 +455,39 @@ fn dispatch(method: &str, args: &Value) -> ToolResult {
     };
     json_result(result)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent::ToolRegistry;
+
+    #[test]
+    fn test_register_tools() {
+        let mut registry = ToolRegistry::new();
+        register_tools(&mut registry);
+
+        assert_eq!(registry.count(), 13);
+
+        let expected_tools = vec![
+            "cu_call",
+            "cu_see",
+            "cu_image",
+            "cu_click",
+            "cu_type",
+            "cu_hotkey",
+            "cu_scroll",
+            "cu_window",
+            "cu_app",
+            "cu_list",
+            "cu_open",
+            "cu_clipboard",
+            "cu_doctor",
+        ];
+
+        let definitions = registry.definitions();
+        for expected in expected_tools {
+            let found = definitions.iter().any(|d| d["name"].as_str() == Some(expected));
+            assert!(found, "Tool {} not registered", expected);
+        }
+    }
+}
