@@ -2,7 +2,8 @@ use super::common::{parse_num_field, parse_str_field};
 use crate::agent::{ToolContext, ToolFuture, ToolResult};
 use crate::mode::Scope;
 use crate::subagent::{SubagentConfig, SubagentManager};
-use dashmap::DashMap;
+use parking_lot::Mutex;
+use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
 
 /// Validate a URL for web_fetch: reject loopback, link-local, private IPs,
@@ -67,9 +68,9 @@ struct TodoItem {
     status: String,
 }
 
-fn todo_store() -> &'static DashMap<String, Vec<TodoItem>> {
-    static STORE: OnceLock<DashMap<String, Vec<TodoItem>>> = OnceLock::new();
-    STORE.get_or_init(DashMap::new)
+fn todo_store() -> &'static Mutex<HashMap<String, Vec<TodoItem>>> {
+    static STORE: OnceLock<Mutex<HashMap<String, Vec<TodoItem>>>> = OnceLock::new();
+    STORE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 fn workspace_key(ctx: &ToolContext) -> String {
@@ -151,18 +152,18 @@ pub(crate) fn exec_todo(ctx: Arc<ToolContext>, args: String) -> ToolFuture {
 
         match action {
             "list" => {
-                let items = store.get(&key).map(|e| e.clone()).unwrap_or_default();
+                let items = store.lock().get(&key).cloned().unwrap_or_default();
                 ToolResult::ok(
                     "todo",
                     serde_json::to_string_pretty(&items).unwrap_or_else(|_| "[]".into()),
                 )
             }
             "clear" => {
-                store.insert(key, Vec::new());
+                store.lock().insert(key, Vec::new());
                 ToolResult::ok("todo", "[]")
             }
             "add" => {
-                let mut items = store.get(&key).map(|e| e.clone()).unwrap_or_default();
+                let mut items = store.lock().get(&key).cloned().unwrap_or_default();
                 let incoming = v
                     .get("items")
                     .and_then(|i| i.as_array())
@@ -197,11 +198,11 @@ pub(crate) fn exec_todo(ctx: Arc<ToolContext>, args: String) -> ToolFuture {
                     });
                 }
                 let out = serde_json::to_string_pretty(&items).unwrap_or_else(|_| "[]".into());
-                store.insert(key, items);
+                store.lock().insert(key, items);
                 ToolResult::ok("todo", out)
             }
             "update" | "complete" => {
-                let mut items = store.get(&key).map(|e| e.clone()).unwrap_or_default();
+                let mut items = store.lock().get(&key).cloned().unwrap_or_default();
                 let incoming = v
                     .get("items")
                     .and_then(|i| i.as_array())
@@ -236,7 +237,7 @@ pub(crate) fn exec_todo(ctx: Arc<ToolContext>, args: String) -> ToolFuture {
                     }
                 }
                 let out = serde_json::to_string_pretty(&items).unwrap_or_else(|_| "[]".into());
-                store.insert(key, items);
+                store.lock().insert(key, items);
                 ToolResult::ok("todo", out)
             }
             other => ToolResult::err("todo", format!("unknown action: {other}")),
