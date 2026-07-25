@@ -289,3 +289,26 @@ fn error_response(id: Option<Value>, code: i32, message: &str) -> String {
     })
     .to_string()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent::Agent;
+
+    #[tokio::test]
+    async fn test_attach_agent() {
+        let server = IpcServer::new("/tmp/test_ipc_socket");
+        let mut new_agent = Agent::new();
+        new_agent.model = "test-model-abc".to_string();
+
+        server.attach_agent(new_agent);
+
+        // Yield to let the spawned task execute
+        tokio::task::yield_now().await;
+        // Just in case it needs a tiny bit of time
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+
+        let agent_lock = server.agent.lock().await;
+        assert_eq!(agent_lock.model, "test-model-abc");
+    }
+}
