@@ -155,7 +155,6 @@ fn builtin_models() -> &'static [ModelInfo] {
     })
 }
 
-
 fn builtin_compat() -> Vec<(&'static str, CompatConfig)> {
     vec![
         (
