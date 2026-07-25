@@ -2,15 +2,26 @@
 
 use crate::provider::{Message, Role};
 use serde::{Deserialize, Serialize};
+use std::io::Read;
 use std::path::PathBuf;
 
 /// Maximum file size in bytes for session JSONL files (10 MB).
 /// Rejects files larger than this to prevent unbounded memory allocation on import.
 const MAX_SESSION_FILE_BYTES: u64 = 10 * 1024 * 1024;
 
-/// Check file size before reading. Returns error if file exceeds limit.
-fn check_file_size(path: &std::path::Path) -> std::io::Result<()> {
-    let meta = std::fs::metadata(path)?;
+/// Securely read a session file, preventing unbounded memory allocation from
+/// arbitrary user-provided paths (like `/dev/zero`) and blocking on named pipes.
+fn read_limited_file(path: &std::path::Path) -> std::io::Result<String> {
+    let file = std::fs::File::open(path)?;
+    let meta = file.metadata()?;
+
+    if !meta.is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "path is not a regular file",
+        ));
+    }
+
     if meta.len() > MAX_SESSION_FILE_BYTES {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
@@ -20,7 +31,19 @@ fn check_file_size(path: &std::path::Path) -> std::io::Result<()> {
             ),
         ));
     }
-    Ok(())
+
+    let mut content = String::new();
+    file.take(MAX_SESSION_FILE_BYTES + 1)
+        .read_to_string(&mut content)?;
+
+    if content.len() as u64 > MAX_SESSION_FILE_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "file grew too large while reading",
+        ));
+    }
+
+    Ok(content)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -103,8 +126,7 @@ impl Session {
     }
 
     pub fn load_jsonl(path: &std::path::Path) -> std::io::Result<Self> {
-        check_file_size(path)?;
-        let content = std::fs::read_to_string(path)?;
+        let content = read_limited_file(path)?;
         let id = path.file_stem().unwrap().to_string_lossy().to_string();
         let mut session = Self::new(id.clone(), id);
         for line in content.lines() {
@@ -153,8 +175,7 @@ impl Session {
     /// Import from Codex/rollout-friendly JSONL produced by [`Self::export_codex_jsonl`]
     /// or a plain message stream with `role` + `content` fields.
     pub fn import_codex_jsonl(path: &std::path::Path) -> std::io::Result<Self> {
-        check_file_size(path)?;
-        let content = std::fs::read_to_string(path)?;
+        let content = read_limited_file(path)?;
         let fallback_id = path
             .file_stem()
             .map(|s| s.to_string_lossy().into_owned())
