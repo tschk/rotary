@@ -98,7 +98,18 @@ impl Session {
             content.push_str(&serde_json::to_string(entry).unwrap());
             content.push('\n');
         }
-        std::fs::write(&path, content)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            let mut options = std::fs::OpenOptions::new();
+            options.write(true).create(true).truncate(true).mode(0o600);
+            let mut file = options.open(&path)?;
+            std::io::Write::write_all(&mut file, content.as_bytes())?;
+        }
+        #[cfg(not(unix))]
+        {
+            std::fs::write(&path, content)?;
+        }
         Ok(path)
     }
 
@@ -147,7 +158,19 @@ impl Session {
             out.push_str(&line.to_string());
             out.push('\n');
         }
-        std::fs::write(path, out)
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            let mut options = std::fs::OpenOptions::new();
+            options.write(true).create(true).truncate(true).mode(0o600);
+            let mut file = options.open(path)?;
+            std::io::Write::write_all(&mut file, out.as_bytes())?;
+        }
+        #[cfg(not(unix))]
+        {
+            std::fs::write(path, out)?;
+        }
+        Ok(())
     }
 
     /// Import from Codex/rollout-friendly JSONL produced by [`Self::export_codex_jsonl`]
