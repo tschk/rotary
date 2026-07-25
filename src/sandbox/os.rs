@@ -125,18 +125,26 @@ impl OsSandboxRunner {
     pub fn new(config: OsSandboxConfig) -> Result<Self, SandboxError> {
         let profile_path = match config.mode {
             OsSandbox::MacosSeatbelt => {
-                if !has_seatbelt() {
-                    return Err(SandboxError::PathDenied(
-                        "macOS seatbelt (sandbox-exec) not available; refuse fail-open".into(),
-                    ));
+                #[cfg(not(target_os = "macos"))]
+                return Err(SandboxError::PathDenied(
+                    "macOS seatbelt (sandbox-exec) not available; refuse fail-open".into(),
+                ));
+
+                #[cfg(target_os = "macos")]
+                {
+                    if !has_seatbelt() {
+                        return Err(SandboxError::PathDenied(
+                            "macOS seatbelt (sandbox-exec) not available; refuse fail-open".into(),
+                        ));
+                    }
+                    let gen = SandboxProfileGenerator::new(config.clone());
+                    let dir = if config.allow_tmp {
+                        PathBuf::from("/tmp")
+                    } else {
+                        std::env::temp_dir()
+                    };
+                    Some(gen.write_profile(&dir)?)
                 }
-                let gen = SandboxProfileGenerator::new(config.clone());
-                let dir = if config.allow_tmp {
-                    PathBuf::from("/tmp")
-                } else {
-                    std::env::temp_dir()
-                };
-                Some(gen.write_profile(&dir)?)
             }
             OsSandbox::LinuxBubblewrap => {
                 if !has_bubblewrap() {
@@ -280,11 +288,6 @@ pub fn has_seatbelt() -> bool {
     true
 }
 
-#[cfg(not(target_os = "macos"))]
-pub fn has_seatbelt() -> bool {
-    find_in_path("sandbox-exec")
-}
-
 /// Detect the best available sandbox backend for the current platform.
 pub fn detect_sandbox() -> OsSandbox {
     #[cfg(target_os = "macos")]
@@ -299,7 +302,6 @@ pub fn detect_sandbox() -> OsSandbox {
             return OsSandbox::LinuxBubblewrap;
         }
     }
-    let _ = has_seatbelt();
     let _ = has_bubblewrap();
     OsSandbox::UserspaceOnly
 }
