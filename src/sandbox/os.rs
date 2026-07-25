@@ -254,6 +254,15 @@ impl OsSandboxRunner {
 
     /// Build a [`std::process::Command`] with the sandbox wrapper applied.
     pub fn command(&self, cmd: &str, args: &[&str]) -> Result<std::process::Command, SandboxError> {
+        // Prevent null-byte injection vulnerabilities in Command execution.
+        // Even though modern Rust (1.77+) checks for null bytes, doing it here
+        // ensures a consistent SandboxError is returned rather than an OS error.
+        if cmd.contains('\0') || args.iter().any(|a| a.contains('\0')) {
+            return Err(SandboxError::CommandDenied(
+                "command or arguments contain null byte".to_string(),
+            ));
+        }
+
         let wrapped = self.wrap_command(cmd, args);
         if wrapped.is_empty() {
             return Err(SandboxError::CommandDenied(
