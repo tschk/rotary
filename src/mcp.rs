@@ -595,6 +595,18 @@ pub struct McpClient {
 impl McpClient {
     /// Spawns a child process and establishes an MCP connection via stdin/stdout.
     pub async fn connect_stdio(command: &str, args: &[&str]) -> Result<Self, McpError> {
+        let allowed = ["node", "npx", "python", "python3", "uvx", "go", "cargo"];
+        let base_cmd = std::path::Path::new(command)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or(command);
+
+        if !allowed.contains(&base_cmd) {
+            return Err(McpError::Spawn(format!(
+                "Command '{command}' is not in the allowlist of permitted MCP server executables."
+            )));
+        }
+
         let mut child = Command::new(command)
             .args(args)
             .stdin(Stdio::piped())
@@ -955,5 +967,51 @@ mod tests {
         );
         let v = parse_sse_body(body, 9).unwrap();
         assert_eq!(v["b"], 2);
+    }
+
+    #[tokio::test]
+    async fn test_connect_stdio_allowed_command() {
+        // 'node' is allowed, so it will attempt to spawn.
+        // It might fail to spawn if node isn't installed, but it won't be rejected by the allowlist.
+        let result = McpClient::connect_stdio("node", &["-v"]).await;
+        match result {
+            Err(McpError::Spawn(e)) => {
+                assert!(!e.contains("not in the allowlist"), "Expected node to be allowed");
+            }
+            _ => {} // Ok or other errors are fine
+        }
+    }
+
+    #[tokio::test]
+    async fn test_connect_stdio_disallowed_command() {
+        let result = McpClient::connect_stdio("bash", &["-c", "echo hello"]).await;
+        match result {
+            Err(McpError::Spawn(e)) => {
+                assert!(e.contains("not in the allowlist"), "Expected bash to be disallowed");
+            }
+            other => panic!("Expected Spawn error, got {:?}", other.err()),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_connect_stdio_disallowed_command_absolute_path() {
+        let result = McpClient::connect_stdio("/bin/bash", &["-c", "echo hello"]).await;
+        match result {
+            Err(McpError::Spawn(e)) => {
+                assert!(e.contains("not in the allowlist"), "Expected /bin/bash to be disallowed");
+            }
+            other => panic!("Expected Spawn error, got {:?}", other.err()),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_connect_stdio_allowed_command_absolute_path() {
+        let result = McpClient::connect_stdio("/usr/local/bin/node", &["-v"]).await;
+        match result {
+            Err(McpError::Spawn(e)) => {
+                assert!(!e.contains("not in the allowlist"), "Expected /usr/local/bin/node to be allowed");
+            }
+            _ => {} // Ok or other errors are fine
+        }
     }
 }
