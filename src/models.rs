@@ -59,7 +59,7 @@ impl ModelRegistry {
     pub fn load() -> Self {
         let mut models = HashMap::new();
         for model in builtin_models() {
-            models.insert(model.id.clone(), model);
+            models.insert(model.id.clone(), model.clone());
         }
 
         let mut compat = HashMap::new();
@@ -147,208 +147,14 @@ fn is_xhigh_model(id: &str) -> bool {
     id == "claude-3-5-sonnet" || id == "claude-3-7-sonnet" || id == "claude-sonnet-4"
 }
 
-fn builtin_models() -> Vec<ModelInfo> {
-    vec![
-        ModelInfo {
-            id: "gpt-5.6-sol".into(),
-            provider: "openai".into(),
-            context_window: 200_000,
-            max_output_tokens: 16_384,
-            supports_tools: true,
-            supports_vision: true,
-            supports_reasoning: true,
-        },
-        ModelInfo {
-            id: "gpt-5.6-terra".into(),
-            provider: "openai".into(),
-            context_window: 200_000,
-            max_output_tokens: 16_384,
-            supports_tools: true,
-            supports_vision: true,
-            supports_reasoning: true,
-        },
-        ModelInfo {
-            id: "gpt-5.6-luna".into(),
-            provider: "openai".into(),
-            context_window: 200_000,
-            max_output_tokens: 16_384,
-            supports_tools: true,
-            supports_vision: true,
-            supports_reasoning: false,
-        },
-        ModelInfo {
-            id: "gpt-5.4".into(),
-            provider: "openai".into(),
-            context_window: 200_000,
-            max_output_tokens: 16_384,
-            supports_tools: true,
-            supports_vision: true,
-            supports_reasoning: true,
-        },
-        ModelInfo {
-            id: "gpt-5.4-mini".into(),
-            provider: "openai".into(),
-            context_window: 200_000,
-            max_output_tokens: 16_384,
-            supports_tools: true,
-            supports_vision: true,
-            supports_reasoning: false,
-        },
-        ModelInfo {
-            id: "gpt-5.2".into(),
-            provider: "openai".into(),
-            context_window: 200_000,
-            max_output_tokens: 16_384,
-            supports_tools: true,
-            supports_vision: true,
-            supports_reasoning: true,
-        },
-        ModelInfo {
-            id: "claude-3-5-sonnet".into(),
-            provider: "anthropic".into(),
-            context_window: 200_000,
-            max_output_tokens: 8_192,
-            supports_tools: true,
-            supports_vision: true,
-            supports_reasoning: true,
-        },
-        ModelInfo {
-            id: "claude-3-5-haiku".into(),
-            provider: "anthropic".into(),
-            context_window: 200_000,
-            max_output_tokens: 8_192,
-            supports_tools: true,
-            supports_vision: true,
-            supports_reasoning: false,
-        },
-        ModelInfo {
-            id: "claude-3-opus".into(),
-            provider: "anthropic".into(),
-            context_window: 200_000,
-            max_output_tokens: 4_096,
-            supports_tools: true,
-            supports_vision: true,
-            supports_reasoning: false,
-        },
-        ModelInfo {
-            id: "gemini-2.0-flash".into(),
-            provider: "google".into(),
-            context_window: 1_048_576,
-            max_output_tokens: 8_192,
-            supports_tools: true,
-            supports_vision: true,
-            supports_reasoning: false,
-        },
-        ModelInfo {
-            id: "gemini-1.5-pro".into(),
-            provider: "google".into(),
-            context_window: 2_097_152,
-            max_output_tokens: 8_192,
-            supports_tools: true,
-            supports_vision: true,
-            supports_reasoning: false,
-        },
-        ModelInfo {
-            id: "grok-3".into(),
-            provider: "xai".into(),
-            context_window: 131_072,
-            max_output_tokens: 16_384,
-            supports_tools: true,
-            supports_vision: false,
-            supports_reasoning: false,
-        },
-        ModelInfo {
-            id: "grok-3-mini".into(),
-            provider: "xai".into(),
-            context_window: 131_072,
-            max_output_tokens: 16_384,
-            supports_tools: true,
-            supports_vision: false,
-            supports_reasoning: true,
-        },
-        ModelInfo {
-            id: "grok-4.5".into(),
-            provider: "xai".into(),
-            context_window: 256_000,
-            max_output_tokens: 16_384,
-            supports_tools: true,
-            supports_vision: true,
-            supports_reasoning: true,
-        },
-        ModelInfo {
-            id: "grok-4.3".into(),
-            provider: "xai".into(),
-            context_window: 256_000,
-            max_output_tokens: 16_384,
-            supports_tools: true,
-            supports_vision: true,
-            supports_reasoning: true,
-        },
-        ModelInfo {
-            id: "grok-build-0.1".into(),
-            provider: "xai".into(),
-            context_window: 256_000,
-            max_output_tokens: 16_384,
-            supports_tools: true,
-            supports_vision: true,
-            supports_reasoning: true,
-        },
-        ModelInfo {
-            id: "grok-4.20-0309-reasoning".into(),
-            provider: "xai".into(),
-            context_window: 256_000,
-            max_output_tokens: 16_384,
-            supports_tools: true,
-            supports_vision: true,
-            supports_reasoning: true,
-        },
-        ModelInfo {
-            id: "grok-4.20-0309-non-reasoning".into(),
-            provider: "xai".into(),
-            context_window: 256_000,
-            max_output_tokens: 16_384,
-            supports_tools: true,
-            supports_vision: true,
-            supports_reasoning: false,
-        },
-        ModelInfo {
-            id: "grok-4.20-multi-agent-0309".into(),
-            provider: "xai".into(),
-            context_window: 256_000,
-            max_output_tokens: 16_384,
-            supports_tools: true,
-            supports_vision: true,
-            supports_reasoning: true,
-        },
-        ModelInfo {
-            id: "llama3.2".into(),
-            provider: "ollama".into(),
-            context_window: 128_000,
-            max_output_tokens: 4_096,
-            supports_tools: true,
-            supports_vision: false,
-            supports_reasoning: false,
-        },
-        ModelInfo {
-            id: "qwen2.5".into(),
-            provider: "ollama".into(),
-            context_window: 131_072,
-            max_output_tokens: 4_096,
-            supports_tools: true,
-            supports_vision: false,
-            supports_reasoning: false,
-        },
-        ModelInfo {
-            id: "deepseek-r1".into(),
-            provider: "ollama".into(),
-            context_window: 128_000,
-            max_output_tokens: 8_192,
-            supports_tools: false,
-            supports_vision: false,
-            supports_reasoning: true,
-        },
-    ]
+fn builtin_models() -> &'static [ModelInfo] {
+    static MODELS: std::sync::OnceLock<Vec<ModelInfo>> = std::sync::OnceLock::new();
+    MODELS.get_or_init(|| {
+        serde_json::from_str(include_str!("builtin_models.json"))
+            .expect("failed to parse builtin models")
+    })
 }
+
 
 fn builtin_compat() -> Vec<(&'static str, CompatConfig)> {
     vec![
