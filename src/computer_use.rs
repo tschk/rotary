@@ -486,7 +486,9 @@ mod tests {
 
         let definitions = registry.definitions();
         for expected in expected_tools {
-            let found = definitions.iter().any(|d| d["name"].as_str() == Some(expected));
+            let found = definitions
+                .iter()
+                .any(|d| d["name"].as_str() == Some(expected));
             assert!(found, "Tool {} not registered", expected);
         }
     }
