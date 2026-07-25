@@ -5,9 +5,9 @@ use crate::plugin::PluginRegistry;
 use crate::session::Session;
 use serde_json::Value;
 use std::os::unix::net::UnixListener;
-use subtle::ConstantTimeEq;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
+use subtle::ConstantTimeEq;
 use tokio::sync::Mutex as AsyncMutex;
 use tracing::{info, warn};
 
@@ -135,7 +135,10 @@ impl IpcServer {
         );
         if method != "ping" {
             match &required_token {
-                Some(token) if provided.len() != token.len() || !bool::from(provided.as_bytes().ct_eq(token.as_bytes())) => {
+                Some(token)
+                    if provided.len() != token.len()
+                        || !bool::from(provided.as_bytes().ct_eq(token.as_bytes())) =>
+                {
                     return error_response(id, -32000, "invalid or missing token");
                 }
                 None if mutating => {
