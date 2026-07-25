@@ -72,6 +72,7 @@ dirs = { version = "6", optional = true }
 
 # Plugin integrity verification (marketplace).
 sha2 = "0.10"
+subtle = "2.6.1"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }
