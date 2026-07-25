@@ -974,14 +974,11 @@ mod tests {
         // 'node' is allowed, so it will attempt to spawn.
         // It might fail to spawn if node isn't installed, but it won't be rejected by the allowlist.
         let result = McpClient::connect_stdio("node", &["-v"]).await;
-        match result {
-            Err(McpError::Spawn(e)) => {
-                assert!(
-                    !e.contains("not in the allowlist"),
-                    "Expected node to be allowed"
-                );
-            }
-            _ => {} // Ok or other errors are fine
+        if let Err(McpError::Spawn(e)) = result {
+            assert!(
+                !e.contains("not in the allowlist"),
+                "Expected node to be allowed"
+            );
         }
     }
 
@@ -1016,14 +1013,11 @@ mod tests {
     #[tokio::test]
     async fn test_connect_stdio_allowed_command_absolute_path() {
         let result = McpClient::connect_stdio("/usr/local/bin/node", &["-v"]).await;
-        match result {
-            Err(McpError::Spawn(e)) => {
-                assert!(
-                    !e.contains("not in the allowlist"),
-                    "Expected /usr/local/bin/node to be allowed"
-                );
-            }
-            _ => {} // Ok or other errors are fine
+        if let Err(McpError::Spawn(e)) = result {
+            assert!(
+                !e.contains("not in the allowlist"),
+                "Expected /usr/local/bin/node to be allowed"
+            );
         }
     }
 }
