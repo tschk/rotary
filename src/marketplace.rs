@@ -681,6 +681,62 @@ mod tests {
     }
 
     #[test]
+    fn marketplace_search_empty_query() {
+        let index = MarketplaceIndex {
+            plugins: vec![sample_manifest(), sample_manifest()],
+        };
+        let results = index.search("");
+        assert_eq!(results.len(), 2);
+    }
+
+    #[test]
+    fn marketplace_search_multiple_terms() {
+        let index = MarketplaceIndex {
+            plugins: vec![
+                sample_manifest(),
+                PluginManifest {
+                    name: "demo-other".to_string(),
+                    version: "0.0.1".to_string(),
+                    description: "A demo plugin".to_string(),
+                    author: "bob".to_string(),
+                    categories: vec!["testing".to_string()],
+                    keywords: vec!["demo".to_string()],
+                    ..sample_manifest()
+                },
+            ],
+        };
+        let results = index.search("demo testing");
+        assert_eq!(results.len(), 2);
+
+        let results_specific = index.search("demo other");
+        assert_eq!(results_specific.len(), 1);
+        assert_eq!(results_specific[0].name, "demo-other");
+    }
+
+    #[test]
+    fn marketplace_search_case_insensitive() {
+        let index = MarketplaceIndex {
+            plugins: vec![sample_manifest()],
+        };
+        let results = index.search("DeMo");
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].name, "demo-plugin");
+
+        let results2 = index.search("TESTING");
+        assert_eq!(results2.len(), 1);
+        assert_eq!(results2[0].name, "demo-plugin");
+    }
+
+    #[test]
+    fn marketplace_search_no_matches() {
+        let index = MarketplaceIndex {
+            plugins: vec![sample_manifest()],
+        };
+        let results = index.search("nonexistentterm123");
+        assert!(results.is_empty());
+    }
+
+    #[test]
     fn marketplace_by_category_filters() {
         let index = MarketplaceIndex {
             plugins: vec![sample_manifest()],
