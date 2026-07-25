@@ -276,6 +276,7 @@ impl AsyncApprover for ChannelAsyncApprover {
 pub trait Authorizer: Send + Sync {
     fn authorize(
         &self,
+        policy: &Policy,
         tool_name: &str,
         arguments: &str,
         approver: Option<&dyn Approver>,
@@ -284,26 +285,25 @@ pub trait Authorizer: Send + Sync {
 }
 
 /// Default authorizer: evaluates [`Policy`] (modes, lists, host shell globs, optional dangerous deny).
-#[derive(Debug, Clone)]
-pub struct PolicyAuthorizer {
-    pub policy: Policy,
-}
+#[derive(Debug, Clone, Default)]
+pub struct PolicyAuthorizer;
 
 impl PolicyAuthorizer {
-    pub fn new(policy: Policy) -> Self {
-        Self { policy }
+    pub fn new() -> Self {
+        Self
     }
 }
 
 impl Authorizer for PolicyAuthorizer {
     fn authorize(
         &self,
+        policy: &Policy,
         tool_name: &str,
         arguments: &str,
         approver: Option<&dyn Approver>,
         workspace_root: Option<&Path>,
     ) -> Decision {
-        authorize_with_workspace(&self.policy, tool_name, arguments, approver, workspace_root)
+        authorize_with_workspace(policy, tool_name, arguments, approver, workspace_root)
     }
 }
 
@@ -1109,13 +1109,14 @@ mod tests {
 
     #[test]
     fn policy_authorizer_matches_authorize() {
-        let auth = PolicyAuthorizer::new(Policy::workspace_write().with_shell_allow(["git *"]));
+        let policy = Policy::workspace_write().with_shell_allow(["git *"]);
+        let auth = PolicyAuthorizer::new();
         assert_eq!(
-            auth.authorize("bash", r#"{"command":"git status"}"#, None, None),
+            auth.authorize(&policy, "bash", r#"{"command":"git status"}"#, None, None),
             Decision::Allow
         );
         assert_eq!(
-            auth.authorize("bash", r#"{"command":"rm -rf ./x"}"#, None, None),
+            auth.authorize(&policy, "bash", r#"{"command":"rm -rf ./x"}"#, None, None),
             Decision::Ask
         );
     }

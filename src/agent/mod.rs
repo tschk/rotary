@@ -227,10 +227,6 @@ impl Agent {
                 tracing::warn!("OS sandbox unavailable — shell tools will be blocked: {e}");
             }
         }
-        // Custom Authorizer snapshots are NOT auto-refreshed — clear if present.
-        if self.authorizer.is_some() {
-            self.authorizer = None;
-        }
     }
 
     pub fn set_scope(&mut self, scope: Scope) {
@@ -244,9 +240,6 @@ impl Agent {
                 self.os_sandbox_failed = true;
                 tracing::warn!("OS sandbox unavailable — shell tools will be blocked: {e}");
             }
-        }
-        if self.authorizer.is_some() {
-            self.authorizer = None;
         }
         let base = self.system_prompt.clone();
         self.system_prompt = Some(mode::compose_prompt(base.as_deref(), &profile));
@@ -1032,12 +1025,14 @@ impl Agent {
         // Policy evaluate without Approver (pi: beforeToolCall is separate async gate).
         let mut decision = match authorizer {
             Some(auth) => auth.authorize(
+                policy,
                 &resolved_name,
                 &call.arguments,
                 None,
                 Some(ctx.workspace_root.as_path()),
             ),
-            None => PolicyAuthorizer::new(policy.clone()).authorize(
+            None => PolicyAuthorizer::new().authorize(
+                policy,
                 &resolved_name,
                 &call.arguments,
                 None,
