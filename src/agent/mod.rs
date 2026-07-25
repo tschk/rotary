@@ -442,16 +442,8 @@ impl Agent {
         self.messages.read().len()
     }
 
-    /// Run a prompt through the agent loop.
-    /// Streams events to subscribers, executes tools, cycles turns.
-    pub async fn prompt(&mut self, text: &str) -> Result<(), AgentError> {
-        let tokens = estimate_messages(&self.messages.read());
-        if tokens >= self.auto_compact_after {
-            self.compact("auto-compact before prompt");
-        }
-
-        // Inject activated skill instructions into system prompt for this turn.
-        #[cfg(feature = "skills")]
+    #[cfg(feature = "skills")]
+    fn inject_active_skills(&mut self, text: &str) {
         if let Some(reg) = &self.skill_registry {
             let activated = reg.auto_activate(text);
             if !activated.is_empty() {
@@ -464,16 +456,13 @@ impl Agent {
                 self.system_prompt = Some(merged);
             }
         }
+    }
 
-        self.messages.write().push(Message::user(text));
-        self.emit(Event::AgentStart);
-        self.budget_start = Some(Instant::now());
+    #[cfg(not(feature = "skills"))]
+    fn inject_active_skills(&mut self, _text: &str) {}
 
-        // Route the incoming user event through the personality turn router.
-        // This evaluates hard rules (mentions, commands, rate limits, consecutive
-        // turns) + learned policy, records the decision, and derives social
-        // signals — all automatically before the first turn.
-        #[cfg(feature = "personality")]
+    #[cfg(feature = "personality")]
+    async fn route_user_personality(&self, text: &str) {
         if let Some(pers) = &self.personality {
             let event = crate::personality::ConversationEvent {
                 epoch: 0,
@@ -496,6 +485,227 @@ impl Agent {
                 }
             }
         }
+    }
+
+    #[cfg(not(feature = "personality"))]
+    async fn route_user_personality(&self, _text: &str) {}
+
+    #[allow(unused_variables)]
+    async fn augment_system_prompt(&self, text: &str) -> Option<String> {
+        #[cfg(feature = "zkr-memory")]
+        let system = if let Some(improve) = &self.self_improve {
+            let base = self.system_prompt.as_deref().unwrap_or("");
+            match improve.augment(text, base).await {
+                Ok(augmented) => Some(augmented),
+                Err(error) => {
+                    warn!("self-improve augmentation failed: {error}");
+                    self.system_prompt.clone()
+                }
+            }
+        } else {
+            self.system_prompt.clone()
+        };
+        #[cfg(not(feature = "zkr-memory"))]
+        let system = self.system_prompt.clone();
+
+        // Personality augmentation chains after self-improve (or base prompt).
+        #[cfg(feature = "personality")]
+        let system = if let Some(pers) = &self.personality {
+            let base = system.as_deref().unwrap_or("");
+            match pers.augment(text, base).await {
+                Ok(augmented) => Some(augmented),
+                Err(error) => {
+                    warn!("personality augmentation failed: {error}");
+                    system
+                }
+            }
+        } else {
+            system
+        };
+
+        system
+    }
+
+    #[cfg(feature = "zkr-memory")]
+    async fn record_self_improve(&self, text: &str, assistant_content: &str, tool_error_seen: bool) {
+        if let Some(improve) = &self.self_improve {
+            let outcome = if tool_error_seen { "error" } else { "success" };
+            let lesson = if tool_error_seen {
+                "avoid repeating the failing tool"
+            } else {
+                "continue the current strategy"
+            };
+            if let Err(error) = improve
+                .record(text, assistant_content, outcome, lesson)
+                .await
+            {
+                warn!("self-improve reflection failed: {error}");
+            }
+        }
+    }
+
+
+    #[allow(unused_variables)]
+    #[cfg(feature = "personality")]
+    async fn record_personality_turn(&self, text: &str, assistant_content: &str, tool_error_seen: bool, iteration: usize) {
+        if let Some(pers) = &self.personality {
+            let epoch = (iteration + 1) as u64;
+
+            // Record the assistant's response as a conversation event.
+            // Signals are derived automatically inside record_event.
+            let assistant_event = crate::personality::ConversationEvent {
+                epoch,
+                participant: "agent".to_string(),
+                event_kind: if tool_error_seen { "error" } else { "message" }.to_string(),
+                content: assistant_content.chars().take(500).collect(),
+            };
+            if let Err(error) = pers.record_event(&assistant_event).await {
+                warn!("personality assistant event recording failed: {error}");
+            }
+
+            // Assess risk of the candidate reply toward the user.
+            let risk = pers.assess_risk("user", assistant_content).await;
+            if risk.recommendation == crate::personality::RiskRecommendation::Abort {
+                warn!(
+                    "personality risk assessment: ABORT (overall {}bps) — {:?}",
+                    risk.overall_risk_basis_points, risk
+                );
+            } else if risk.recommendation == crate::personality::RiskRecommendation::Refine
+            {
+                debug!(
+                    "personality risk assessment: REFINE (overall {}bps)",
+                    risk.overall_risk_basis_points
+                );
+            }
+
+            // Record a ToM hypothesis about the user based on this turn.
+            let hyp = crate::personality::MindHypothesis {
+                participant: "user".to_string(),
+                belief: format!(
+                    "user sent: {}",
+                    text.chars().take(100).collect::<String>()
+                ),
+                emotion: if tool_error_seen {
+                    Some("frustrated".into())
+                } else {
+                    None
+                },
+                goal: None,
+                predicted_reaction: Some(
+                    if tool_error_seen {
+                        "likely frustrated by errors"
+                    } else {
+                        "likely satisfied with response"
+                    }
+                    .into(),
+                ),
+                confidence_basis_points: if tool_error_seen { 4000 } else { 7000 },
+                valid_until: None,
+            };
+            if let Err(error) = pers.record_hypothesis(&hyp).await {
+                warn!("personality ToM recording failed: {error}");
+            }
+        }
+    }
+
+
+    #[cfg(feature = "personality")]
+    async fn analyze_conversation_personality(&self) {
+        if let Some(pers) = &self.personality {
+            let scope = format!(
+                "prompt-{}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos()
+            );
+            match pers.analyze_conversation(&scope).await {
+                Ok(health) => {
+                    if !health.findings.is_empty() {
+                        info!(
+                            "personality observability: {} findings for {} (balance={:.2}, error_rate={:.2})",
+                            health.findings.len(),
+                            health.scope,
+                            health.participation_balance,
+                            health.error_rate
+                        );
+                    }
+                }
+                Err(error) => {
+                    warn!("personality observability analysis failed: {error}");
+                }
+            }
+        }
+    }
+
+    #[cfg(feature = "graph-memory")]
+    fn extract_graph_memory(&mut self) {
+        if let Some(graph) = self.graph_memory.as_mut() {
+            let turns: Vec<crate::graph_memory::ConversationTurn> = self
+                .messages
+                .read()
+                .iter()
+                .map(|m| crate::graph_memory::ConversationTurn {
+                    role: m.role.to_string(),
+                    content: m.content.clone(),
+                })
+                .collect();
+            let extracted = crate::graph_memory::ConversationExtractor::new().extract(&turns);
+            for node in extracted.nodes {
+                graph.add_node(node);
+            }
+            for edge in extracted.edges {
+                let _ = graph.add_edge(edge);
+            }
+            if self.auto_dream {
+                let _ = crate::dream_scheduler::DreamScheduler::new().run_cycle(graph);
+            }
+        }
+    }
+
+    #[cfg(not(feature = "graph-memory"))]
+    fn extract_graph_memory(&mut self) {}
+
+    #[cfg(feature = "skills")]
+    fn background_skill_review(&mut self) {
+        if let Some(engine) = self.skill_engine.as_mut() {
+            let turns: Vec<crate::skill_engine::ConversationTurn> = self
+                .messages
+                .read()
+                .iter()
+                .map(|m| crate::skill_engine::ConversationTurn {
+                    role: m.role.to_string(),
+                    content: m.content.clone(),
+                    tool_calls: Vec::new(),
+                })
+                .collect();
+            let mut reviewer = crate::background_review::BackgroundReviewer::new(engine);
+            if let Ok(reviews) =
+                reviewer.review_conversation(&turns, crate::skill_engine::SkillOutcome::Success)
+            {
+                let _ = reviewer.apply_review(&reviews);
+            }
+        }
+    }
+
+    #[cfg(not(feature = "skills"))]
+    fn background_skill_review(&mut self) {}
+
+    /// Run a prompt through the agent loop.
+    /// Streams events to subscribers, executes tools, cycles turns.
+    pub async fn prompt(&mut self, text: &str) -> Result<(), AgentError> {
+        let tokens = estimate_messages(&self.messages.read());
+        if tokens >= self.auto_compact_after {
+            self.compact("auto-compact before prompt");
+        }
+
+        self.inject_active_skills(text);
+
+        self.messages.write().push(Message::user(text));
+        self.emit(Event::AgentStart);
+        self.budget_start = Some(Instant::now());
+
+        self.route_user_personality(text).await;
 
         let provider = self.provider.clone().ok_or(AgentError::NoProvider)?;
         let mut tool_ctx = ToolContext::new(self.workspace_root.clone());
@@ -528,36 +738,7 @@ impl Agent {
             self.emit(Event::TurnStart { turn: iteration });
 
             let messages: Vec<Message> = self.messages.read().clone();
-            #[cfg(feature = "zkr-memory")]
-            let system = if let Some(improve) = &self.self_improve {
-                let base = self.system_prompt.as_deref().unwrap_or("");
-                match improve.augment(text, base).await {
-                    Ok(augmented) => Some(augmented),
-                    Err(error) => {
-                        warn!("self-improve augmentation failed: {error}");
-                        self.system_prompt.clone()
-                    }
-                }
-            } else {
-                self.system_prompt.clone()
-            };
-            #[cfg(not(feature = "zkr-memory"))]
-            let system = self.system_prompt.clone();
-
-            // Personality augmentation chains after self-improve (or base prompt).
-            #[cfg(feature = "personality")]
-            let system = if let Some(pers) = &self.personality {
-                let base = system.as_deref().unwrap_or("");
-                match pers.augment(text, base).await {
-                    Ok(augmented) => Some(augmented),
-                    Err(error) => {
-                        warn!("personality augmentation failed: {error}");
-                        system
-                    }
-                }
-            } else {
-                system
-            };
+            let system = self.augment_system_prompt(text).await;
 
             #[allow(unused_mut)]
             let mut tool_calls: Vec<ToolCall> = Vec::new();
@@ -688,79 +869,11 @@ impl Agent {
                 self.emit(Event::TurnEnd { turn: iteration });
 
                 #[cfg(feature = "zkr-memory")]
-                if let Some(improve) = &self.self_improve {
-                    let outcome = if tool_error_seen { "error" } else { "success" };
-                    let lesson = if tool_error_seen {
-                        "avoid repeating the failing tool"
-                    } else {
-                        "continue the current strategy"
-                    };
-                    if let Err(error) = improve
-                        .record(text, &assistant_content, outcome, lesson)
-                        .await
-                    {
-                        warn!("self-improve reflection failed: {error}");
-                    }
-                }
+                self.record_self_improve(text, &assistant_content, tool_error_seen).await;
 
                 #[cfg(feature = "personality")]
-                if let Some(pers) = &self.personality {
-                    let epoch = (iteration + 1) as u64;
-
-                    // Record the assistant's response as a conversation event.
-                    // Signals are derived automatically inside record_event.
-                    let assistant_event = crate::personality::ConversationEvent {
-                        epoch,
-                        participant: "agent".to_string(),
-                        event_kind: if tool_error_seen { "error" } else { "message" }.to_string(),
-                        content: assistant_content.chars().take(500).collect(),
-                    };
-                    if let Err(error) = pers.record_event(&assistant_event).await {
-                        warn!("personality assistant event recording failed: {error}");
-                    }
-
-                    // Assess risk of the candidate reply toward the user.
-                    let risk = pers.assess_risk("user", &assistant_content).await;
-                    if risk.recommendation == crate::personality::RiskRecommendation::Abort {
-                        warn!(
-                            "personality risk assessment: ABORT (overall {}bps) — {:?}",
-                            risk.overall_risk_basis_points, risk
-                        );
-                    } else if risk.recommendation == crate::personality::RiskRecommendation::Refine
-                    {
-                        debug!(
-                            "personality risk assessment: REFINE (overall {}bps)",
-                            risk.overall_risk_basis_points
-                        );
-                    }
-
-                    // Record a ToM hypothesis about the user based on this turn.
-                    let hyp = crate::personality::MindHypothesis {
-                        participant: "user".to_string(),
-                        belief: format!(
-                            "user sent: {}",
-                            text.chars().take(100).collect::<String>()
-                        ),
-                        emotion: if tool_error_seen {
-                            Some("frustrated".into())
-                        } else {
-                            None
-                        },
-                        goal: None,
-                        predicted_reaction: Some(
-                            if tool_error_seen {
-                                "likely frustrated by errors"
-                            } else {
-                                "likely satisfied with response"
-                            }
-                            .into(),
-                        ),
-                        confidence_basis_points: if tool_error_seen { 4000 } else { 7000 },
-                        valid_until: None,
-                    };
-                    if let Err(error) = pers.record_hypothesis(&hyp).await {
-                        warn!("personality ToM recording failed: {error}");
-                    }
+                {
+                    self.record_personality_turn(text, &assistant_content, tool_error_seen, iteration).await;
                 }
 
                 break;
@@ -783,79 +896,12 @@ impl Agent {
             self.emit(Event::TurnEnd { turn: iteration });
         }
 
-        // Personality observability: analyze the conversation window after the
-        // prompt completes. Computes participation balance, error rate, and
-        // generates evidence-cited findings with recommendations.
         #[cfg(feature = "personality")]
-        if let Some(pers) = &self.personality {
-            let scope = format!(
-                "prompt-{}",
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_nanos()
-            );
-            match pers.analyze_conversation(&scope).await {
-                Ok(health) => {
-                    if !health.findings.is_empty() {
-                        info!(
-                            "personality observability: {} findings for {} (balance={:.2}, error_rate={:.2})",
-                            health.findings.len(),
-                            health.scope,
-                            health.participation_balance,
-                            health.error_rate
-                        );
-                    }
-                }
-                Err(error) => {
-                    warn!("personality observability analysis failed: {error}");
-                }
-            }
-        }
+        self.analyze_conversation_personality().await;
 
-        #[cfg(feature = "graph-memory")]
-        if let Some(graph) = self.graph_memory.as_mut() {
-            let turns: Vec<crate::graph_memory::ConversationTurn> = self
-                .messages
-                .read()
-                .iter()
-                .map(|m| crate::graph_memory::ConversationTurn {
-                    role: m.role.to_string(),
-                    content: m.content.clone(),
-                })
-                .collect();
-            let extracted = crate::graph_memory::ConversationExtractor::new().extract(&turns);
-            for node in extracted.nodes {
-                graph.add_node(node);
-            }
-            for edge in extracted.edges {
-                let _ = graph.add_edge(edge);
-            }
-            if self.auto_dream {
-                let _ = crate::dream_scheduler::DreamScheduler::new().run_cycle(graph);
-            }
-        }
+        self.extract_graph_memory();
 
-        // Background skill review when a SkillEngine is attached (host opt-in).
-        #[cfg(feature = "skills")]
-        if let Some(engine) = self.skill_engine.as_mut() {
-            let turns: Vec<crate::skill_engine::ConversationTurn> = self
-                .messages
-                .read()
-                .iter()
-                .map(|m| crate::skill_engine::ConversationTurn {
-                    role: m.role.to_string(),
-                    content: m.content.clone(),
-                    tool_calls: Vec::new(),
-                })
-                .collect();
-            let mut reviewer = crate::background_review::BackgroundReviewer::new(engine);
-            if let Ok(reviews) =
-                reviewer.review_conversation(&turns, crate::skill_engine::SkillOutcome::Success)
-            {
-                let _ = reviewer.apply_review(&reviews);
-            }
-        }
+        self.background_skill_review();
 
         self.emit(Event::AgentEnd);
         Ok(())
