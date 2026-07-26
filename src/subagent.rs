@@ -202,6 +202,8 @@ struct SubagentState {
     remaining_depth: Option<usize>,
     descendant_count: usize,
     limits: SubagentLimits,
+    abort_handle: Option<tokio::task::AbortHandle>,
+    background_active: bool,
 }
 
 /// Handle to a spawned subagent. Cheap to clone — all state is shared.
@@ -308,6 +310,7 @@ pub struct SubagentManager {
     parents: HashMap<String, Option<String>>,
     provider: Option<Arc<dyn Provider>>,
     tools: Option<Arc<ToolRegistry>>,
+    model: Option<String>,
     subscribers: Vec<SubagentSubscriber>,
     background_running: Arc<AtomicUsize>,
 }
@@ -341,6 +344,23 @@ impl SubagentManager {
         self
     }
 
+    pub fn with_model(mut self, model: impl Into<String>) -> Self {
+        self.model = Some(model.into());
+        self
+    }
+
+    pub fn set_provider(&mut self, provider: Arc<dyn Provider>) {
+        self.provider = Some(provider);
+    }
+
+    pub fn set_model(&mut self, model: impl Into<String>) {
+        self.model = Some(model.into());
+    }
+
+    pub fn set_tools(&mut self, tools: Arc<ToolRegistry>) {
+        self.tools = Some(tools);
+    }
+
     pub fn subscribe(&mut self, callback: impl Fn(&SubagentEvent) + Send + Sync + 'static) {
         self.subscribers.push(Arc::new(callback));
     }
@@ -367,10 +387,13 @@ impl SubagentManager {
     /// offline with the prompt recorded in the result.
     pub fn spawn(
         &mut self,
-        config: SubagentConfig,
+        mut config: SubagentConfig,
         prompt: &str,
         parent_workspace: &Path,
     ) -> Result<SubagentHandle, SubagentError> {
+        if config.model.is_none() {
+            config.model.clone_from(&self.model);
+        }
         let (handle, workspace) = self.begin_spawn(&config, prompt, parent_workspace)?;
         let started = Instant::now();
         let mut result = if let Some(provider) = self.provider.clone() {
@@ -392,10 +415,13 @@ impl SubagentManager {
     #[cfg(feature = "ipc")]
     pub async fn spawn_async(
         &mut self,
-        config: SubagentConfig,
+        mut config: SubagentConfig,
         prompt: &str,
         parent_workspace: &Path,
     ) -> Result<SubagentHandle, SubagentError> {
+        if config.model.is_none() {
+            config.model.clone_from(&self.model);
+        }
         let (handle, workspace) = self.begin_spawn(&config, prompt, parent_workspace)?;
         let started = Instant::now();
         let mut result = if let Some(provider) = self.provider.clone() {
@@ -416,10 +442,13 @@ impl SubagentManager {
 
     pub fn spawn_background(
         &mut self,
-        config: SubagentConfig,
+        mut config: SubagentConfig,
         prompt: &str,
         parent_workspace: &Path,
     ) -> Result<SubagentHandle, SubagentError> {
+        if config.model.is_none() {
+            config.model.clone_from(&self.model);
+        }
         let (handle, workspace) = self.begin_spawn(&config, prompt, parent_workspace)?;
         let provider = self.provider.clone();
         let tools = self.tools.clone();
@@ -435,8 +464,9 @@ impl SubagentManager {
                 running,
             },
         );
+        handle.state.lock().background_active = true;
         let task_handle = handle.clone();
-        tokio::spawn(async move {
+        let join_handle = tokio::spawn(async move {
             let started = Instant::now();
             let mut result = if let Some(provider) = provider {
                 match run_agent_subagent_async(provider, tools, &config, &prompt, &workspace).await
@@ -463,16 +493,23 @@ impl SubagentManager {
                 };
                 task_handle.transition(status, Some(result));
             }
-            emit_subagent_event(
-                &subscribers,
-                SubagentEvent::Finished {
-                    id: task_handle.id.clone(),
-                    name: task_handle.name.clone(),
-                    status: task_handle.status(),
-                    running: background_running.fetch_sub(1, Ordering::SeqCst) - 1,
-                },
-            );
+            let active = {
+                let mut state = task_handle.state.lock();
+                std::mem::replace(&mut state.background_active, false)
+            };
+            if active {
+                emit_subagent_event(
+                    &subscribers,
+                    SubagentEvent::Finished {
+                        id: task_handle.id.clone(),
+                        name: task_handle.name.clone(),
+                        status: task_handle.status(),
+                        running: background_running.fetch_sub(1, Ordering::SeqCst) - 1,
+                    },
+                );
+            }
         });
+        handle.state.lock().abort_handle = Some(join_handle.abort_handle());
         Ok(handle)
     }
 
@@ -492,16 +529,39 @@ impl SubagentManager {
             .subagents
             .get(id)
             .ok_or_else(|| SubagentError::NotFound(id.to_string()))?;
-        {
-            let guard = handle.state.lock();
+        let was_background = {
+            let mut guard = handle.state.lock();
             if matches!(
                 guard.status,
                 SubagentStatus::Completed | SubagentStatus::Failed | SubagentStatus::Cancelled
             ) {
                 return Ok(());
             }
+            if let Some(abort_handle) = guard.abort_handle.take() {
+                abort_handle.abort();
+            }
+            guard.status = SubagentStatus::Cancelled;
+            guard.result = Some(SubagentResult {
+                output: String::new(),
+                files_modified: vec![],
+                tool_calls: 0,
+                error: Some("cancelled".to_string()),
+                cost: 0.0,
+                duration_seconds: 0,
+            });
+            std::mem::replace(&mut guard.background_active, false)
+        };
+        if was_background {
+            emit_subagent_event(
+                &self.subscribers,
+                SubagentEvent::Finished {
+                    id: handle.id.clone(),
+                    name: handle.name.clone(),
+                    status: SubagentStatus::Cancelled,
+                    running: self.background_running.fetch_sub(1, Ordering::SeqCst) - 1,
+                },
+            );
         }
-        handle.transition(SubagentStatus::Cancelled, None);
         Ok(())
     }
 
@@ -603,6 +663,8 @@ impl SubagentManager {
             remaining_depth: remaining,
             descendant_count: 0,
             limits: config.limits.clone(),
+            abort_handle: None,
+            background_active: false,
         }));
         let handle = SubagentHandle {
             id: id.clone(),
@@ -877,6 +939,42 @@ async fn run_agent_subagent_async(
 mod tests {
     use super::*;
 
+    #[cfg(feature = "providers")]
+    struct TestProvider {
+        model: Arc<Mutex<Option<String>>>,
+        pending: bool,
+    }
+
+    #[cfg(feature = "providers")]
+    #[async_trait::async_trait]
+    impl Provider for TestProvider {
+        fn id(&self) -> &str {
+            "test"
+        }
+
+        fn name(&self) -> &str {
+            "test"
+        }
+
+        async fn stream(
+            &self,
+            _messages: &[crate::provider::Message],
+            _system: &Option<String>,
+            model: &str,
+            _tools: &[serde_json::Value],
+            _reasoning_effort: Option<&str>,
+        ) -> Result<crate::provider::StreamResult, crate::provider::ProviderError> {
+            *self.model.lock() = Some(model.to_string());
+            if self.pending {
+                Ok(Box::new(futures::stream::pending()))
+            } else {
+                Ok(Box::new(futures::stream::iter([Ok(
+                    crate::provider::StreamEvent::Done,
+                )])))
+            }
+        }
+    }
+
     fn config(name: &str) -> SubagentConfig {
         SubagentConfig {
             name: name.to_string(),
@@ -972,6 +1070,8 @@ mod tests {
             remaining_depth: None,
             descendant_count: 0,
             limits: SubagentLimits::default(),
+            abort_handle: None,
+            background_active: false,
         }));
         let handle = SubagentHandle {
             id: "x".to_string(),
@@ -1049,6 +1149,30 @@ mod tests {
             events.last(),
             Some(SubagentEvent::Finished { running: 0, .. })
         ));
+    }
+
+    #[cfg(all(feature = "ipc", feature = "providers"))]
+    #[tokio::test]
+    async fn background_spawn_inherits_model_and_cancel_aborts() {
+        let observed_model = Arc::new(Mutex::new(None));
+        let provider = Arc::new(TestProvider {
+            model: Arc::clone(&observed_model),
+            pending: true,
+        });
+        let mut mgr = SubagentManager::new()
+            .with_provider(provider)
+            .with_model("parent-model");
+        let handle = mgr
+            .spawn_background(config("worker"), "wait", Path::new("."))
+            .expect("spawn");
+        while observed_model.lock().is_none() {
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(observed_model.lock().as_deref(), Some("parent-model"));
+        mgr.cancel(handle.id()).expect("cancel");
+        assert_eq!(handle.status(), SubagentStatus::Cancelled);
+        assert_eq!(handle.wait().await.error.as_deref(), Some("cancelled"));
+        assert_eq!(mgr.running_count(), 0);
     }
 
     #[test]

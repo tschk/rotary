@@ -29,7 +29,7 @@ async fn execute_spawn_agent(
         .unwrap_or("subagent")
         .to_string();
     let model = v.get("model").and_then(|m| m.as_str()).map(str::to_string);
-    let isolate = v.get("isolate").and_then(|i| i.as_bool()).unwrap_or(false);
+    let isolate = v.get("isolate").and_then(|i| i.as_bool()).unwrap_or(true);
     let config = SubagentConfig {
         name,
         model,
@@ -50,6 +50,51 @@ async fn execute_spawn_agent(
             .to_string(),
         ),
         Err(e) => ToolResult::err("spawn_agent", e.to_string()),
+    }
+}
+
+async fn execute_list_subagents(
+    manager: Arc<Mutex<SubagentManager>>,
+    _ctx: Arc<ToolContext>,
+    _args: String,
+) -> ToolResult {
+    let manager = manager.lock();
+    let subagents = manager
+        .list()
+        .into_iter()
+        .map(|handle| {
+            serde_json::json!({
+                "id": handle.id(),
+                "name": handle.name(),
+                "status": handle.status(),
+                "depth": handle.depth(),
+                "children": handle.children().len(),
+                "descendants": handle.descendant_count(),
+            })
+        })
+        .collect::<Vec<_>>();
+    ToolResult::ok(
+        "list_subagents",
+        serde_json::to_string(&subagents).unwrap_or_else(|_| "[]".to_string()),
+    )
+}
+
+async fn execute_cancel_subagent(
+    manager: Arc<Mutex<SubagentManager>>,
+    _ctx: Arc<ToolContext>,
+    args: String,
+) -> ToolResult {
+    let v: serde_json::Value = match serde_json::from_str(&args) {
+        Ok(v) => v,
+        Err(e) => return ToolResult::err("cancel_subagent", format!("invalid json: {e}")),
+    };
+    let id = match v.get("id").and_then(|id| id.as_str()) {
+        Some(id) if !id.is_empty() => id,
+        _ => return ToolResult::err("cancel_subagent", "id required"),
+    };
+    match manager.lock().cancel(id) {
+        Ok(()) => ToolResult::ok("cancel_subagent", format!("cancelled {id}")),
+        Err(e) => ToolResult::err("cancel_subagent", e.to_string()),
     }
 }
 
@@ -196,14 +241,40 @@ pub fn register_spawn_agent_tool(
     registry: &mut ToolRegistry,
     manager: Arc<Mutex<SubagentManager>>,
 ) {
+    let spawn_manager = Arc::clone(&manager);
     registry.register(
         ToolDefinition::new_boxed(
             "spawn_agent",
             "Spawn a nested subagent with a prompt via host SubagentManager.",
             r#"{"type":"object","properties":{"prompt":{"type":"string"},"name":{"type":"string"},"model":{"type":"string"},"isolate":{"type":"boolean"}},"required":["prompt"]}"#,
             Box::new(move |ctx, args| {
-                let manager = Arc::clone(&manager);
+                let manager = Arc::clone(&spawn_manager);
                 Box::pin(execute_spawn_agent(manager, ctx, args))
+            }),
+        )
+        .with_effect(ToolEffect::Process),
+    );
+    let list_manager = Arc::clone(&manager);
+    registry.register(
+        ToolDefinition::new_boxed(
+            "list_subagents",
+            "List subagents spawned by this session and their current status.",
+            r#"{"type":"object","properties":{}}"#,
+            Box::new(move |ctx, args| {
+                let manager = Arc::clone(&list_manager);
+                Box::pin(execute_list_subagents(manager, ctx, args))
+            }),
+        )
+        .with_effect(ToolEffect::Read),
+    );
+    registry.register(
+        ToolDefinition::new_boxed(
+            "cancel_subagent",
+            "Cancel a subagent by id.",
+            r#"{"type":"object","properties":{"id":{"type":"string"}},"required":["id"]}"#,
+            Box::new(move |ctx, args| {
+                let manager = Arc::clone(&manager);
+                Box::pin(execute_cancel_subagent(manager, ctx, args))
             }),
         )
         .with_effect(ToolEffect::Process),
@@ -214,8 +285,12 @@ pub fn register_spawn_agent_tool(
 mod tests {
     use super::extended;
     use super::fs;
+    use super::register_spawn_agent_tool;
     use crate::agent::ToolContext;
     use crate::mode::Scope;
+    use crate::subagent::SubagentManager;
+    use crate::ToolRegistry;
+    use parking_lot::Mutex;
     use std::sync::Arc;
     use tempfile::TempDir;
 
@@ -346,5 +421,42 @@ mod tests {
                 || result.content.contains("request failed")
                 || result.content.contains("error")
         );
+    }
+
+    #[tokio::test]
+    async fn host_subagent_tools_share_lifecycle_state() {
+        let tmp = TempDir::new().unwrap();
+        let manager = Arc::new(Mutex::new(SubagentManager::new()));
+        let mut registry = ToolRegistry::new();
+        register_spawn_agent_tool(&mut registry, Arc::clone(&manager));
+        let ctx = Arc::new(ToolContext::new(tmp.path()));
+
+        let spawned = registry
+            .execute(
+                "spawn_agent",
+                &ctx,
+                r#"{"prompt":"inspect","name":"explore","isolate":false}"#,
+            )
+            .await
+            .unwrap();
+        assert!(!spawned.is_error, "{}", spawned.content);
+        let id = serde_json::from_str::<serde_json::Value>(&spawned.content).unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let listed = registry
+            .execute("list_subagents", &ctx, "{}")
+            .await
+            .unwrap();
+        assert!(listed.content.contains(&id));
+        let cancelled = registry
+            .execute(
+                "cancel_subagent",
+                &ctx,
+                &serde_json::json!({"id": id}).to_string(),
+            )
+            .await
+            .unwrap();
+        assert!(!cancelled.is_error, "{}", cancelled.content);
     }
 }
