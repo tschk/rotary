@@ -534,6 +534,7 @@ fn deadline() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::ToolRegistry;
 
     #[test]
     fn parses_explicit_coordinates() {
@@ -548,12 +549,6 @@ mod tests {
     fn rejects_empty_required_values() {
         assert!(required_string(&serde_json::json!({"text": ""}), "text").is_err());
     }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::agent::ToolRegistry;
 
     #[test]
     fn test_register_tools() {
