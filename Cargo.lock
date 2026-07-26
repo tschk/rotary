@@ -2282,6 +2282,8 @@ checksum = "439ee305def115ba05938db6eb1644ff94165c5ab5e9420d1c1bcedbba909391"
 [[package]]
 name = "praefectus"
 version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "61f16a2c95540bc78c9eea57a4fdd15d482714ad7014949fd3af9be99ee5cc69"
 dependencies = [
  "accessibility-sys",
  "atspi",
@@ -4217,6 +4219,8 @@ dependencies = [
 [[package]]
 name = "zkr"
 version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "debe9aaac6a84a4a441d86754126b16d30b38bb69c7c36c2de16adc6f017d220"
 dependencies = [
  "rusqlite",
  "serde",

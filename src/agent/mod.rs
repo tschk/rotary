@@ -1239,6 +1239,7 @@ impl Agent {
     }
 }
 
+#[cfg(any(feature = "providers", test))]
 fn tool_source(name: &str) -> ToolSource {
     if let Some(rest) = name.strip_prefix("mcp__") {
         return ToolSource::Mcp {
