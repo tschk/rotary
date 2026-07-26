@@ -1,8 +1,9 @@
 use super::common::{parse_num_field, parse_str_field};
 use crate::agent::{ToolContext, ToolFuture, ToolResult};
 use crate::mode::Scope;
-use crate::subagent::{SubagentConfig, SubagentManager};
+use crate::subagent::SubagentManager;
 use dashmap::DashMap;
+use parking_lot::Mutex;
 use std::sync::{Arc, OnceLock};
 
 /// Validate a URL for web_fetch: reject loopback, link-local, private IPs,
@@ -245,55 +246,18 @@ pub(crate) fn exec_todo(ctx: Arc<ToolContext>, args: String) -> ToolFuture {
 }
 
 pub(crate) fn exec_spawn_agent(ctx: Arc<ToolContext>, args: String) -> ToolFuture {
-    Box::pin(async move {
-        let v: serde_json::Value = match serde_json::from_str(&args) {
-            Ok(v) => v,
-            Err(e) => return ToolResult::err("spawn_agent", format!("invalid json: {e}")),
-        };
-        let prompt = match v.get("prompt").and_then(|p| p.as_str()) {
-            Some(p) if !p.is_empty() => p.to_string(),
-            _ => return ToolResult::err("spawn_agent", "prompt required"),
-        };
-        let name = v
-            .get("name")
-            .and_then(|n| n.as_str())
-            .unwrap_or("subagent")
-            .to_string();
-        let model = v
-            .get("model")
-            .and_then(|m| m.as_str())
-            .map(|s| s.to_string());
-        let isolate = v.get("isolate").and_then(|i| i.as_bool()).unwrap_or(false);
-
-        let mut manager = SubagentManager::new();
-        if let Some(provider) = ctx.provider.clone() {
-            manager = manager.with_provider(provider);
-        }
-        if let Some(tools) = ctx.tools.clone() {
-            manager = manager.with_tools(tools);
-        }
-        let config = SubagentConfig {
-            name: name.clone(),
-            model,
-            workspace_isolation: isolate,
-            ..SubagentConfig::default()
-        };
-        match manager.spawn(config, &prompt, &ctx.workspace_root) {
-            Ok(handle) => {
-                let result = handle.wait_sync();
-                let body = serde_json::json!({
-                    "id": handle.id(),
-                    "name": handle.name(),
-                    "status": format!("{:?}", handle.status()),
-                    "output": result.output,
-                    "tool_calls": result.tool_calls,
-                    "error": result.error,
-                });
-                ToolResult::ok("spawn_agent", body.to_string())
-            }
-            Err(e) => ToolResult::err("spawn_agent", e.to_string()),
-        }
-    })
+    let mut manager = SubagentManager::new();
+    if let Some(provider) = ctx.provider.clone() {
+        manager = manager.with_provider(provider);
+    }
+    if let Some(tools) = ctx.tools.clone() {
+        manager = manager.with_tools(tools);
+    }
+    Box::pin(super::execute_spawn_agent(
+        Arc::new(Mutex::new(manager)),
+        ctx,
+        args,
+    ))
 }
 
 pub(crate) fn exec_enter_plan_mode(ctx: Arc<ToolContext>, _args: String) -> ToolFuture {

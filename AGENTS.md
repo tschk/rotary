@@ -28,7 +28,7 @@ Tool gate shape (pi `beforeToolCall`):
 - Rust 2021 (MSRV 1.88), `#![forbid(unsafe_code)]`
 - tokio (async runtime, feature-gated)
 - serde / serde_json
-- rs_peekaboo 0.3.2 (crates.io, computer-use, feature-gated)
+- praefectus 0.4.1 (crates.io, computer-use, feature-gated)
 - reqwest (providers, feature-gated)
 - MPL-2.0
 
@@ -112,7 +112,7 @@ graph LR
 | `guardrails.rs` | empty-turn detection, repeated-failure detection |
 | `extract.rs` | structured extraction (JSON contracts) |
 | `ranking.rs` | proactive ranking |
-| `computer_use.rs` | rs_peekaboo native integration (no FFI), 13 `cu_*` tools |
+| `computer_use.rs` | Praefectus integration (no FFI), 13 `cu_*` tools |
 | `ipc.rs` | Unix socket JSON-RPC server |
 | `config.rs` | config file + env |
 | `plugin.rs` | plugin registry |
@@ -227,7 +227,7 @@ graph TD
 |---|---|---|
 | `ipc` | yes | tokio runtime, Unix socket JSON-RPC server, LSP client |
 | `builtin-tools` | yes | read/write/edit/bash/grep/find/ls with fff indexed search |
-| `computer-use` | no | rs_peekaboo `cu_*` tools (13 tools) |
+| `computer-use` | no | Praefectus `cu_*` tools (13 tools) |
 | `providers` | no | reqwest SSE streaming for OpenAI/Anthropic/Ollama/custom |
 | `memory` | no | SQLite-backed memory store |
 | `mcp` | no | MCP client (JSON-RPC 2.0 over stdio / HTTP / SSE) |
@@ -243,7 +243,7 @@ graph TD
 
 - No hard-coded API keys, no telemetry.
 - New agent features land in rotary first, then surface to hosts via IPC/slash.
-- computer-use uses the crates.io `rs_peekaboo` dependency — no vendoring, no FFI.
+- computer-use uses the crates.io `praefectus` dependency — no vendoring, no FFI.
 - A scope is a work mode, not an agent name.
 - rotary exposes capabilities, not policy — scheduling and lifecycle decisions belong to the host.
 - Shell allow/deny lists are host-owned; engine only matches. Prefer `Authorizer` for product rules.

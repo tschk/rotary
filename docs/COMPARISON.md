@@ -11,7 +11,7 @@ hosts on top.
 | Loop + tools | yes | yes | yes | wraps providers | yes | yes |
 | Permissions | modes + approver | sandbox + approvals | permissions | via provider | hooks | extensions |
 | Sessions | tree fork/merge | threads/rollouts | sessions | multi-session UX | sessions | session tree |
-| Computer-use | rs_peekaboo embed | OS features | plugins | N/A | N/A | N/A |
+| Computer-use | Praefectus embed | OS features | plugins | N/A | N/A | N/A |
 | MCP client | yes | yes | yes | no | yes | no |
 | Memory | graph + SQLite | context window | sessions | via provider | sessions | session tree |
 | Skill engine | bayesian + curator | skill packages | no | no | no | no |

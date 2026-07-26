@@ -21,7 +21,7 @@ graph TD
     Extra["extract · ranking · slash · ACP · LSP · IPC"]
   end
   Ctrl --> Providers["providers (HTTP/SSE)"]
-  Ctrl --> CU["computer-use (rs_peekaboo)"]
+  Ctrl --> CU["computer-use (Praefectus)"]
   Ctrl --> Mem["memory · graph_memory · embeddings"]
 ```
 
@@ -33,7 +33,7 @@ graph TD
 | **OpenCode** | multi-provider routing; session resume; plugin/tool surface |
 | **t3code** | typed event boundary; thin host protocol over IPC |
 | **pi / Crush** | event lifecycle; SKILL.md; hook envelopes |
-| **rs_peekaboo** | embedded computer-use primitives |
+| **Praefectus** | authorized, verified computer-use execution |
 | **Hermes Agent** | self-improving learning loop → `background_review`, `skill_curator` |
 | **Unthinkclaw** | embeddings module → `embeddings` |
 

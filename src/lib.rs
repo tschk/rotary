@@ -72,6 +72,8 @@ pub mod http;
 
 #[cfg(feature = "computer-use")]
 pub mod computer_use;
+#[cfg(feature = "computer-use")]
+mod computer_use_bridge;
 
 #[cfg(feature = "ipc")]
 pub mod ipc;
@@ -171,8 +173,8 @@ pub use skill_engine::{
 pub use slash::{help_text as slash_help_text, parse as parse_slash, Command as SlashCommand};
 pub use sse::{SseError, SseEvent, SseParser};
 pub use subagent::{
-    SubagentBudget, SubagentConfig, SubagentError, SubagentHandle, SubagentLimits, SubagentManager,
-    SubagentResult, SubagentStatus,
+    SubagentBudget, SubagentConfig, SubagentError, SubagentEvent, SubagentHandle, SubagentLimits,
+    SubagentManager, SubagentResult, SubagentStatus, SubagentSubscriber,
 };
 pub use tools::{register_builtin_tools, register_spawn_agent_tool};
 pub use work_pack::{WorkPack, WorkPackError};

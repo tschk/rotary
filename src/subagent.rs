@@ -17,6 +17,8 @@ use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use thiserror::Error;
@@ -52,6 +54,24 @@ pub enum SubagentStatus {
     /// Cancelled by the parent.
     Cancelled,
 }
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum SubagentEvent {
+    Started {
+        id: String,
+        name: String,
+        running: usize,
+    },
+    Finished {
+        id: String,
+        name: String,
+        status: SubagentStatus,
+        running: usize,
+    },
+}
+
+pub type SubagentSubscriber = Arc<dyn Fn(&SubagentEvent) + Send + Sync>;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SubagentLimits {
@@ -288,6 +308,8 @@ pub struct SubagentManager {
     parents: HashMap<String, Option<String>>,
     provider: Option<Arc<dyn Provider>>,
     tools: Option<Arc<ToolRegistry>>,
+    subscribers: Vec<SubagentSubscriber>,
+    background_running: Arc<AtomicUsize>,
 }
 
 impl std::fmt::Debug for SubagentManager {
@@ -296,6 +318,7 @@ impl std::fmt::Debug for SubagentManager {
             .field("subagents", &self.subagents.len())
             .field("parents", &self.parents.len())
             .field("has_provider", &self.provider.is_some())
+            .field("subscribers", &self.subscribers.len())
             .finish()
     }
 }
@@ -316,6 +339,22 @@ impl SubagentManager {
     pub fn with_tools(mut self, tools: Arc<ToolRegistry>) -> Self {
         self.tools = Some(tools);
         self
+    }
+
+    pub fn subscribe(&mut self, callback: impl Fn(&SubagentEvent) + Send + Sync + 'static) {
+        self.subscribers.push(Arc::new(callback));
+    }
+
+    pub fn running_count(&self) -> usize {
+        self.subagents
+            .values()
+            .filter(|handle| {
+                matches!(
+                    handle.status(),
+                    SubagentStatus::Pending | SubagentStatus::Running
+                )
+            })
+            .count()
     }
 
     /// Spawn a new subagent with the given config and prompt.
@@ -375,6 +414,68 @@ impl SubagentManager {
         Ok(handle)
     }
 
+    pub fn spawn_background(
+        &mut self,
+        config: SubagentConfig,
+        prompt: &str,
+        parent_workspace: &Path,
+    ) -> Result<SubagentHandle, SubagentError> {
+        let (handle, workspace) = self.begin_spawn(&config, prompt, parent_workspace)?;
+        let provider = self.provider.clone();
+        let tools = self.tools.clone();
+        let subscribers = self.subscribers.clone();
+        let running = self.background_running.fetch_add(1, Ordering::SeqCst) + 1;
+        let background_running = Arc::clone(&self.background_running);
+        let prompt = prompt.to_string();
+        emit_subagent_event(
+            &subscribers,
+            SubagentEvent::Started {
+                id: handle.id.clone(),
+                name: handle.name.clone(),
+                running,
+            },
+        );
+        let task_handle = handle.clone();
+        tokio::spawn(async move {
+            let started = Instant::now();
+            let mut result = if let Some(provider) = provider {
+                match run_agent_subagent_async(provider, tools, &config, &prompt, &workspace).await
+                {
+                    Ok(result) => result,
+                    Err(error) => SubagentResult {
+                        output: String::new(),
+                        files_modified: vec![],
+                        tool_calls: 0,
+                        error: Some(error),
+                        cost: 0.0,
+                        duration_seconds: 0,
+                    },
+                }
+            } else {
+                SubagentResult::offline(&config.name, &prompt)
+            };
+            result.duration_seconds = started.elapsed().as_secs();
+            if task_handle.status() != SubagentStatus::Cancelled {
+                let status = if result.error.is_some() {
+                    SubagentStatus::Failed
+                } else {
+                    SubagentStatus::Completed
+                };
+                task_handle.transition(status, Some(result));
+            }
+            emit_subagent_event(
+                &subscribers,
+                SubagentEvent::Finished {
+                    id: task_handle.id.clone(),
+                    name: task_handle.name.clone(),
+                    status: task_handle.status(),
+                    running: background_running.fetch_sub(1, Ordering::SeqCst) - 1,
+                },
+            );
+        });
+        Ok(handle)
+    }
+
     /// List all known subagent handles.
     pub fn list(&self) -> Vec<&SubagentHandle> {
         self.subagents.values().collect()
@@ -401,6 +502,18 @@ impl SubagentManager {
             }
         }
         handle.transition(SubagentStatus::Cancelled, None);
+        Ok(())
+    }
+
+    pub fn cleanup(&mut self, id: &str) -> Result<(), SubagentError> {
+        let handle = self
+            .subagents
+            .get(id)
+            .ok_or_else(|| SubagentError::NotFound(id.to_string()))?;
+        if let Some(path) = handle.worktree_path() {
+            cleanup_worktree(&path)?;
+            handle.state.lock().worktree_path = None;
+        }
         Ok(())
     }
 
@@ -503,11 +616,13 @@ impl SubagentManager {
         Ok((handle, workspace))
     }
 
-    fn finish_spawn(&self, handle: &SubagentHandle, result: &mut SubagentResult, started: Instant) {
+    fn finish_spawn(
+        &self,
+        _handle: &SubagentHandle,
+        result: &mut SubagentResult,
+        started: Instant,
+    ) {
         result.duration_seconds = started.elapsed().as_secs();
-        if let Some(path) = handle.worktree_path() {
-            let _ = self.cleanup_worktree(&path);
-        }
     }
 
     fn resolve_parent(
@@ -544,12 +659,22 @@ impl SubagentManager {
         prompt: &str,
         parent_workspace: &Path,
     ) -> Result<PathBuf, SubagentError> {
-        let worktrees_dir = parent_workspace.join(".rx4").join("worktrees");
+        let repo = git_output(parent_workspace, &["rev-parse", "--show-toplevel"])?;
+        let repo = PathBuf::from(repo.trim());
+        let worktrees_dir = repo.join(".rx4").join("worktrees");
         std::fs::create_dir_all(&worktrees_dir)
             .map_err(|e| SubagentError::GitError(format!("create worktrees dir: {e}")))?;
         let path = worktrees_dir.join(id);
-        std::fs::create_dir_all(&path)
-            .map_err(|e| SubagentError::GitError(format!("create worktree dir: {e}")))?;
+        git_status(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "--detach",
+                path.to_string_lossy().as_ref(),
+                "HEAD",
+            ],
+        )?;
         let contract = config
             .task_contract
             .clone()
@@ -558,11 +683,50 @@ impl SubagentManager {
         let _ = std::fs::write(&node_path, contract);
         Ok(path)
     }
+}
 
-    fn cleanup_worktree(&self, path: &Path) -> Result<(), SubagentError> {
-        std::fs::remove_dir_all(path)
-            .map_err(|e| SubagentError::GitError(format!("remove worktree dir: {e}")))
+fn emit_subagent_event(subscribers: &[SubagentSubscriber], event: SubagentEvent) {
+    for subscriber in subscribers {
+        subscriber(&event);
     }
+}
+
+fn git_output(cwd: &Path, args: &[&str]) -> Result<String, SubagentError> {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(cwd)
+        .output()
+        .map_err(|e| SubagentError::GitError(e.to_string()))?;
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    } else {
+        Err(SubagentError::GitError(
+            String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        ))
+    }
+}
+
+fn git_status(cwd: &Path, args: &[&str]) -> Result<(), SubagentError> {
+    git_output(cwd, args).map(|_| ())
+}
+
+fn cleanup_worktree(path: &Path) -> Result<(), SubagentError> {
+    let common_dir = git_output(
+        path,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    )?;
+    let repo = Path::new(common_dir.trim())
+        .parent()
+        .ok_or_else(|| SubagentError::GitError("git common directory has no parent".to_string()))?;
+    git_status(
+        repo,
+        &[
+            "worktree",
+            "remove",
+            "--force",
+            path.to_string_lossy().as_ref(),
+        ],
+    )
 }
 
 fn default_node_contract(config: &SubagentConfig, prompt: &str) -> String {
@@ -677,7 +841,6 @@ fn run_agent_subagent(
     .map_err(|_| "subagent thread panicked".to_string())?
 }
 
-#[cfg(feature = "ipc")]
 async fn run_agent_subagent_async(
     provider: Arc<dyn Provider>,
     tools: Option<Arc<ToolRegistry>>,
@@ -841,6 +1004,12 @@ mod tests {
     #[test]
     fn workspace_isolation_creates_and_cleans_worktree() {
         let tmp = tempfile::tempdir().expect("tempdir");
+        git_status(tmp.path(), &["init"]).expect("git init");
+        git_status(tmp.path(), &["config", "user.email", "test@example.com"]).expect("email");
+        git_status(tmp.path(), &["config", "user.name", "Test"]).expect("name");
+        std::fs::write(tmp.path().join("tracked"), "content").expect("write");
+        git_status(tmp.path(), &["add", "tracked"]).expect("add");
+        git_status(tmp.path(), &["commit", "-m", "initial"]).expect("commit");
         let mut mgr = SubagentManager::new();
         let cfg = SubagentConfig {
             name: "iso".to_string(),
@@ -848,9 +1017,38 @@ mod tests {
             ..SubagentConfig::default()
         };
         let handle = mgr.spawn(cfg, "p", tmp.path()).expect("spawn");
-        let worktree = handle.worktree_path();
-        assert!(worktree.is_some());
-        assert!(!worktree.unwrap().exists(), "worktree should be cleaned up");
+        let worktree = handle.worktree_path().expect("worktree");
+        assert!(worktree.exists());
+        assert!(worktree.join(".git").exists());
+        mgr.cleanup(handle.id()).expect("cleanup");
+        assert!(!worktree.exists());
+        assert!(handle.worktree_path().is_none());
+    }
+
+    #[cfg(feature = "ipc")]
+    #[tokio::test]
+    async fn background_spawn_reports_lifecycle_and_running_count() {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let received = Arc::clone(&events);
+        let mut mgr = SubagentManager::new();
+        mgr.subscribe(move |event| received.lock().push(event.clone()));
+        let handle = mgr
+            .spawn_background(config("worker"), "do the thing", Path::new("."))
+            .expect("spawn");
+        assert_eq!(handle.status(), SubagentStatus::Running);
+        assert_eq!(mgr.running_count(), 1);
+        let result = handle.wait().await;
+        assert!(result.output.contains("do the thing"));
+        assert_eq!(mgr.running_count(), 0);
+        let events = events.lock();
+        assert!(matches!(
+            events.first(),
+            Some(SubagentEvent::Started { running: 1, .. })
+        ));
+        assert!(matches!(
+            events.last(),
+            Some(SubagentEvent::Finished { running: 0, .. })
+        ));
     }
 
     #[test]

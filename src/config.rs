@@ -28,7 +28,7 @@ fn default_max_iterations() -> usize {
     20
 }
 fn default_compact_after() -> usize {
-    80
+    0
 }
 
 impl Default for Config {
@@ -52,5 +52,15 @@ impl Config {
             }
         }
         Self::default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compaction_defaults_to_model_window() {
+        assert_eq!(Config::default().auto_compact_after, 0);
     }
 }

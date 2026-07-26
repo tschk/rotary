@@ -107,7 +107,7 @@ flowchart TD
 - **7 builtin tools** — `read`, `write`, `edit`, `bash`, `grep`, `find`, `ls`
   (fff indexed search).
 - **13 computer-use tools** (`cu_*`) via
-  [rs_peekaboo](https://crates.io/crates/rs_peekaboo) — native Rust, no FFI.
+  [Praefectus](https://crates.io/crates/praefectus) — native Rust, no FFI.
 - **MCP client** — JSON-RPC 2.0 over stdio; tools prefixed
   `mcp__{server}__{tool}`.
 - **Session tree** — fork/merge with JSONL persistence; optional SQLite via
@@ -161,7 +161,7 @@ flowchart TD
 | `research` | read-only | read_only |
 | `plan` | read-only | read_only |
 | `ask` | none | deny_all |
-| `computer_use` | rs_peekaboo `cu_*` | full_access |
+| `computer_use` | Praefectus `cu_*` | full_access |
 
 ## Feature flags
 
@@ -169,7 +169,7 @@ flowchart TD
 |---|---|---|
 | `ipc` | yes | tokio runtime, Unix socket JSON-RPC server, LSP client |
 | `builtin-tools` | yes | read/write/edit/bash/grep/find/ls with fff indexed search |
-| `computer-use` | no | rs_peekaboo `cu_*` tools (13 tools) |
+| `computer-use` | no | Praefectus `cu_*` tools (13 tools) |
 | `providers` | no | reqwest SSE streaming for OpenAI/Anthropic/Ollama/custom |
 | `memory` | no | SQLite-backed memory store |
 | `mcp` | no | MCP client (JSON-RPC 2.0 over stdio / HTTP / SSE) |
@@ -218,11 +218,11 @@ registry.register("custom", "my-model", "sk-...")
 
 ## Computer-use
 
-Powered by [rs_peekaboo](https://crates.io/crates/rs_peekaboo) — native
+Powered by [Praefectus](https://crates.io/crates/praefectus) — native
 Rust, no FFI:
 
 ```toml
-rx4 = { version = "0.3", features = ["computer-use"] }
+rx4 = { version = "0.4", features = ["computer-use"] }
 ```
 
 13 tools:

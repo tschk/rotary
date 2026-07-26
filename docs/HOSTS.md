@@ -26,7 +26,7 @@ rx4 serve /tmp/rx4.sock     # optional Rotary IPC daemon
 
 Wire:
 
-- `rx4` is a **Cargo dependency** (`rx4 = "0.3"` in `ui/tui/Cargo.toml`),
+- `rx4` is a **Cargo dependency** (`rx4 = "0.4"` in `ui/tui/Cargo.toml`),
   not a submodule.
 - `ui/tui/src/main.rs` imports rx4 directly and drives the agent loop
   in-process via tokio channels.
@@ -50,16 +50,16 @@ Or attach as IPC-only: start Rotary's server surface through `rx4 serve`.
 
 ## Computer-use
 
-Do **not** shell out to `rs-peekaboo`. Embed the crate via the
-`computer-use` feature:
+Do **not** shell out to Praefectus. Embed it through rx4's `computer-use`
+feature:
 
 ```toml
-rx4 = { version = "0.3", features = ["computer-use"] }
+rx4 = { version = "0.4", features = ["computer-use"] }
 ```
 
 ```rust
 rx4::computer_use::register_tools(&mut tools);
 ```
 
-This registers the 13 `cu_*` tools with no FFI — rs_peekaboo is a native
-Rust crate from crates.io.
+This registers the 13 `cu_*` tools with no FFI through the native Rust
+Praefectus crate from crates.io.

@@ -29,6 +29,32 @@ use tracing::{debug, info, warn};
 #[serde(tag = "type")]
 pub enum Event {
     AgentStart,
+    ContextUsage {
+        used_tokens: usize,
+        context_window: usize,
+        auto_compact_at: usize,
+    },
+    Usage {
+        model: String,
+        usage: TokenUsage,
+        estimated: bool,
+    },
+    CompactionStart {
+        reason: String,
+        before_tokens: usize,
+    },
+    CompactionEnd {
+        reason: String,
+        result: crate::compaction::CompactionResult,
+    },
+    SkillActivated {
+        id: String,
+        name: String,
+    },
+    ToolSource {
+        tool: String,
+        source: ToolSource,
+    },
     TurnStart {
         turn: usize,
     },
@@ -55,6 +81,14 @@ pub enum Event {
     BudgetExceeded {
         reason: String,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ToolSource {
+    Builtin,
+    Mcp { server: String },
+    ComputerUse,
 }
 
 pub type Subscriber = Arc<dyn Fn(&Event) + Send + Sync>;
@@ -102,6 +136,7 @@ impl AgentBudget {
 /// The agent — owns the loop, tools, provider, policy, scope, hooks, cache.
 pub struct Agent {
     pub model: String,
+    pub reasoning_effort: Option<String>,
     pub system_prompt: Option<String>,
     pub tools: Arc<ToolRegistry>,
     pub policy: Policy,
@@ -150,6 +185,7 @@ impl Agent {
     pub fn new() -> Self {
         let mut agent = Self {
             model: "gpt-4o".into(),
+            reasoning_effort: None,
             system_prompt: None,
             tools: Arc::new(ToolRegistry::new()),
             policy: Policy::workspace_write(),
@@ -161,7 +197,7 @@ impl Agent {
             authorizer: None,
             provider: None,
             max_tool_iterations: 50,
-            auto_compact_after: 80,
+            auto_compact_after: 0,
             workspace_root: std::env::current_dir().unwrap_or_else(|_| ".".into()),
             sandbox: None,
             os_sandbox: None,
@@ -208,6 +244,10 @@ impl Agent {
 
     pub fn set_model(&mut self, model: impl Into<String>) {
         self.model = model.into();
+    }
+
+    pub fn set_reasoning_effort(&mut self, effort: Option<String>) {
+        self.reasoning_effort = effort;
     }
 
     pub fn set_system_prompt(&mut self, prompt: impl Into<String>) {
@@ -435,18 +475,71 @@ impl Agent {
         self.messages.read().len()
     }
 
+    pub fn context_window(&self) -> usize {
+        crate::models::ModelRegistry::load()
+            .get(&self.model)
+            .map(|model| model.context_window)
+            .unwrap_or(CompactionConfig::DEFAULT_CONTEXT_WINDOW)
+    }
+
+    pub fn auto_compact_threshold(&self) -> usize {
+        if self.auto_compact_after == 0 {
+            let context_window = self.context_window();
+            context_window.saturating_sub(context_window / 10)
+        } else {
+            self.auto_compact_after
+        }
+    }
+
+    pub fn context_tokens(&self) -> usize {
+        estimate_messages(&self.messages.read())
+            + self
+                .system_prompt
+                .as_deref()
+                .map(crate::compaction::estimate_tokens)
+                .unwrap_or(0)
+    }
+
+    fn compaction_config(&self) -> CompactionConfig {
+        if self.auto_compact_after == 0 {
+            let context_window = self.context_window();
+            let reserve = context_window / 10;
+            CompactionConfig::new(context_window, reserve, reserve)
+        } else {
+            let reserve = (self.auto_compact_after / 4).max(32);
+            CompactionConfig::new(self.auto_compact_after + reserve, reserve, reserve)
+        }
+    }
+
     /// Run a prompt through the agent loop.
     /// Streams events to subscribers, executes tools, cycles turns.
     pub async fn prompt(&mut self, text: &str) -> Result<(), AgentError> {
-        let tokens = estimate_messages(&self.messages.read());
-        if tokens >= self.auto_compact_after {
+        let tokens = self.context_tokens();
+        let context_window = self.context_window();
+        let auto_compact_at = self.auto_compact_threshold();
+        self.emit(Event::ContextUsage {
+            used_tokens: tokens,
+            context_window,
+            auto_compact_at,
+        });
+        if tokens >= auto_compact_at {
             self.compact("auto-compact before prompt");
         }
 
         // Inject activated skill instructions into system prompt for this turn.
         #[cfg(feature = "skills")]
         if let Some(reg) = &self.skill_registry {
-            let activated = reg.auto_activate(text);
+            let matched = reg.match_prompt(text);
+            for skill in &matched {
+                self.emit(Event::SkillActivated {
+                    id: skill.id.clone(),
+                    name: skill.name.clone(),
+                });
+            }
+            let activated: Vec<String> = matched
+                .into_iter()
+                .map(|skill| skill.instructions.clone())
+                .collect();
             if !activated.is_empty() {
                 let block = activated.join("\n\n---\n\n");
                 let base = self.system_prompt.as_deref();
@@ -575,12 +668,19 @@ impl Agent {
                             &system,
                             &self.model,
                             &self.tools.definitions(),
+                            self.reasoning_effort.as_deref(),
                         ))
                         .await
                         .map_err(|_| AgentError::Cancelled)?;
                     #[cfg(not(feature = "ipc"))]
                     let result = provider
-                        .stream(&messages, &system, &self.model, &self.tools.definitions())
+                        .stream(
+                            &messages,
+                            &system,
+                            &self.model,
+                            &self.tools.definitions(),
+                            self.reasoning_effort.as_deref(),
+                        )
                         .await;
                     match result {
                         Ok(stream) => break stream,
@@ -627,6 +727,10 @@ impl Agent {
                         }
                         Ok(StreamEvent::ToolCall(call)) => {
                             tool_calls.push(call.clone());
+                            self.emit(Event::ToolSource {
+                                tool: call.name.clone(),
+                                source: tool_source(&call.name),
+                            });
                             self.emit(Event::ToolCall(call));
                         }
                         Ok(StreamEvent::Done) => break,
@@ -652,24 +756,35 @@ impl Agent {
                 content: assistant_content.clone(),
             });
 
-            if !assistant_content.is_empty() {
-                self.messages
-                    .write()
-                    .push(Message::assistant(assistant_content.clone()));
-            }
+            self.messages.write().push(Message::assistant_with_tools(
+                assistant_content.clone(),
+                tool_calls.clone(),
+            ));
 
-            let input_tokens = estimate_messages(&messages);
-            let output_tokens = assistant_content.chars().count() / 3;
-            self.session_cost.record(
-                &self.model,
-                TokenUsage {
-                    input_tokens,
-                    output_tokens,
-                    cache_read_tokens: 0,
-                    cache_write_tokens: 0,
-                },
-                &self.pricing_registry,
-            );
+            let input_tokens = estimate_messages(&messages)
+                + system
+                    .as_deref()
+                    .map(crate::compaction::estimate_tokens)
+                    .unwrap_or(0);
+            let output_tokens = crate::compaction::estimate_tokens(&assistant_content);
+            let usage = TokenUsage {
+                input_tokens,
+                output_tokens,
+                cache_read_tokens: 0,
+                cache_write_tokens: 0,
+            };
+            self.session_cost
+                .record(&self.model, usage, &self.pricing_registry);
+            self.emit(Event::Usage {
+                model: self.model.clone(),
+                usage,
+                estimated: true,
+            });
+            self.emit(Event::ContextUsage {
+                used_tokens: self.context_tokens(),
+                context_window,
+                auto_compact_at,
+            });
             if let Some(reason) = self.check_budget() {
                 self.emit(Event::BudgetExceeded {
                     reason: reason.clone(),
@@ -1101,19 +1216,39 @@ impl Agent {
 
     pub fn compact(&self, reason: &str) {
         info!("compacting context: {reason}");
-        let mut msgs = self.messages.write();
-        if msgs.len() <= 2 {
+        if self.message_count() <= 2 {
             return;
         }
-        let trigger = self.auto_compact_after.max(64);
-        let reserve = (trigger / 4).max(32);
-        let keep_recent = (trigger / 4).max(32);
-        let config = CompactionConfig::new(trigger + reserve, reserve, keep_recent);
-        let result = apply_compaction(&mut msgs, &config);
-        if !result.summary.is_empty() {
-            msgs.push(Message::system(format!("[compact reason: {reason}]")));
-        }
+        let before_tokens = self.context_tokens();
+        self.emit(Event::CompactionStart {
+            reason: reason.to_string(),
+            before_tokens,
+        });
+        let result = {
+            let mut msgs = self.messages.write();
+            let result = apply_compaction(&mut msgs, &self.compaction_config());
+            if !result.summary.is_empty() {
+                msgs.push(Message::system(format!("[compact reason: {reason}]")));
+            }
+            result
+        };
+        self.emit(Event::CompactionEnd {
+            reason: reason.to_string(),
+            result,
+        });
     }
+}
+
+fn tool_source(name: &str) -> ToolSource {
+    if let Some(rest) = name.strip_prefix("mcp__") {
+        return ToolSource::Mcp {
+            server: rest.split("__").next().unwrap_or(rest).to_string(),
+        };
+    }
+    if name.starts_with("cu_") {
+        return ToolSource::ComputerUse;
+    }
+    ToolSource::Builtin
 }
 
 #[cfg(test)]
@@ -1253,6 +1388,56 @@ mod tests {
         assert!(msgs.len() < 42);
         assert!(msgs.iter().any(|m| m.content.contains("context compacted")));
         assert!(msgs.iter().any(|m| m.content.contains("recent tail")));
+    }
+
+    #[test]
+    fn default_compaction_threshold_tracks_model_window() {
+        let mut agent = Agent::new();
+        agent.set_model("gemini-2.0-flash");
+        assert_eq!(agent.context_window(), 1_048_576);
+        assert_eq!(agent.auto_compact_threshold(), 943_719);
+    }
+
+    #[test]
+    fn explicit_compaction_threshold_is_preserved() {
+        let mut agent = Agent::new();
+        agent.auto_compact_after = 50;
+        assert_eq!(agent.auto_compact_threshold(), 50);
+    }
+
+    #[test]
+    fn compaction_emits_lifecycle() {
+        let mut agent = Agent::new();
+        agent.auto_compact_after = 50;
+        agent
+            .messages
+            .write()
+            .extend((0..10).map(|_| Message::user("x".repeat(100))));
+        let events = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let received = Arc::clone(&events);
+        agent.subscribe(move |event| {
+            received.lock().push(event.clone());
+        });
+        agent.compact("test");
+        let events = events.lock();
+        assert!(events
+            .iter()
+            .any(|event| matches!(event, Event::CompactionStart { .. })));
+        assert!(events
+            .iter()
+            .any(|event| matches!(event, Event::CompactionEnd { .. })));
+    }
+
+    #[test]
+    fn tool_sources_are_classified() {
+        assert_eq!(tool_source("read"), ToolSource::Builtin);
+        assert_eq!(tool_source("cu_click"), ToolSource::ComputerUse);
+        assert_eq!(
+            tool_source("mcp__supabase__query"),
+            ToolSource::Mcp {
+                server: "supabase".into()
+            }
+        );
     }
 
     #[cfg(feature = "ipc")]

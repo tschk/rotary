@@ -5,10 +5,53 @@ pub(crate) mod common;
 mod extended;
 pub(crate) mod fs;
 
-use crate::agent::{ToolDefinition, ToolEffect, ToolRegistry, ToolResult};
+use crate::agent::{ToolContext, ToolDefinition, ToolEffect, ToolRegistry, ToolResult};
 use crate::subagent::{SubagentConfig, SubagentManager};
 use parking_lot::Mutex;
 use std::sync::Arc;
+
+async fn execute_spawn_agent(
+    manager: Arc<Mutex<SubagentManager>>,
+    ctx: Arc<ToolContext>,
+    args: String,
+) -> ToolResult {
+    let v: serde_json::Value = match serde_json::from_str(&args) {
+        Ok(v) => v,
+        Err(e) => return ToolResult::err("spawn_agent", format!("invalid json: {e}")),
+    };
+    let prompt = match v.get("prompt").and_then(|p| p.as_str()) {
+        Some(p) if !p.is_empty() => p.to_string(),
+        _ => return ToolResult::err("spawn_agent", "prompt required"),
+    };
+    let name = v
+        .get("name")
+        .and_then(|n| n.as_str())
+        .unwrap_or("subagent")
+        .to_string();
+    let model = v.get("model").and_then(|m| m.as_str()).map(str::to_string);
+    let isolate = v.get("isolate").and_then(|i| i.as_bool()).unwrap_or(false);
+    let config = SubagentConfig {
+        name,
+        model,
+        workspace_isolation: isolate,
+        ..SubagentConfig::default()
+    };
+    let spawn_res = manager
+        .lock()
+        .spawn_background(config, &prompt, &ctx.workspace_root);
+    match spawn_res {
+        Ok(handle) => ToolResult::ok(
+            "spawn_agent",
+            serde_json::json!({
+                "id": handle.id(),
+                "name": handle.name(),
+                "status": "running",
+            })
+            .to_string(),
+        ),
+        Err(e) => ToolResult::err("spawn_agent", e.to_string()),
+    }
+}
 
 pub fn register_builtin_tools(registry: &mut ToolRegistry) {
     registry.register(
@@ -160,67 +203,7 @@ pub fn register_spawn_agent_tool(
             r#"{"type":"object","properties":{"prompt":{"type":"string"},"name":{"type":"string"},"model":{"type":"string"},"isolate":{"type":"boolean"}},"required":["prompt"]}"#,
             Box::new(move |ctx, args| {
                 let manager = Arc::clone(&manager);
-                Box::pin(async move {
-                    let v: serde_json::Value = match serde_json::from_str(&args) {
-                        Ok(v) => v,
-                        Err(e) => {
-                            return ToolResult::err("spawn_agent", format!("invalid json: {e}"))
-                        }
-                    };
-                    let prompt = match v.get("prompt").and_then(|p| p.as_str()) {
-                        Some(p) if !p.is_empty() => p.to_string(),
-                        _ => return ToolResult::err("spawn_agent", "prompt required"),
-                    };
-                    let name = v
-                        .get("name")
-                        .and_then(|n| n.as_str())
-                        .unwrap_or("subagent")
-                        .to_string();
-                    let model = v
-                        .get("model")
-                        .and_then(|m| m.as_str())
-                        .map(|s| s.to_string());
-                    let isolate = v
-                        .get("isolate")
-                        .and_then(|i| i.as_bool())
-                        .unwrap_or(false);
-                    let config = SubagentConfig {
-                        name: name.clone(),
-                        model,
-                        workspace_isolation: isolate,
-                        ..SubagentConfig::default()
-                    };
-                    let spawn_res = {
-                        let mut mgr = manager.lock();
-                        mgr.spawn(config, &prompt, &ctx.workspace_root)
-                    };
-                    match spawn_res {
-                        Ok(handle) => {
-                            let id = handle.id().to_string();
-                            let name = handle.name().to_string();
-                            let result = tokio::task::spawn_blocking(move || handle.wait_sync())
-                                .await
-                                .unwrap_or_else(|e| crate::subagent::SubagentResult {
-                                    output: format!("join error: {e}"),
-                                    files_modified: vec![],
-                                    tool_calls: 0,
-                                    error: Some(e.to_string()),
-                                    cost: 0.0,
-                                    duration_seconds: 0,
-                                });
-                            let body = serde_json::json!({
-                                "id": id,
-                                "name": name,
-                                "status": if result.error.is_some() { "Failed" } else { "Completed" },
-                                "output": result.output,
-                                "tool_calls": result.tool_calls,
-                                "error": result.error,
-                            });
-                            ToolResult::ok("spawn_agent", body.to_string())
-                        }
-                        Err(e) => ToolResult::err("spawn_agent", e.to_string()),
-                    }
-                })
+                Box::pin(execute_spawn_agent(manager, ctx, args))
             }),
         )
         .with_effect(ToolEffect::Process),
