@@ -416,7 +416,18 @@ fn openai_request(
     }
 
     if !tools.is_empty() {
-        body["tools"] = serde_json::json!(tools);
+        body["tools"] = serde_json::Value::Array(
+            tools
+                .iter()
+                .map(|tool| {
+                    if tool.get("type").is_some() {
+                        tool.clone()
+                    } else {
+                        serde_json::json!({"type": "function", "function": tool})
+                    }
+                })
+                .collect(),
+        );
     }
     if let Some(effort) = reasoning_effort {
         body["reasoning_effort"] = serde_json::json!(effort);
@@ -485,10 +496,11 @@ fn anthropic_request(
             tools
                 .iter()
                 .map(|tool| {
+                    let function = tool.get("function").unwrap_or(tool);
                     serde_json::json!({
-                        "name": tool["function"]["name"],
-                        "description": tool["function"]["description"],
-                        "input_schema": tool["function"]["parameters"]
+                        "name": function["name"],
+                        "description": function["description"],
+                        "input_schema": function["parameters"]
                     })
                 })
                 .collect(),
@@ -696,6 +708,17 @@ mod tests {
 
     #[cfg(feature = "providers")]
     #[test]
+    fn wraps_registry_tools_for_openai_compatible_providers() {
+        let tools = vec![serde_json::json!({
+            "name":"read","description":"Read","parameters":{"type":"object"}
+        })];
+        let body = openai_request(&[], &None, "grok-4.5", &tools, Some("high"));
+        assert_eq!(body["tools"][0]["type"], "function");
+        assert_eq!(body["tools"][0]["function"], tools[0]);
+    }
+
+    #[cfg(feature = "providers")]
+    #[test]
     fn builds_native_anthropic_request_and_stream() {
         let messages = vec![
             Message::user("inspect"),
@@ -710,8 +733,7 @@ mod tests {
             Message::tool("tool_1", "contents"),
         ];
         let tools = vec![serde_json::json!({
-            "type":"function",
-            "function":{"name":"read","description":"Read","parameters":{"type":"object"}}
+            "name":"read","description":"Read","parameters":{"type":"object"}
         })];
         let body = anthropic_request(
             &messages,
