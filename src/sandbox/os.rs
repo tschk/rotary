@@ -94,9 +94,17 @@ impl SandboxProfileGenerator {
         }
         lines.push(format!("(deny file-read* (subpath \"{home}\"))"));
         lines.push(format!("(allow file-read* (subpath \"{workspace}\"))"));
-        lines.push(format!("(allow file-read* (literal \"{home}/.gitconfig\"))"));
+        lines.push(format!(
+            "(allow file-read* (literal \"{home}/.gitconfig\"))"
+        ));
+        lines.push(format!(
+            "(allow file-read* (literal \"{home}/.gitignore_global\"))"
+        ));
         lines.push(format!(
             "(allow file-read* (literal \"{home}/.config/git/config\"))"
+        ));
+        lines.push(format!(
+            "(allow file-read* (literal \"{home}/.config/git/ignore\"))"
         ));
         lines.push(format!("(deny file-read* (subpath \"{home}/.ssh\"))"));
         lines.push(format!("(deny file-read* (subpath \"{home}/.aws\"))"));

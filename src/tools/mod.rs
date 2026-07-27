@@ -358,6 +358,11 @@ mod tests {
         .await;
         assert!(!result.is_error, "{}", result.content);
         assert!(!result.content.contains("exit code"), "{}", result.content);
+        assert!(
+            !result.content.contains("Operation not permitted"),
+            "{}",
+            result.content
+        );
         assert!(result.content.contains(workspace.to_str().unwrap()));
     }
 
