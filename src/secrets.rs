@@ -216,6 +216,10 @@ fn run_len_at(text: &str, byte_idx: usize, pred: impl Fn(char) -> bool) -> usize
     len
 }
 
+fn next_char_boundary(text: &str, byte_idx: usize) -> usize {
+    byte_idx + text[byte_idx..].chars().next().map_or(1, char::len_utf8)
+}
+
 fn find_prefix_runs(
     text: &str,
     prefixes: &[&str],
@@ -248,7 +252,7 @@ fn find_prefix_runs(
             }
         }
         if !found_any {
-            search_from += 1;
+            search_from = next_char_boundary(text, search_from);
         }
     }
 }
@@ -284,29 +288,29 @@ fn find_jwts(text: &str, out: &mut Vec<SecretMatch>) {
         let start = search_from + rel;
         let seg1 = run_len_at(text, start, is_base64url);
         if seg1 < 8 {
-            search_from = start + 1;
+            search_from = next_char_boundary(text, start);
             continue;
         }
         let mut idx = start + seg1;
         if !text[idx..].starts_with('.') {
-            search_from = start + 1;
+            search_from = next_char_boundary(text, start);
             continue;
         }
         idx += 1;
         let seg2 = run_len_at(text, idx, is_base64url);
         if seg2 < 8 {
-            search_from = start + 1;
+            search_from = next_char_boundary(text, start);
             continue;
         }
         idx += seg2;
         if !text[idx..].starts_with('.') {
-            search_from = start + 1;
+            search_from = next_char_boundary(text, start);
             continue;
         }
         idx += 1;
         let seg3 = run_len_at(text, idx, is_base64url);
         if seg3 < 8 {
-            search_from = start + 1;
+            search_from = next_char_boundary(text, start);
             continue;
         }
         let end = idx + seg3;
@@ -421,7 +425,7 @@ fn find_env_secrets(text: &str, out: &mut Vec<SecretMatch>) {
         let start = search_from + rel;
         let run = run_len_at(text, start, |c| c.is_ascii_alphanumeric() || c == '_');
         if run == 0 {
-            search_from = start + 1;
+            search_from = next_char_boundary(text, start);
             continue;
         }
         let name = &text[start..start + run];
@@ -433,7 +437,7 @@ fn find_env_secrets(text: &str, out: &mut Vec<SecretMatch>) {
                 redacted: SecretPattern::EnvSecret.redacted(),
             });
         }
-        search_from = start + run + 1;
+        search_from = next_char_boundary(text, start + run);
     }
 }
 
@@ -624,6 +628,16 @@ mod tests {
         let body = "The quick brown fox jumps over the lazy dog. Path is /usr/bin.";
         assert_eq!(r.redact(body), body);
         assert!(r.find_secrets(body).is_empty());
+    }
+
+    #[test]
+    fn unicode_text_does_not_panic() {
+        let r = Redactor::new();
+        let body = format!(
+            "{}— tools were glitching a bit; retrying the basics.",
+            "a".repeat(283)
+        );
+        assert_eq!(r.redact(&body), body);
     }
 
     #[test]
