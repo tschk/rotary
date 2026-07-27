@@ -341,6 +341,22 @@ mod tests {
         assert!(result.content.contains("hello"));
     }
 
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn test_bash_in_macos_sandbox() {
+        let workspace = std::env::current_dir().unwrap();
+        let config = crate::sandbox::OsSandboxConfig::new(
+            crate::sandbox::OsSandbox::MacosSeatbelt,
+            workspace.clone(),
+        );
+        let runner = crate::sandbox::OsSandboxRunner::new(config).unwrap();
+        let ctx = Arc::new(ToolContext::new(&workspace).with_os_sandbox(Arc::new(runner)));
+        let result = fs::exec_bash(ctx, r#"{"command":"pwd"}"#.to_string()).await;
+        assert!(!result.is_error, "{}", result.content);
+        assert!(!result.content.contains("exit code"), "{}", result.content);
+        assert!(result.content.contains(workspace.to_str().unwrap()));
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn test_bash_large_stdout() {

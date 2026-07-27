@@ -66,6 +66,7 @@ impl SandboxProfileGenerator {
         lines.push("(deny default)".to_string());
         lines.push("(allow process-exec)".to_string());
         lines.push("(allow process-fork)".to_string());
+        lines.push("(allow file-read*)".to_string());
         lines.push(format!("(allow file-read* (subpath \"{workspace}\"))"));
         lines.push("(allow file-read* (subpath \"/usr\"))".to_string());
         lines.push("(allow file-read* (subpath \"/bin\"))".to_string());
@@ -90,6 +91,8 @@ impl SandboxProfileGenerator {
         } else {
             lines.push("(deny network*)".to_string());
         }
+        lines.push(format!("(deny file-read* (subpath \"{home}\"))"));
+        lines.push(format!("(allow file-read* (subpath \"{workspace}\"))"));
         lines.push(format!("(deny file-read* (subpath \"{home}/.ssh\"))"));
         lines.push(format!("(deny file-read* (subpath \"{home}/.aws\"))"));
         lines.push(format!(
