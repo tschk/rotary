@@ -77,6 +77,7 @@ impl SandboxProfileGenerator {
         lines.push("(allow file-read* (subpath \"/private/var/db/dyld\"))".to_string());
         lines.push("(allow file-read* (literal \"/dev/null\"))".to_string());
         lines.push("(allow file-read* (literal \"/dev/urandom\"))".to_string());
+        lines.push("(allow file-write* (literal \"/dev/null\"))".to_string());
         lines.push(format!("(allow file-write* (subpath \"{workspace}\"))"));
         if config.allow_tmp {
             lines.push("(allow file-read* (subpath \"/tmp\"))".to_string());

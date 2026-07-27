@@ -351,7 +351,11 @@ mod tests {
         );
         let runner = crate::sandbox::OsSandboxRunner::new(config).unwrap();
         let ctx = Arc::new(ToolContext::new(&workspace).with_os_sandbox(Arc::new(runner)));
-        let result = fs::exec_bash(ctx, r#"{"command":"pwd"}"#.to_string()).await;
+        let result = fs::exec_bash(
+            ctx,
+            r#"{"command":"HOME=\"$PWD\" XDG_CONFIG_HOME=\"$PWD/.config\" GIT_CONFIG_GLOBAL=/dev/null git status --short >/dev/null && pwd"}"#.to_string(),
+        )
+        .await;
         assert!(!result.is_error, "{}", result.content);
         assert!(!result.content.contains("exit code"), "{}", result.content);
         assert!(result.content.contains(workspace.to_str().unwrap()));
