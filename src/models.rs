@@ -18,6 +18,8 @@ pub struct ModelInfo {
     pub supports_vision: bool,
     #[serde(default)]
     pub supports_reasoning: bool,
+    #[serde(default)]
+    pub supports_reasoning_effort: bool,
 }
 
 /// Per-provider compatibility overrides for request field naming and role handling.
@@ -110,6 +112,13 @@ impl ModelRegistry {
             .unwrap_or(false)
     }
 
+    pub fn supports_reasoning_effort(&self, id: &str) -> bool {
+        self.models
+            .get(id)
+            .map(|m| m.supports_reasoning_effort)
+            .unwrap_or(false)
+    }
+
     /// Clamp a requested thinking level to the model's supported range.
     ///
     /// Returns one of `"low"`, `"medium"`, `"high"`, `"xhigh"`. Non-reasoning
@@ -157,6 +166,7 @@ fn builtin_models() -> Vec<ModelInfo> {
             supports_tools: true,
             supports_vision: true,
             supports_reasoning: true,
+            supports_reasoning_effort: true,
         },
         ModelInfo {
             id: "gpt-5.6-terra".into(),
@@ -166,6 +176,7 @@ fn builtin_models() -> Vec<ModelInfo> {
             supports_tools: true,
             supports_vision: true,
             supports_reasoning: true,
+            supports_reasoning_effort: true,
         },
         ModelInfo {
             id: "gpt-5.6-luna".into(),
@@ -175,6 +186,7 @@ fn builtin_models() -> Vec<ModelInfo> {
             supports_tools: true,
             supports_vision: true,
             supports_reasoning: false,
+            supports_reasoning_effort: false,
         },
         ModelInfo {
             id: "gpt-5.4".into(),
@@ -184,6 +196,7 @@ fn builtin_models() -> Vec<ModelInfo> {
             supports_tools: true,
             supports_vision: true,
             supports_reasoning: true,
+            supports_reasoning_effort: true,
         },
         ModelInfo {
             id: "gpt-5.4-mini".into(),
@@ -193,6 +206,7 @@ fn builtin_models() -> Vec<ModelInfo> {
             supports_tools: true,
             supports_vision: true,
             supports_reasoning: false,
+            supports_reasoning_effort: false,
         },
         ModelInfo {
             id: "gpt-5.2".into(),
@@ -202,6 +216,7 @@ fn builtin_models() -> Vec<ModelInfo> {
             supports_tools: true,
             supports_vision: true,
             supports_reasoning: true,
+            supports_reasoning_effort: true,
         },
         ModelInfo {
             id: "claude-3-5-sonnet".into(),
@@ -211,6 +226,7 @@ fn builtin_models() -> Vec<ModelInfo> {
             supports_tools: true,
             supports_vision: true,
             supports_reasoning: true,
+            supports_reasoning_effort: true,
         },
         ModelInfo {
             id: "claude-3-5-haiku".into(),
@@ -220,6 +236,7 @@ fn builtin_models() -> Vec<ModelInfo> {
             supports_tools: true,
             supports_vision: true,
             supports_reasoning: false,
+            supports_reasoning_effort: false,
         },
         ModelInfo {
             id: "claude-3-opus".into(),
@@ -229,6 +246,7 @@ fn builtin_models() -> Vec<ModelInfo> {
             supports_tools: true,
             supports_vision: true,
             supports_reasoning: false,
+            supports_reasoning_effort: false,
         },
         ModelInfo {
             id: "gemini-2.0-flash".into(),
@@ -238,6 +256,7 @@ fn builtin_models() -> Vec<ModelInfo> {
             supports_tools: true,
             supports_vision: true,
             supports_reasoning: false,
+            supports_reasoning_effort: false,
         },
         ModelInfo {
             id: "gemini-1.5-pro".into(),
@@ -247,6 +266,7 @@ fn builtin_models() -> Vec<ModelInfo> {
             supports_tools: true,
             supports_vision: true,
             supports_reasoning: false,
+            supports_reasoning_effort: false,
         },
         ModelInfo {
             id: "grok-3".into(),
@@ -256,6 +276,7 @@ fn builtin_models() -> Vec<ModelInfo> {
             supports_tools: true,
             supports_vision: false,
             supports_reasoning: false,
+            supports_reasoning_effort: false,
         },
         ModelInfo {
             id: "grok-3-mini".into(),
@@ -265,15 +286,17 @@ fn builtin_models() -> Vec<ModelInfo> {
             supports_tools: true,
             supports_vision: false,
             supports_reasoning: true,
+            supports_reasoning_effort: false,
         },
         ModelInfo {
             id: "grok-4.5".into(),
             provider: "xai".into(),
-            context_window: 256_000,
+            context_window: 500_000,
             max_output_tokens: 16_384,
             supports_tools: true,
             supports_vision: true,
             supports_reasoning: true,
+            supports_reasoning_effort: true,
         },
         ModelInfo {
             id: "grok-4.3".into(),
@@ -283,6 +306,7 @@ fn builtin_models() -> Vec<ModelInfo> {
             supports_tools: true,
             supports_vision: true,
             supports_reasoning: true,
+            supports_reasoning_effort: false,
         },
         ModelInfo {
             id: "grok-build-0.1".into(),
@@ -292,15 +316,17 @@ fn builtin_models() -> Vec<ModelInfo> {
             supports_tools: true,
             supports_vision: true,
             supports_reasoning: true,
+            supports_reasoning_effort: false,
         },
         ModelInfo {
             id: "grok-4.20-0309-reasoning".into(),
             provider: "xai".into(),
-            context_window: 256_000,
+            context_window: 2_000_000,
             max_output_tokens: 16_384,
             supports_tools: true,
             supports_vision: true,
             supports_reasoning: true,
+            supports_reasoning_effort: false,
         },
         ModelInfo {
             id: "grok-4.20-0309-non-reasoning".into(),
@@ -310,15 +336,17 @@ fn builtin_models() -> Vec<ModelInfo> {
             supports_tools: true,
             supports_vision: true,
             supports_reasoning: false,
+            supports_reasoning_effort: false,
         },
         ModelInfo {
             id: "grok-4.20-multi-agent-0309".into(),
             provider: "xai".into(),
-            context_window: 256_000,
+            context_window: 2_000_000,
             max_output_tokens: 16_384,
             supports_tools: true,
             supports_vision: true,
             supports_reasoning: true,
+            supports_reasoning_effort: false,
         },
         ModelInfo {
             id: "llama3.2".into(),
@@ -328,6 +356,7 @@ fn builtin_models() -> Vec<ModelInfo> {
             supports_tools: true,
             supports_vision: false,
             supports_reasoning: false,
+            supports_reasoning_effort: false,
         },
         ModelInfo {
             id: "qwen2.5".into(),
@@ -337,6 +366,7 @@ fn builtin_models() -> Vec<ModelInfo> {
             supports_tools: true,
             supports_vision: false,
             supports_reasoning: false,
+            supports_reasoning_effort: false,
         },
         ModelInfo {
             id: "deepseek-r1".into(),
@@ -346,6 +376,7 @@ fn builtin_models() -> Vec<ModelInfo> {
             supports_tools: false,
             supports_vision: false,
             supports_reasoning: true,
+            supports_reasoning_effort: false,
         },
     ]
 }
@@ -469,6 +500,27 @@ mod tests {
         assert!(!reg.is_reasoning_model("gpt-5.6-luna"));
         assert!(!reg.is_reasoning_model("gpt-5.4-mini"));
         assert!(!reg.is_reasoning_model("claude-3-5-haiku"));
+    }
+
+    #[test]
+    fn grok_request_capabilities() {
+        let reg = fresh();
+        let grok = reg.get("grok-4.5").expect("grok-4.5 should be registered");
+        assert_eq!(grok.context_window, 500_000);
+        assert!(grok.supports_reasoning_effort);
+
+        let reasoning = reg
+            .get("grok-4.20-0309-reasoning")
+            .expect("grok-4.20 reasoning should be registered");
+        assert_eq!(reasoning.context_window, 2_000_000);
+        assert!(!reasoning.supports_reasoning_effort);
+
+        let multi_agent = reg
+            .get("grok-4.20-multi-agent-0309")
+            .expect("grok-4.20 multi-agent should be registered");
+        assert_eq!(multi_agent.context_window, 2_000_000);
+        assert!(!multi_agent.supports_reasoning_effort);
+        assert!(!reg.supports_reasoning_effort("grok-build-0.1"));
     }
 
     #[test]
