@@ -133,11 +133,22 @@ impl AgentBudget {
     }
 }
 
+fn append_active_skills(base: Option<String>, active_skills: Option<&str>) -> Option<String> {
+    let Some(active_skills) = active_skills else {
+        return base;
+    };
+    Some(match base {
+        Some(base) => format!("{base}\n\n# Active Skills\n\n{active_skills}"),
+        None => format!("# Active Skills\n\n{active_skills}"),
+    })
+}
+
 /// The agent — owns the loop, tools, provider, policy, scope, hooks, cache.
 pub struct Agent {
     pub model: String,
     pub reasoning_effort: Option<String>,
     pub system_prompt: Option<String>,
+    base_system_prompt: Option<String>,
     pub tools: Arc<ToolRegistry>,
     pub policy: Policy,
     pub scope: Scope,
@@ -187,6 +198,7 @@ impl Agent {
             model: "gpt-4o".into(),
             reasoning_effort: None,
             system_prompt: None,
+            base_system_prompt: None,
             tools: Arc::new(ToolRegistry::new()),
             policy: Policy::workspace_write(),
             scope: Scope::Coding,
@@ -251,7 +263,8 @@ impl Agent {
     }
 
     pub fn set_system_prompt(&mut self, prompt: impl Into<String>) {
-        self.system_prompt = Some(prompt.into());
+        self.base_system_prompt = Some(prompt.into());
+        self.refresh_system_prompt();
     }
 
     pub fn set_tools(&mut self, tools: ToolRegistry) {
@@ -281,9 +294,8 @@ impl Agent {
                 tracing::warn!("OS sandbox unavailable — shell tools will be blocked: {e}");
             }
         }
-        let base = self.system_prompt.clone();
-        self.system_prompt = Some(mode::compose_prompt(base.as_deref(), &profile));
         self.scope_profile = Some(profile);
+        self.refresh_system_prompt();
     }
 
     pub fn set_hooks(&mut self, hooks: HookRegistry) {
@@ -364,11 +376,24 @@ impl Agent {
     /// from `workspace_root` and merge into the system prompt.
     pub fn load_project_context(&mut self) {
         if let Some(instr) = crate::context::load_project_instructions(&self.workspace_root) {
-            self.system_prompt = crate::context::compose_system_prompt(
-                self.system_prompt.as_deref(),
+            self.base_system_prompt = crate::context::compose_system_prompt(
+                self.base_system_prompt.as_deref(),
                 &instr.content,
             );
+            self.refresh_system_prompt();
         }
+    }
+
+    fn refresh_system_prompt(&mut self) {
+        self.system_prompt = self.scope_profile.as_ref().map_or_else(
+            || self.base_system_prompt.clone(),
+            |profile| {
+                Some(mode::compose_prompt(
+                    self.base_system_prompt.as_deref(),
+                    profile,
+                ))
+            },
+        );
     }
 
     pub fn set_sandbox(&mut self, sb: Arc<crate::sandbox::SandboxManager>) {
@@ -528,7 +553,7 @@ impl Agent {
 
         // Inject activated skill instructions into system prompt for this turn.
         #[cfg(feature = "skills")]
-        if let Some(reg) = &self.skill_registry {
+        let active_skills = if let Some(reg) = &self.skill_registry {
             let matched = reg.match_prompt(text);
             for skill in &matched {
                 self.emit(Event::SkillActivated {
@@ -540,16 +565,12 @@ impl Agent {
                 .into_iter()
                 .map(|skill| skill.instructions.clone())
                 .collect();
-            if !activated.is_empty() {
-                let block = activated.join("\n\n---\n\n");
-                let base = self.system_prompt.as_deref();
-                let merged = match base {
-                    Some(b) => format!("{b}\n\n# Active Skills\n\n{block}"),
-                    None => format!("# Active Skills\n\n{block}"),
-                };
-                self.system_prompt = Some(merged);
-            }
-        }
+            (!activated.is_empty()).then(|| activated.join("\n\n---\n\n"))
+        } else {
+            None
+        };
+        #[cfg(not(feature = "skills"))]
+        let active_skills: Option<String> = None;
 
         self.messages.write().push(Message::user(text));
         self.emit(Event::AgentStart);
@@ -614,21 +635,23 @@ impl Agent {
             self.emit(Event::TurnStart { turn: iteration });
 
             let messages: Vec<Message> = self.messages.read().clone();
+            let base_system =
+                append_active_skills(self.system_prompt.clone(), active_skills.as_deref());
             #[cfg(feature = "zkr-memory")]
             let system = if let Some(improve) = &self.self_improve {
-                let base = self.system_prompt.as_deref().unwrap_or("");
+                let base = base_system.as_deref().unwrap_or("");
                 match improve.augment(text, base).await {
                     Ok(augmented) => Some(augmented),
                     Err(error) => {
                         warn!("self-improve augmentation failed: {error}");
-                        self.system_prompt.clone()
+                        base_system.clone()
                     }
                 }
             } else {
-                self.system_prompt.clone()
+                base_system
             };
             #[cfg(not(feature = "zkr-memory"))]
-            let system = self.system_prompt.clone();
+            let system = base_system;
 
             // Personality augmentation chains after self-improve (or base prompt).
             #[cfg(feature = "personality")]
@@ -1483,6 +1506,32 @@ mod tests {
             agent.policy.shell_allow,
             vec!["git *".to_string(), "cargo test*".to_string()]
         );
+    }
+
+    #[test]
+    fn set_scope_replaces_the_previous_scope_prompt() {
+        let mut agent = Agent::new();
+        agent.set_system_prompt("host instructions");
+        agent.set_scope(Scope::Plan);
+        assert!(agent
+            .system_prompt
+            .as_deref()
+            .is_some_and(|prompt| prompt.contains("multi-step plan")));
+        agent.set_scope(Scope::Research);
+        let prompt = agent.system_prompt.as_deref().expect("system prompt");
+        assert!(prompt.contains("Explore and explain"));
+        assert!(!prompt.contains("multi-step plan"));
+        assert_eq!(prompt.matches("host instructions").count(), 1);
+    }
+
+    #[test]
+    fn active_skills_are_added_to_a_turn_prompt_without_mutating_the_base() {
+        let base = Some("host instructions".to_string());
+        let prompt = append_active_skills(base.clone(), Some("skill instructions"));
+        assert!(prompt
+            .as_deref()
+            .is_some_and(|value| value.contains("# Active Skills")));
+        assert_eq!(base.as_deref(), Some("host instructions"));
     }
 
     #[tokio::test]
