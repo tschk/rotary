@@ -5,8 +5,7 @@
 [![MSRV: 1.88](https://img.shields.io/badge/MSRV-1.88-blue.svg)](https://blog.rust-lang.org/2025/06/26/Rust-1.88.0.html)
 
 Pure agent harness engine. Models write; rotary gives them tools, memory,
-loops, permissions, sessions, and control planes. **No product UI, no
-scheduling policy, no pi protocol** — hosts own those.
+loops, permissions, sessions, and control planes.
 
 rotary exposes **capabilities, not policy**. Scheduling, enabled flags, and
 lifecycle decisions are the host's job.
