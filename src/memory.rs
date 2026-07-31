@@ -3,6 +3,8 @@
 //! When `memory` feature is enabled, provides persistent memory with
 //! full-text search and optional vector similarity.
 
+pub mod policy;
+
 #[cfg(feature = "memory")]
 mod inner {
     use chrono::{DateTime, Utc};
