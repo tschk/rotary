@@ -2281,15 +2281,16 @@ checksum = "439ee305def115ba05938db6eb1644ff94165c5ab5e9420d1c1bcedbba909391"
 
 [[package]]
 name = "praefectus"
-version = "0.4.2"
+version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "49d5689c04c90584f65fdc1a20f7063a67ec570b5810c0ad75efde6d81651a13"
+checksum = "61bd3f4e5bc95a832c15a307335e09202592129fa7f355be35760f1f35f64766"
 dependencies = [
  "accessibility-sys",
  "atspi",
  "core-foundation",
  "core-graphics",
  "ed25519-dalek",
+ "foreign-types",
  "fs2",
  "hex",
  "libc",
