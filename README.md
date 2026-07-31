@@ -265,8 +265,9 @@ The agent loop emits 11 streaming event types:
 Current hosts built on rotary:
 
 - **[telekinesis](https://github.com/tschk/telekinesis)** — CLI/TUI product
-  on top of rotary. Owns pi protocol compat.
-- **omi desktop** — desktop application embedding rotary.
+  on top of rotary. Compatible with pi protocol.
+- **[apollo](https://github.com/tschk/apollo)** - AI agent along the likes of Hermes.
+- omi PR + beta versions
 
 See [docs/HOSTS.md](docs/HOSTS.md) for the hosting guide.
 
