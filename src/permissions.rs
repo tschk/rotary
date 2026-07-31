@@ -10,6 +10,10 @@ use crate::agent::ToolCall;
 use serde::{Deserialize, Serialize};
 use std::path::{Component, Path, PathBuf};
 
+pub mod shell_scan;
+
+pub use shell_scan::scannable_command;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PermissionMode {
@@ -608,13 +612,27 @@ pub fn shell_command_allowed(command: &str, patterns: &[String]) -> bool {
     shell_command_matches_any(command, patterns)
 }
 
-/// True if any shell segment matches any pattern (deny semantics).
+/// True if any shell segment of the command — or of its normalized form — matches
+/// any pattern (deny semantics).
 pub fn shell_command_matches_any(command: &str, patterns: &[String]) -> bool {
-    patterns.iter().any(|p| shell_rule_matches(p, command))
+    if patterns.iter().any(|p| shell_rule_matches(p, command)) {
+        return true;
+    }
+    let scannable = shell_scan::scannable_command(command);
+    scannable != command && patterns.iter().any(|p| shell_rule_matches(p, &scannable))
 }
 
-/// True if every shell segment matches at least one pattern (allow semantics).
+/// True if every shell segment matches at least one pattern (allow semantics),
+/// checked on both the raw command and its normalized form.
 pub fn shell_command_matches_all(command: &str, patterns: &[String]) -> bool {
+    if !segments_all_match(command, patterns) {
+        return false;
+    }
+    let scannable = shell_scan::scannable_command(command);
+    scannable == command || segments_all_match(&scannable, patterns)
+}
+
+fn segments_all_match(command: &str, patterns: &[String]) -> bool {
     let segs = shell_segments(command);
     if segs.is_empty() {
         return false;
@@ -795,7 +813,20 @@ pub fn shell_simples(command: &str) -> Vec<ShellSimple> {
 }
 
 /// Hard-deny shell patterns under non-FullAccess modes (escape / wipe / remote pipe).
+///
+/// The command is first normalized with [`shell_scan::scannable_command`], so quoting,
+/// wrapper binaries (`sudo`, `env -S`, …) and nested `bash -c` / piped payloads cannot
+/// hide a dangerous command.
 pub fn is_dangerous_shell_command(command: &str) -> bool {
+    if dangerous_line(command) {
+        return true;
+    }
+    shell_scan::scannable_command(command)
+        .lines()
+        .any(|line| dangerous_line(line) || shell_scan::has_dangerous_structure(line))
+}
+
+fn dangerous_line(command: &str) -> bool {
     let segs = shell_segments(command);
     for seg in &segs {
         let lower = seg.to_ascii_lowercase();
