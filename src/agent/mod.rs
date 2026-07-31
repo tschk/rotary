@@ -184,7 +184,7 @@ pub struct Agent {
     #[cfg(feature = "ipc")]
     turn_cancellation: CancellationHandle,
     subscribers: Vec<Subscriber>,
-    pub messages: RwLock<Vec<Message>>,
+    pub messages: Arc<RwLock<Vec<Message>>>,
     tool_cache: Cache<String, ToolResult>,
     pub budget: Option<AgentBudget>,
     pub pricing_registry: PricingRegistry,
@@ -229,7 +229,7 @@ impl Agent {
             #[cfg(feature = "ipc")]
             turn_cancellation: CancellationHandle::new(),
             subscribers: Vec::new(),
-            messages: RwLock::new(Vec::new()),
+            messages: Arc::new(RwLock::new(Vec::new())),
             tool_cache: Cache::builder()
                 .max_capacity(10_000)
                 .time_to_live(std::time::Duration::from_secs(3600))
@@ -494,6 +494,25 @@ impl Agent {
 
     pub fn clear_messages(&self) {
         self.messages.write().clear();
+    }
+
+    /// Shared handle to the agent's message history.
+    ///
+    /// This is the supported way for a host to observe or append messages
+    /// without holding a lock on the [`Agent`] itself. [`Agent::prompt`] takes
+    /// `&mut self`, so a host that wraps the agent in a mutex would otherwise
+    /// block every read behind a whole turn.
+    ///
+    /// The agent never replaces the message vector — compaction, session
+    /// loading and every other mutation happen in place through this same
+    /// `RwLock` — so a handle stays valid for the life of the agent.
+    ///
+    /// Appends are picked up mid-turn: the tool loop re-reads the history at
+    /// the start of every tool iteration, so a message pushed through this
+    /// handle while a turn is in flight lands on the next iteration of that
+    /// turn rather than waiting for it to finish.
+    pub fn messages_handle(&self) -> Arc<RwLock<Vec<Message>>> {
+        Arc::clone(&self.messages)
     }
 
     pub fn message_count(&self) -> usize {
@@ -1578,6 +1597,103 @@ mod tests {
         let result = result.await;
         assert!(result.is_error);
         assert!(result.content.contains("OS sandbox required"));
+    }
+
+    #[test]
+    fn messages_handle_shares_the_agent_history() {
+        let agent = Agent::new();
+        let handle = agent.messages_handle();
+        handle.write().push(Message::user("from host"));
+        assert_eq!(agent.message_count(), 1);
+        agent
+            .messages
+            .write()
+            .push(Message::assistant("from agent"));
+        assert_eq!(handle.read().len(), 2);
+        agent.clear_messages();
+        assert!(handle.read().is_empty());
+    }
+
+    #[cfg(feature = "providers")]
+    struct SteeringProvider {
+        handle: Arc<RwLock<Vec<Message>>>,
+        calls: Arc<parking_lot::Mutex<Vec<Vec<String>>>>,
+    }
+
+    #[cfg(feature = "providers")]
+    #[async_trait::async_trait]
+    impl crate::provider::Provider for SteeringProvider {
+        fn id(&self) -> &str {
+            "steering"
+        }
+
+        fn name(&self) -> &str {
+            "steering"
+        }
+
+        async fn stream(
+            &self,
+            messages: &[Message],
+            _system: &Option<String>,
+            _model: &str,
+            _tools: &[serde_json::Value],
+            _reasoning_effort: Option<&str>,
+        ) -> Result<crate::provider::StreamResult, crate::provider::ProviderError> {
+            let seen: Vec<String> = messages.iter().map(|m| m.content.clone()).collect();
+            let first = {
+                let mut calls = self.calls.lock();
+                calls.push(seen);
+                calls.len() == 1
+            };
+            if first {
+                // Host steers mid-turn through the shared handle.
+                self.handle.write().push(Message::user("steer"));
+                Ok(Box::new(futures::stream::iter([
+                    Ok(crate::provider::StreamEvent::ToolCall(ToolCall {
+                        id: "call_1".into(),
+                        name: "noop".into(),
+                        arguments: "{}".into(),
+                    })),
+                    Ok(crate::provider::StreamEvent::Done),
+                ])))
+            } else {
+                Ok(Box::new(futures::stream::iter([Ok(
+                    crate::provider::StreamEvent::Done,
+                )])))
+            }
+        }
+    }
+
+    #[cfg(feature = "providers")]
+    #[tokio::test]
+    async fn handle_append_is_seen_mid_turn() {
+        let mut registry = ToolRegistry::new();
+        registry.register(
+            ToolDefinition::new_boxed(
+                "noop",
+                "noop",
+                "{}",
+                Box::new(|_ctx, _args| Box::pin(async { ToolResult::ok("call_1", "ok") })),
+            )
+            .with_effect(ToolEffect::Read),
+        );
+        let mut agent = Agent::new();
+        agent.set_tools(registry);
+        agent.set_policy(Policy::full_access());
+        let calls = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        agent.set_provider(Arc::new(SteeringProvider {
+            handle: agent.messages_handle(),
+            calls: Arc::clone(&calls),
+        }));
+        agent.prompt("hello").await.unwrap();
+        let calls = calls.lock();
+        assert!(calls.len() >= 2, "expected a second tool iteration");
+        assert!(!calls[0].iter().any(|c| c == "steer"));
+        assert!(
+            calls[1].iter().any(|c| c == "steer"),
+            "mid-turn append not observed on the next iteration: {:?}",
+            calls[1]
+        );
     }
 }
 

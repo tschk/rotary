@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.5.0] — 2026-07-30
+
+### Breaking
+- `Agent::messages` is now `Arc<RwLock<Vec<Message>>>` (was `RwLock<Vec<Message>>`).
+  Reads and writes through `agent.messages.read()` / `.write()` are unchanged
+  (`Arc` derefs). Code that constructed the field directly must wrap it:
+  `messages: Arc::new(RwLock::new(...))`.
+
+### Added
+- `Agent::messages_handle() -> Arc<RwLock<Vec<Message>>>` — the supported way
+  for a host to observe or append messages without holding the agent lock.
+  `prompt()` takes `&mut self`, so a host wrapping `Agent` in a mutex otherwise
+  blocks every read behind a whole turn. The tool loop re-reads history at the
+  start of each tool iteration, so a message appended through the handle while a
+  turn is in flight lands on the next iteration of that turn (mid-turn steering),
+  not after it.
+
 ## [0.3.20] — 2026-07-19
 
 ### Security
