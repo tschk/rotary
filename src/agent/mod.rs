@@ -10,10 +10,15 @@ pub use tool_types::*;
 
 use crate::compaction::{apply_compaction, estimate_messages, CompactionConfig};
 use crate::cost::{PricingRegistry, SessionCost, TokenUsage};
-use crate::guardrails::plan_tool_effect_batches;
+use crate::guardrails::{
+    plan_tool_effect_batches, GuardrailConfig, GuardrailDecision, SelfHealingRetry, ToolGuardrails,
+};
 use crate::hooks::HookRegistry;
 use crate::mode::{self, Profile, Scope};
-use crate::permissions::{Approver, AsyncApprover, Authorizer, Decision, Policy, PolicyAuthorizer};
+use crate::permissions::{
+    Approver, AsyncApprover, Authorizer, Decision, PlanApprover, PlanDecision, PlanProposal,
+    Policy, PolicyAuthorizer,
+};
 use crate::provider::{Message, Provider, Role};
 use moka::future::Cache;
 use parking_lot::RwLock;
@@ -71,6 +76,29 @@ pub enum Event {
     ToolCall(ToolCall),
     /// Host UX: tool needs approval (Codex-style ask payload).
     ApprovalRequired(crate::permissions::ApprovalRequest),
+    /// Host UX: the whole turn's plan needs approval before anything runs.
+    PlanProposed(crate::permissions::PlanProposal),
+    /// The host answered a [`Event::PlanProposed`].
+    PlanDecided {
+        decision: crate::permissions::PlanDecision,
+    },
+    /// Loop detection fired but the turn continues; the warning is also fed
+    /// back to the model.
+    GuardrailWarning {
+        tool: String,
+        reason: String,
+    },
+    /// Loop detection ended the turn.
+    GuardrailStop {
+        tool: String,
+        reason: String,
+    },
+    /// A failing turn is being re-prompted with error context.
+    SelfHealing {
+        attempt: u8,
+        max_attempts: u8,
+        errors: Vec<String>,
+    },
     ToolExecutionStart(ToolCall),
     ToolExecutionEnd(ToolResult),
     TurnEnd {
@@ -159,6 +187,24 @@ pub struct Agent {
     pub async_approver: Option<Arc<dyn AsyncApprover>>,
     /// Pluggable pre-tool gate (default: [`PolicyAuthorizer`] from `policy`).
     pub authorizer: Option<Arc<dyn Authorizer>>,
+    /// Whole-plan gate, consulted once before the first tool call of a turn.
+    ///
+    /// `None` (the default) runs tool calls as soon as the model emits them,
+    /// which is the historical behaviour.
+    pub plan_approver: Option<Arc<dyn PlanApprover>>,
+    /// Loop-detection thresholds. `None` (the default) disables loop
+    /// detection entirely, which is the historical behaviour.
+    ///
+    /// A fresh [`ToolGuardrails`] is built from this config for each
+    /// `prompt()`, so observations never leak between turns.
+    pub guardrails: Option<GuardrailConfig>,
+    /// Self-healing re-prompt budget. `None` (the default) means a failing
+    /// tool is reported to the model without extra coaching, which is the
+    /// historical behaviour.
+    ///
+    /// The value is a template: each `prompt()` clones it, so the attempt
+    /// budget is per-turn rather than per-agent.
+    pub self_healing: Option<SelfHealingRetry>,
     pub provider: Option<Arc<dyn Provider>>,
     pub max_tool_iterations: usize,
     pub auto_compact_after: usize,
@@ -206,6 +252,9 @@ impl Agent {
             hooks: None,
             approver: None,
             async_approver: None,
+            plan_approver: None,
+            guardrails: None,
+            self_healing: None,
             authorizer: None,
             provider: None,
             max_tool_iterations: 50,
@@ -323,6 +372,33 @@ impl Agent {
     }
 
     /// Drop custom authorizer; subsequent tools use live `policy` via [`PolicyAuthorizer`].
+    /// Gate the turn's plan before any tool runs.
+    pub fn set_plan_approver(&mut self, approver: Arc<dyn PlanApprover>) {
+        self.plan_approver = Some(approver);
+    }
+
+    pub fn clear_plan_approver(&mut self) {
+        self.plan_approver = None;
+    }
+
+    /// Enable loop detection with the given thresholds.
+    pub fn set_guardrails(&mut self, config: GuardrailConfig) {
+        self.guardrails = Some(config);
+    }
+
+    pub fn clear_guardrails(&mut self) {
+        self.guardrails = None;
+    }
+
+    /// Enable self-healing re-prompts, allowing `max_attempts` per turn.
+    pub fn set_self_healing(&mut self, max_attempts: u8) {
+        self.self_healing = Some(SelfHealingRetry::new(max_attempts));
+    }
+
+    pub fn clear_self_healing(&mut self) {
+        self.self_healing = None;
+    }
+
     pub fn clear_authorizer(&mut self) {
         self.authorizer = None;
     }
@@ -654,6 +730,15 @@ impl Agent {
 
         #[cfg(feature = "zkr-memory")]
         let mut tool_error_seen = false;
+
+        // Loop detection and self-healing are per-turn: a fresh observer each
+        // `prompt()` so a repeat in one turn is not counted against the next,
+        // and a fresh attempt budget so a healed turn does not exhaust the
+        // allowance for later ones.
+        let mut guardrails = self.guardrails.clone().map(ToolGuardrails::new);
+        let mut self_healing = self.self_healing.clone();
+        let mut plan_approved = false;
+
         for iteration in 0..self.max_tool_iterations {
             if let Some(reason) = self.check_budget() {
                 self.emit(Event::BudgetExceeded {
@@ -926,6 +1011,48 @@ impl Agent {
                 break;
             }
 
+            // ── Whole-plan gate ──
+            // Consulted once, before the first tool of the turn executes. A
+            // `Revise` answer loops back to the model without running
+            // anything, so the host can redirect the approach rather than
+            // approving or killing it.
+            if !plan_approved {
+                if let Some(gate) = self.plan_approver.clone() {
+                    let proposal = PlanProposal {
+                        prompt: text.to_string(),
+                        plan: assistant_content.clone(),
+                        calls: tool_calls.clone(),
+                        turn: iteration,
+                    };
+                    self.emit(Event::PlanProposed(proposal.clone()));
+                    let decision = gate.approve_plan(&proposal).await;
+                    self.emit(Event::PlanDecided {
+                        decision: decision.clone(),
+                    });
+                    match decision {
+                        PlanDecision::Approve => plan_approved = true,
+                        PlanDecision::Reject(reason) => {
+                            info!("plan rejected: {reason}");
+                            self.messages.write().push(Message::user(format!(
+                                "The plan was rejected: {reason}. Do not run it."
+                            )));
+                            self.emit(Event::TurnEnd { turn: iteration });
+                            break;
+                        }
+                        PlanDecision::Revise(guidance) => {
+                            info!("plan revision requested: {guidance}");
+                            self.messages.write().push(Message::user(format!(
+                                "Do not run that plan. Revise it: {guidance}"
+                            )));
+                            self.emit(Event::TurnEnd { turn: iteration });
+                            continue;
+                        }
+                    }
+                } else {
+                    plan_approved = true;
+                }
+            }
+
             let results = self.execute_tools_parallel(&tool_calls, &ctx).await;
             for result in &results {
                 #[cfg(feature = "zkr-memory")]
@@ -938,6 +1065,68 @@ impl Agent {
             }
             if let Some(scope) = pending_scope.lock().take() {
                 self.set_scope(scope);
+            }
+
+            // ── Loop detection ──
+            // Observe every call this turn made. A warning is fed back to the
+            // model so it can change approach; a stop ends the turn, because
+            // by then the model has demonstrated it will not.
+            let mut stopped: Option<(String, String)> = None;
+            if let Some(rails) = guardrails.as_mut() {
+                for (call, result) in tool_calls.iter().zip(results.iter()) {
+                    match rails.observe(&call.name, &call.arguments, result.is_error) {
+                        GuardrailDecision::Proceed => {}
+                        GuardrailDecision::Warn(reason) => {
+                            warn!("guardrail warning on '{}': {reason}", call.name);
+                            self.emit(Event::GuardrailWarning {
+                                tool: call.name.clone(),
+                                reason: reason.clone(),
+                            });
+                            self.messages
+                                .write()
+                                .push(Message::user(format!("Guardrail warning: {reason}")));
+                        }
+                        GuardrailDecision::Stop(reason) => {
+                            warn!("guardrail stop on '{}': {reason}", call.name);
+                            stopped = Some((call.name.clone(), reason));
+                            break;
+                        }
+                    }
+                }
+            }
+            if let Some((tool, reason)) = stopped {
+                self.emit(Event::GuardrailStop {
+                    tool,
+                    reason: reason.clone(),
+                });
+                self.messages
+                    .write()
+                    .push(Message::user(format!("Stopped by guardrail: {reason}")));
+                self.emit(Event::TurnEnd { turn: iteration });
+                break;
+            }
+
+            // ── Self-healing ──
+            // The model already sees the failing tool results; this adds the
+            // explicit "try a different approach" nudge, budgeted so a
+            // genuinely stuck turn still terminates.
+            let errors: Vec<String> = results
+                .iter()
+                .filter(|r| r.is_error)
+                .map(|r| r.content.clone())
+                .collect();
+            if !errors.is_empty() {
+                if let Some(healer) = self_healing.as_mut() {
+                    if healer.should_retry() {
+                        let message = healer.build_healing_message(&errors);
+                        self.emit(Event::SelfHealing {
+                            attempt: healer.attempts_used,
+                            max_attempts: healer.max_attempts,
+                            errors,
+                        });
+                        self.messages.write().push(Message::user(message));
+                    }
+                }
             }
 
             self.emit(Event::TurnEnd { turn: iteration });
@@ -1703,6 +1892,304 @@ mod tests {
             calls[1].iter().any(|c| c == "steer"),
             "mid-turn append not observed on the next iteration: {:?}",
             calls[1]
+        );
+    }
+
+    // ── Guardrails, self-healing and the plan gate ───────────────────────
+
+    /// A provider that keeps asking for the same tool call, so a turn only
+    /// ends when the loop itself decides to stop it.
+    #[cfg(feature = "providers")]
+    struct RepeatingProvider {
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+        limit: usize,
+    }
+
+    #[cfg(feature = "providers")]
+    #[async_trait::async_trait]
+    impl crate::provider::Provider for RepeatingProvider {
+        fn id(&self) -> &str {
+            "repeating"
+        }
+
+        fn name(&self) -> &str {
+            "repeating"
+        }
+
+        async fn stream(
+            &self,
+            _messages: &[Message],
+            _system: &Option<String>,
+            _model: &str,
+            _tools: &[serde_json::Value],
+            _reasoning_effort: Option<&str>,
+        ) -> Result<crate::provider::StreamResult, crate::provider::ProviderError> {
+            let n = self.calls.fetch_add(1, Ordering::SeqCst);
+            if n >= self.limit {
+                return Ok(Box::new(futures::stream::iter([Ok(
+                    crate::provider::StreamEvent::Done,
+                )])));
+            }
+            Ok(Box::new(futures::stream::iter([
+                Ok(crate::provider::StreamEvent::Delta("working on it".into())),
+                Ok(crate::provider::StreamEvent::ToolCall(ToolCall {
+                    id: "call_1".into(),
+                    name: "flaky".into(),
+                    arguments: "{}".into(),
+                })),
+                Ok(crate::provider::StreamEvent::Done),
+            ])))
+        }
+    }
+
+    /// Builds an agent whose only tool always fails, wired to a provider that
+    /// will keep retrying it forever unless something intervenes.
+    #[cfg(feature = "providers")]
+    fn looping_agent(
+        limit: usize,
+    ) -> (
+        Agent,
+        Arc<std::sync::atomic::AtomicUsize>,
+        Arc<std::sync::atomic::AtomicUsize>,
+    ) {
+        let tool_runs = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let runs = Arc::clone(&tool_runs);
+        let mut registry = ToolRegistry::new();
+        registry.register(
+            ToolDefinition::new_boxed(
+                "flaky",
+                "always fails",
+                "{}",
+                Box::new(move |_ctx, _args| {
+                    let runs = Arc::clone(&runs);
+                    Box::pin(async move {
+                        runs.fetch_add(1, Ordering::SeqCst);
+                        ToolResult::err("call_1", "disk on fire")
+                    })
+                }),
+            )
+            .with_effect(ToolEffect::Read),
+        );
+        let mut agent = Agent::new();
+        agent.set_tools(registry);
+        agent.set_policy(Policy::full_access());
+        agent.max_tool_iterations = 12;
+        let provider_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        agent.set_provider(Arc::new(RepeatingProvider {
+            calls: Arc::clone(&provider_calls),
+            limit,
+        }));
+        (agent, tool_runs, provider_calls)
+    }
+
+    /// Collects event labels so a test can assert on what the host would see.
+    fn event_sink(agent: &mut Agent) -> Arc<parking_lot::Mutex<Vec<String>>> {
+        let seen = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let sink = Arc::clone(&seen);
+        agent.subscribe(move |event| {
+            let label = match event {
+                Event::GuardrailWarning { tool, .. } => format!("warn:{tool}"),
+                Event::GuardrailStop { tool, .. } => format!("stop:{tool}"),
+                Event::SelfHealing { attempt, .. } => format!("heal:{attempt}"),
+                Event::PlanProposed(p) => format!("plan_proposed:{}", p.calls.len()),
+                Event::PlanDecided { decision } => format!("plan_decided:{decision:?}"),
+                _ => return,
+            };
+            sink.lock().push(label);
+        });
+        seen
+    }
+
+    fn message_texts(agent: &Agent) -> Vec<String> {
+        agent
+            .messages
+            .read()
+            .iter()
+            .map(|m| m.content.clone())
+            .collect()
+    }
+
+    /// Default behaviour must not change: with nothing configured the loop
+    /// runs exactly as it did before guardrails existed.
+    #[cfg(feature = "providers")]
+    #[tokio::test]
+    async fn defaults_leave_the_loop_untouched() {
+        let (mut agent, tool_runs, _) = looping_agent(3);
+        let seen = event_sink(&mut agent);
+        agent.prompt("go").await.unwrap();
+        assert_eq!(tool_runs.load(Ordering::SeqCst), 3);
+        assert!(
+            seen.lock().is_empty(),
+            "unconfigured agent emitted guardrail events: {:?}",
+            seen.lock()
+        );
+    }
+
+    /// A repeated identical call must warn, and the warning must reach the
+    /// model — a warning the model never sees cannot change its behaviour.
+    #[cfg(feature = "providers")]
+    #[tokio::test]
+    async fn guardrails_warn_on_a_repeated_call_and_tell_the_model() {
+        let (mut agent, _, _) = looping_agent(4);
+        agent.set_guardrails(GuardrailConfig {
+            warnings_enabled: true,
+            hard_stop_enabled: false,
+            same_tool_failure_warn_after: 1,
+            ..GuardrailConfig::default()
+        });
+        let seen = event_sink(&mut agent);
+        agent.prompt("go").await.unwrap();
+
+        assert!(
+            seen.lock().iter().any(|l| l == "warn:flaky"),
+            "no guardrail warning: {:?}",
+            seen.lock()
+        );
+        assert!(
+            message_texts(&agent)
+                .iter()
+                .any(|m| m.starts_with("Guardrail warning:")),
+            "the warning never reached the model"
+        );
+    }
+
+    /// A hard stop must end the turn early, not merely complain. The proof is
+    /// that the tool stops running well before `max_tool_iterations`.
+    #[cfg(feature = "providers")]
+    #[tokio::test]
+    async fn guardrails_stop_a_runaway_turn() {
+        let (mut agent, tool_runs, _) = looping_agent(usize::MAX);
+        agent.set_guardrails(GuardrailConfig {
+            warnings_enabled: false,
+            hard_stop_enabled: true,
+            same_tool_failure_halt_after: 2,
+            ..GuardrailConfig::default()
+        });
+        let seen = event_sink(&mut agent);
+        agent.prompt("go").await.unwrap();
+
+        assert!(
+            seen.lock().iter().any(|l| l == "stop:flaky"),
+            "no guardrail stop: {:?}",
+            seen.lock()
+        );
+        let runs = tool_runs.load(Ordering::SeqCst);
+        assert!(
+            runs < 12,
+            "guardrail did not end the turn: {runs} tool runs against a 12 iteration cap"
+        );
+    }
+
+    /// A failing tool must produce an explicit re-prompt, budgeted so a turn
+    /// that cannot recover still terminates.
+    #[cfg(feature = "providers")]
+    #[tokio::test]
+    async fn self_healing_reprompts_within_its_budget() {
+        let (mut agent, _, _) = looping_agent(6);
+        agent.set_self_healing(2);
+        let seen = event_sink(&mut agent);
+        agent.prompt("go").await.unwrap();
+
+        let heals: Vec<String> = seen
+            .lock()
+            .iter()
+            .filter(|l| l.starts_with("heal:"))
+            .cloned()
+            .collect();
+        assert_eq!(
+            heals,
+            vec!["heal:1", "heal:2"],
+            "healing budget not honoured"
+        );
+        assert!(
+            message_texts(&agent)
+                .iter()
+                .any(|m| m.contains("The following tool call(s) failed")),
+            "no healing message reached the model"
+        );
+    }
+
+    #[cfg(feature = "providers")]
+    struct FixedPlanApprover(PlanDecision);
+
+    #[cfg(feature = "providers")]
+    #[async_trait::async_trait]
+    impl crate::permissions::PlanApprover for FixedPlanApprover {
+        async fn approve_plan(&self, _proposal: &PlanProposal) -> PlanDecision {
+            self.0.clone()
+        }
+    }
+
+    /// The whole point of the gate: a rejected plan runs nothing at all.
+    #[cfg(feature = "providers")]
+    #[tokio::test]
+    async fn a_rejected_plan_executes_no_tools() {
+        let (mut agent, tool_runs, _) = looping_agent(usize::MAX);
+        agent.set_plan_approver(Arc::new(FixedPlanApprover(PlanDecision::Reject(
+            "wrong approach".into(),
+        ))));
+        let seen = event_sink(&mut agent);
+        agent.prompt("go").await.unwrap();
+
+        assert_eq!(
+            tool_runs.load(Ordering::SeqCst),
+            0,
+            "a rejected plan still ran its tools"
+        );
+        assert!(seen.lock().iter().any(|l| l == "plan_proposed:1"));
+        assert!(
+            message_texts(&agent)
+                .iter()
+                .any(|m| m.contains("The plan was rejected")),
+            "the rejection reason never reached the model"
+        );
+    }
+
+    /// An approved plan runs, and the gate is consulted once for the turn
+    /// rather than before every iteration.
+    #[cfg(feature = "providers")]
+    #[tokio::test]
+    async fn an_approved_plan_runs_and_is_gated_once() {
+        let (mut agent, tool_runs, _) = looping_agent(3);
+        agent.set_plan_approver(Arc::new(crate::permissions::AlwaysApprovePlan));
+        let seen = event_sink(&mut agent);
+        agent.prompt("go").await.unwrap();
+
+        assert_eq!(tool_runs.load(Ordering::SeqCst), 3);
+        let proposals = seen
+            .lock()
+            .iter()
+            .filter(|l| l.starts_with("plan_proposed"))
+            .count();
+        assert_eq!(proposals, 1, "the plan gate fired more than once per turn");
+    }
+
+    /// `Revise` must loop back to the model without running anything, which is
+    /// what separates it from `Reject`.
+    #[cfg(feature = "providers")]
+    #[tokio::test]
+    async fn a_revised_plan_goes_back_to_the_model_unrun() {
+        let (mut agent, tool_runs, provider_calls) = looping_agent(usize::MAX);
+        agent.max_tool_iterations = 3;
+        agent.set_plan_approver(Arc::new(FixedPlanApprover(PlanDecision::Revise(
+            "use the other tool".into(),
+        ))));
+        agent.prompt("go").await.unwrap();
+
+        assert_eq!(
+            tool_runs.load(Ordering::SeqCst),
+            0,
+            "a plan awaiting revision still ran"
+        );
+        assert!(
+            provider_calls.load(Ordering::SeqCst) > 1,
+            "revision did not loop back to the model"
+        );
+        assert!(
+            message_texts(&agent)
+                .iter()
+                .any(|m| m.contains("use the other tool")),
+            "the revision guidance never reached the model"
         );
     }
 }

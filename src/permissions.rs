@@ -275,6 +275,108 @@ impl AsyncApprover for ChannelAsyncApprover {
     }
 }
 
+/// What the agent intends to do this turn, presented for approval before any
+/// of it runs.
+///
+/// [`Approver`] and [`AsyncApprover`] gate one tool call at a time, which
+/// answers "may I run `rm`?" but never "is this the right approach?". A plan
+/// gate answers the second question: the host sees the agent's stated intent
+/// together with the concrete calls it is about to make, and decides once for
+/// the whole batch.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlanProposal {
+    /// The user prompt that produced this plan.
+    pub prompt: String,
+    /// The assistant's own narration of what it intends to do. Empty when the
+    /// model emitted tool calls with no accompanying text.
+    pub plan: String,
+    /// The calls the agent will make if the plan is approved.
+    pub calls: Vec<ToolCall>,
+    /// Which tool iteration this is, so a host can gate only the first.
+    pub turn: usize,
+}
+
+impl PlanProposal {
+    /// Render the proposal as text a human can approve or reject.
+    pub fn render(&self) -> String {
+        let mut out = String::new();
+        if !self.plan.trim().is_empty() {
+            out.push_str(self.plan.trim());
+            out.push_str("\n\n");
+        }
+        out.push_str("Planned steps:\n");
+        for (i, call) in self.calls.iter().enumerate() {
+            out.push_str(&format!("  {}. {}({})\n", i + 1, call.name, call.arguments));
+        }
+        out
+    }
+}
+
+/// The host's answer to a [`PlanProposal`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PlanDecision {
+    /// Run the plan as proposed.
+    Approve,
+    /// Abandon the turn. The reason is surfaced to the model and the caller.
+    Reject(String),
+    /// Do not run the plan; feed this guidance back to the model and let it
+    /// propose again.
+    Revise(String),
+}
+
+/// Pluggable whole-plan gate, run before the first tool call of a turn.
+///
+/// Async by design, mirroring [`AsyncApprover`]: a host that has to ask a
+/// human over a chat channel can await the reply inside `approve_plan`, so
+/// approval can span inbound messages without the engine knowing.
+///
+/// This composes with, rather than replaces, per-tool approval — an approved
+/// plan still has each of its calls checked by the [`Authorizer`] and
+/// [`Approver`].
+#[async_trait::async_trait]
+pub trait PlanApprover: Send + Sync {
+    async fn approve_plan(&self, proposal: &PlanProposal) -> PlanDecision;
+}
+
+/// Always-approve plan gate (for testing and non-interactive hosts).
+pub struct AlwaysApprovePlan;
+
+#[async_trait::async_trait]
+impl PlanApprover for AlwaysApprovePlan {
+    async fn approve_plan(&self, _proposal: &PlanProposal) -> PlanDecision {
+        PlanDecision::Approve
+    }
+}
+
+/// Tokio mpsc + oneshot plan gate, for hosts that answer on another task.
+pub struct ChannelPlanApprover {
+    tx: tokio::sync::mpsc::Sender<(PlanProposal, tokio::sync::oneshot::Sender<PlanDecision>)>,
+}
+
+impl ChannelPlanApprover {
+    #[allow(clippy::type_complexity)]
+    pub fn pair() -> (
+        Self,
+        tokio::sync::mpsc::Receiver<(PlanProposal, tokio::sync::oneshot::Sender<PlanDecision>)>,
+    ) {
+        let (tx, rx) = tokio::sync::mpsc::channel(32);
+        (Self { tx }, rx)
+    }
+}
+
+#[async_trait::async_trait]
+impl PlanApprover for ChannelPlanApprover {
+    async fn approve_plan(&self, proposal: &PlanProposal) -> PlanDecision {
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        if self.tx.send((proposal.clone(), reply_tx)).await.is_err() {
+            return PlanDecision::Reject("plan approver channel closed".to_string());
+        }
+        reply_rx
+            .await
+            .unwrap_or_else(|_| PlanDecision::Reject("plan approver dropped".to_string()))
+    }
+}
+
 /// Pluggable pre-tool gate (pi `beforeToolCall` shape).
 /// Engine calls this before executing tools; hosts supply product policy.
 pub trait Authorizer: Send + Sync {
