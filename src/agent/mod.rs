@@ -511,6 +511,16 @@ impl Agent {
     /// the start of every tool iteration, so a message pushed through this
     /// handle while a turn is in flight lands on the next iteration of that
     /// turn rather than waiting for it to finish.
+    ///
+    /// Drop the guard as soon as the mutation is done. The tool loop takes
+    /// this same lock at the top of every iteration, so a guard held longer
+    /// than necessary — and especially one held across an `.await` — stalls
+    /// the running turn. Take the lock, mutate, and let it go in one
+    /// statement.
+    ///
+    /// Note that compaction and [`Agent::clear_messages`] mutate the same
+    /// vector, so a host observing across either will see entries disappear
+    /// underneath it. That is inherent to sharing the history.
     pub fn messages_handle(&self) -> Arc<RwLock<Vec<Message>>> {
         Arc::clone(&self.messages)
     }
