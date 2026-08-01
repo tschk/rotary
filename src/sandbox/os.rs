@@ -336,3 +336,12 @@ fn find_in_path(name: &str) -> bool {
     }
     false
 }
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn test_has_seatbelt() {
+        assert!(super::has_seatbelt());
+    }
+}
