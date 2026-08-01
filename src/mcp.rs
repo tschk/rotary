@@ -595,6 +595,18 @@ pub struct McpClient {
 impl McpClient {
     /// Spawns a child process and establishes an MCP connection via stdin/stdout.
     pub async fn connect_stdio(command: &str, args: &[&str]) -> Result<Self, McpError> {
+        let cmd_path = std::path::Path::new(command);
+        let base_name = cmd_path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        let allowed = [
+            "node", "python", "python3", "cargo", "npx", "npm", "uv", "bun", "deno",
+        ];
+        if !allowed.contains(&base_name) {
+            return Err(McpError::Spawn(format!(
+                "command '{}' is not in the allowlist",
+                base_name
+            )));
+        }
+
         let mut child = Command::new(command)
             .args(args)
             .stdin(Stdio::piped())
