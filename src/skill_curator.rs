@@ -9,7 +9,7 @@
 //! Unlike a cron daemon, the curator is inactivity-triggered: callers invoke
 //! `audit` / `apply_suggestions` when the agent has been idle.
 
-use crate::skill_engine::{SkillEngine, SkillError, SkillState};
+use crate::skill_engine::{Skill, SkillEngine, SkillError, SkillState};
 
 /// Configuration for the skill curator.
 ///
@@ -78,6 +78,62 @@ impl SkillCurator {
         Self { config }
     }
 
+    fn audit_skill(
+        &self,
+        skill: &Skill,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Option<CuratorSuggestion> {
+        // Pinned skills bypass all auto-transitions.
+        if skill.pinned {
+            return None;
+        }
+        // Archived skills are never re-suggested.
+        if skill.state == SkillState::Archived {
+            return None;
+        }
+
+        let age_days = now
+            .signed_duration_since(skill.updated_at)
+            .num_days()
+            .max(0) as u64;
+
+        // Archive takes priority over stale.
+        if age_days >= self.config.archive_after_days {
+            return Some(CuratorSuggestion {
+                skill_id: skill.id.clone(),
+                skill_name: skill.name.clone(),
+                kind: SuggestionKind::Archive,
+                reason: format!(
+                    "Not updated in {} days (archive_after_days = {})",
+                    age_days, self.config.archive_after_days
+                ),
+            });
+        }
+
+        if age_days >= self.config.stale_after_days && skill.state == SkillState::Active {
+            return Some(CuratorSuggestion {
+                skill_id: skill.id.clone(),
+                skill_name: skill.name.clone(),
+                kind: SuggestionKind::MarkStale,
+                reason: format!(
+                    "Not updated in {} days (stale_after_days = {})",
+                    age_days, self.config.stale_after_days
+                ),
+            });
+        }
+
+        if skill.description.trim().is_empty() {
+            return Some(CuratorSuggestion {
+                skill_id: skill.id.clone(),
+                skill_name: skill.name.clone(),
+                kind: SuggestionKind::UpdateDescription,
+                reason: "Skill has an empty description".to_string(),
+            });
+        }
+
+        None
+    }
+
     /// Review all skills and produce suggestions, respecting
     /// `max_suggestions_per_run`.
     ///
@@ -96,102 +152,53 @@ impl SkillCurator {
             if suggestions.len() >= self.config.max_suggestions_per_run {
                 break;
             }
-            // Pinned skills bypass all auto-transitions.
-            if skill.pinned {
-                continue;
-            }
-            // Archived skills are never re-suggested.
-            if skill.state == SkillState::Archived {
-                continue;
-            }
-
-            let age_days = now
-                .signed_duration_since(skill.updated_at)
-                .num_days()
-                .max(0) as u64;
-
-            // Archive takes priority over stale.
-            if age_days >= self.config.archive_after_days {
-                suggestions.push(CuratorSuggestion {
-                    skill_id: skill.id.clone(),
-                    skill_name: skill.name.clone(),
-                    kind: SuggestionKind::Archive,
-                    reason: format!(
-                        "Not updated in {} days (archive_after_days = {})",
-                        age_days, self.config.archive_after_days
-                    ),
-                });
-                continue;
-            }
-
-            if age_days >= self.config.stale_after_days && skill.state == SkillState::Active {
-                suggestions.push(CuratorSuggestion {
-                    skill_id: skill.id.clone(),
-                    skill_name: skill.name.clone(),
-                    kind: SuggestionKind::MarkStale,
-                    reason: format!(
-                        "Not updated in {} days (stale_after_days = {})",
-                        age_days, self.config.stale_after_days
-                    ),
-                });
-                continue;
-            }
-
-            if skill.description.trim().is_empty() {
-                suggestions.push(CuratorSuggestion {
-                    skill_id: skill.id.clone(),
-                    skill_name: skill.name.clone(),
-                    kind: SuggestionKind::UpdateDescription,
-                    reason: "Skill has an empty description".to_string(),
-                });
-                continue;
+            if let Some(suggestion) = self.audit_skill(skill, now) {
+                suggestions.push(suggestion);
             }
         }
 
         // Consolidation pass: find skills with overlapping trigger_patterns.
         if self.config.consolidate && suggestions.len() < self.config.max_suggestions_per_run {
-            let overlap = self.find_overlapping(&skills);
-            for (source, target) in overlap {
-                if suggestions.len() >= self.config.max_suggestions_per_run {
-                    break;
-                }
-                // Skip if either is already suggested for archive/stale.
-                if suggestions
-                    .iter()
-                    .any(|s| s.skill_id == source.id || s.skill_id == target.id)
-                {
-                    continue;
-                }
-                if source.pinned || target.pinned {
-                    continue;
-                }
-                if source.state == SkillState::Archived || target.state == SkillState::Archived {
-                    continue;
-                }
-                suggestions.push(CuratorSuggestion {
-                    skill_id: source.id.clone(),
-                    skill_name: source.name.clone(),
-                    kind: SuggestionKind::Consolidate(target.id.clone()),
-                    reason: format!(
-                        "Overlapping trigger patterns with '{}' — merge into umbrella",
-                        target.name
-                    ),
-                });
-            }
+            self.audit_consolidation(&skills, &mut suggestions);
         }
 
         suggestions
     }
 
+    fn audit_consolidation(&self, skills: &[&Skill], suggestions: &mut Vec<CuratorSuggestion>) {
+        let overlap = self.find_overlapping(skills);
+        for (source, target) in overlap {
+            if suggestions.len() >= self.config.max_suggestions_per_run {
+                break;
+            }
+            // Skip if either is already suggested for archive/stale.
+            if suggestions
+                .iter()
+                .any(|s| s.skill_id == source.id || s.skill_id == target.id)
+            {
+                continue;
+            }
+            if source.pinned || target.pinned {
+                continue;
+            }
+            if source.state == SkillState::Archived || target.state == SkillState::Archived {
+                continue;
+            }
+            suggestions.push(CuratorSuggestion {
+                skill_id: source.id.clone(),
+                skill_name: source.name.clone(),
+                kind: SuggestionKind::Consolidate(target.id.clone()),
+                reason: format!(
+                    "Overlapping trigger patterns with '{}' — merge into umbrella",
+                    target.name
+                ),
+            });
+        }
+    }
+
     /// Find pairs of skills with overlapping trigger_patterns.
     /// Returns `(source, target)` pairs where source should merge into target.
-    fn find_overlapping<'a>(
-        &self,
-        skills: &[&'a crate::skill_engine::Skill],
-    ) -> Vec<(
-        &'a crate::skill_engine::Skill,
-        &'a crate::skill_engine::Skill,
-    )> {
+    fn find_overlapping<'a>(&self, skills: &[&'a Skill]) -> Vec<(&'a Skill, &'a Skill)> {
         let mut pairs = Vec::new();
         for i in 0..skills.len() {
             for j in (i + 1)..skills.len() {
