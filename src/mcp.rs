@@ -587,6 +587,66 @@ async fn handshake(transport: &mut dyn McpTransport) -> Result<(), McpError> {
     Ok(())
 }
 
+fn is_allowed_stdio_command(command: &str) -> bool {
+    if command.is_empty()
+        || command.contains('/')
+        || command.contains('\\')
+        || command.contains('\0')
+    {
+        return false;
+    }
+    if command.len() >= 2 {
+        let bytes = command.as_bytes();
+        if bytes[1] == b':' && bytes[0].is_ascii_alphabetic() {
+            return false;
+        }
+    }
+
+    let mut name = command.to_ascii_lowercase();
+    for ext in [".exe", ".cmd", ".bat", ".ps1"] {
+        if let Some(stripped) = name.strip_suffix(ext) {
+            name = stripped.to_owned();
+            break;
+        }
+    }
+    if name.is_empty() {
+        return false;
+    }
+
+    const ALLOWED: &[&str] = &[
+        "node", "python", "python3", "cargo", "npx", "npm", "uv", "uvx", "bun", "deno",
+    ];
+    if ALLOWED.contains(&name.as_str()) {
+        return true;
+    }
+    is_versioned_python_command(&name)
+}
+
+fn is_versioned_python_command(name: &str) -> bool {
+    let Some(rest) = name.strip_prefix("python") else {
+        return false;
+    };
+    if rest.is_empty() {
+        return false;
+    }
+    let mut chars = rest.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if !first.is_ascii_digit() {
+        return false;
+    }
+    let mut prev_dot = false;
+    for c in chars {
+        match c {
+            '0'..='9' => prev_dot = false,
+            '.' if !prev_dot => prev_dot = true,
+            _ => return false,
+        }
+    }
+    !prev_dot
+}
+
 /// Client connected to a single MCP server over stdio, HTTP, or SSE.
 pub struct McpClient {
     inner: Mutex<Box<dyn McpTransport>>,
@@ -595,15 +655,9 @@ pub struct McpClient {
 impl McpClient {
     /// Spawns a child process and establishes an MCP connection via stdin/stdout.
     pub async fn connect_stdio(command: &str, args: &[&str]) -> Result<Self, McpError> {
-        let cmd_path = std::path::Path::new(command);
-        let base_name = cmd_path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-        let allowed = [
-            "node", "python", "python3", "cargo", "npx", "npm", "uv", "bun", "deno",
-        ];
-        if !allowed.contains(&base_name) {
+        if !is_allowed_stdio_command(command) {
             return Err(McpError::Spawn(format!(
-                "command '{}' is not in the allowlist",
-                base_name
+                "command '{command}' is not in the allowlist"
             )));
         }
 
@@ -967,5 +1021,46 @@ mod tests {
         );
         let v = parse_sse_body(body, 9).unwrap();
         assert_eq!(v["b"], 2);
+    }
+
+    #[test]
+    fn stdio_allowlist_accepts_common_launchers() {
+        for cmd in [
+            "node",
+            "python",
+            "python3",
+            "python3.12",
+            "cargo",
+            "npx",
+            "npm",
+            "uv",
+            "uvx",
+            "bun",
+            "deno",
+        ] {
+            assert!(is_allowed_stdio_command(cmd), "{cmd}");
+        }
+    }
+
+    #[test]
+    fn stdio_allowlist_accepts_windows_exe_names() {
+        assert!(is_allowed_stdio_command("node.exe"));
+        assert!(is_allowed_stdio_command("python3.CMD"));
+        assert!(is_allowed_stdio_command("uvx.bat"));
+        assert!(is_allowed_stdio_command("Deno.PS1"));
+    }
+
+    #[test]
+    fn stdio_allowlist_rejects_path_bypass() {
+        assert!(!is_allowed_stdio_command("./node"));
+        assert!(!is_allowed_stdio_command("/tmp/node"));
+        assert!(!is_allowed_stdio_command(r".\node"));
+        assert!(!is_allowed_stdio_command(
+            r"C:\Program Files\nodejs\node.exe"
+        ));
+        assert!(!is_allowed_stdio_command("C:node"));
+        assert!(!is_allowed_stdio_command("bash"));
+        assert!(!is_allowed_stdio_command("python3."));
+        assert!(!is_allowed_stdio_command("pythonic"));
     }
 }
