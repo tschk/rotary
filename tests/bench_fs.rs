@@ -4,18 +4,15 @@ use tokio::time::Duration;
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn bench_fs_starvation() {
     let content = "a".repeat(1024 * 1024 * 10); // 10MB file
-    let tmp = tempfile::NamedTempFile::new().unwrap();
-    let path = tmp.path().to_path_buf();
-    std::fs::write(&path, &content).unwrap();
+    std::fs::write("test_large_file.txt", &content).unwrap();
 
     // 1. Benchmark blocking std::fs::read_to_string
     let start = Instant::now();
     let mut tasks = vec![];
     for _ in 0..10 {
-        let path = path.clone();
-        tasks.push(tokio::spawn(async move {
+        tasks.push(tokio::spawn(async {
             // Blocking I/O inside async block
-            let _ = std::fs::read_to_string(&path).unwrap();
+            let _ = std::fs::read_to_string("test_large_file.txt").unwrap();
         }));
     }
 
@@ -37,10 +34,11 @@ async fn bench_fs_starvation() {
     let start2 = Instant::now();
     let mut tasks2 = vec![];
     for _ in 0..10 {
-        let path = path.clone();
-        tasks2.push(tokio::spawn(async move {
+        tasks2.push(tokio::spawn(async {
             // Async I/O inside async block
-            let _ = tokio::fs::read_to_string(&path).await.unwrap();
+            let _ = tokio::fs::read_to_string("test_large_file.txt")
+                .await
+                .unwrap();
         }));
     }
 
@@ -57,4 +55,6 @@ async fn bench_fs_starvation() {
     let _ = async_work2.await;
     let elapsed2 = start2.elapsed();
     println!("Total elapsed with tokio::fs (async): {:?}", elapsed2);
+
+    std::fs::remove_file("test_large_file.txt").unwrap();
 }
