@@ -2,6 +2,7 @@ use super::extract::ExtractionResult;
 use super::graph::{next_node_id, *};
 use chrono::Utc;
 use std::collections::HashMap;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 /// Scans a workspace and builds a structural graph of files, functions, and classes.
@@ -33,72 +34,126 @@ impl CodebaseScanner {
         let now = Utc::now();
         let mut file_ids: HashMap<String, String> = HashMap::new();
         for path in changed_files {
-            if !path.exists() {
-                continue;
+            self.process_file(path, &mut result, &mut file_ids, now);
+        }
+        Ok(result)
+    }
+
+    fn process_file(
+        &self,
+        path: &Path,
+        result: &mut ExtractionResult,
+        file_ids: &mut HashMap<String, String>,
+        now: chrono::DateTime<Utc>,
+    ) {
+        if !path.exists() {
+            return;
+        }
+
+        let meta = match std::fs::metadata(path) {
+            Ok(m) => m,
+            Err(_) => return,
+        };
+        if !meta.is_file() {
+            return;
+        }
+
+        // Reject paths outside workspace rather than falling back to absolute path.
+        let rel = match path.strip_prefix(&self.workspace) {
+            Ok(r) => r.to_string_lossy().to_string(),
+            Err(_) => {
+                tracing::warn!(
+                    "scan_incremental: rejecting path outside workspace: {}",
+                    path.display()
+                );
+                return;
             }
-            // Reject paths outside workspace rather than falling back to absolute path.
-            let rel = match path.strip_prefix(&self.workspace) {
-                Ok(r) => r.to_string_lossy().to_string(),
-                Err(_) => {
-                    tracing::warn!(
-                        "scan_incremental: rejecting path outside workspace: {}",
-                        path.display()
-                    );
-                    continue;
-                }
-            };
-            let content = match std::fs::read_to_string(path) {
-                Ok(c) => c,
-                Err(_) => continue,
-            };
-            let file_id = next_node_id();
-            file_ids.insert(rel.clone(), file_id.clone());
+        };
+
+        let file = match std::fs::File::open(path) {
+            Ok(f) => f,
+            Err(_) => return,
+        };
+        let mut content = String::new();
+        if file
+            .take(10 * 1024 * 1024)
+            .read_to_string(&mut content)
+            .is_err()
+        {
+            return;
+        }
+
+        let file_id = next_node_id();
+        file_ids.insert(rel.clone(), file_id.clone());
+        result.push_node(MemoryNode {
+            id: file_id.clone(),
+            label: rel.clone(),
+            node_type: NodeType::File,
+            description: format!("Source file: {}", rel),
+            source_file: Some(rel.clone()),
+            source_location: None,
+            tags: vec![language_tag(path)],
+            created_at: now,
+        });
+
+        self.process_definitions(&content, path, &rel, &file_id, result, now);
+        self.process_imports(&content, path, &rel, &file_id, file_ids, result);
+    }
+
+    fn process_definitions(
+        &self,
+        content: &str,
+        path: &Path,
+        rel: &str,
+        file_id: &str,
+        result: &mut ExtractionResult,
+        now: chrono::DateTime<Utc>,
+    ) {
+        let defs = extract_definitions(content, path);
+        for def in defs {
+            let def_id = next_node_id();
+            result.edges.push(MemoryEdge {
+                source: file_id.to_string(),
+                target: def_id.clone(),
+                relation: EdgeRelation::Contains,
+                confidence: 1.0,
+                source_file: Some(rel.to_string()),
+            });
             result.push_node(MemoryNode {
-                id: file_id.clone(),
-                label: rel.clone(),
-                node_type: NodeType::File,
-                description: format!("Source file: {}", rel),
-                source_file: Some(rel.clone()),
-                source_location: None,
-                tags: vec![language_tag(path)],
+                id: def_id,
+                label: def.name.clone(),
+                node_type: def.kind,
+                description: format!("{} defined in {}", def.name, rel),
+                source_file: Some(rel.to_string()),
+                source_location: Some(def.location.clone()),
+                tags: Vec::new(),
                 created_at: now,
             });
-            let defs = extract_definitions(&content, path);
-            for def in defs {
-                let def_id = next_node_id();
-                result.edges.push(MemoryEdge {
-                    source: file_id.clone(),
-                    target: def_id.clone(),
-                    relation: EdgeRelation::Contains,
-                    confidence: 1.0,
-                    source_file: Some(rel.clone()),
-                });
-                result.push_node(MemoryNode {
-                    id: def_id,
-                    label: def.name.clone(),
-                    node_type: def.kind,
-                    description: format!("{} defined in {}", def.name, rel),
-                    source_file: Some(rel.clone()),
-                    source_location: Some(def.location.clone()),
-                    tags: Vec::new(),
-                    created_at: now,
-                });
-            }
-            for imp in extract_imports(&content, path) {
-                if let Some(target_id) = file_ids.get(&imp) {
-                    if target_id != &file_id {
-                        result.edges.push(MemoryEdge {
-                            source: file_id.clone(),
-                            target: target_id.clone(),
-                            relation: EdgeRelation::Imports,
-                            confidence: 0.9,
-                            source_file: Some(rel.clone()),
-                        });
-                    }
+        }
+    }
+
+    fn process_imports(
+        &self,
+        content: &str,
+        path: &Path,
+        rel: &str,
+        file_id: &str,
+        file_ids: &HashMap<String, String>,
+        result: &mut ExtractionResult,
+    ) {
+        for imp in extract_imports(content, path) {
+            if let Some(target_id) = file_ids.get(&imp) {
+                if target_id != file_id {
+                    result.edges.push(MemoryEdge {
+                        source: file_id.to_string(),
+                        target: target_id.clone(),
+                        relation: EdgeRelation::Imports,
+                        confidence: 0.9,
+                        source_file: Some(rel.to_string()),
+                    });
                 }
             }
         }
-        Ok(result)
     }
 
     fn collect_files(&self, dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), GraphMemoryError> {
