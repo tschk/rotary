@@ -113,6 +113,13 @@ pub(crate) fn exec_edit(ctx: Arc<ToolContext>, args: String) -> ToolFuture {
     })
 }
 
+/// Executes a bash or cmd.exe shell command.
+///
+/// **Security Warning:**
+/// Passing untrusted input directly to `cmd /C` or `bash -c` allows for trivial command
+/// injection using shell operators like `&`, `|`, and `;`. Since this tool is intended
+/// to execute LLM-generated commands, the host environment must carefully sandbox this
+/// execution or sanitize the input to mitigate risks.
 pub(crate) fn exec_bash(ctx: Arc<ToolContext>, args: String) -> ToolFuture {
     Box::pin(async move {
         let command = match parse_str_field(&args, "command") {
