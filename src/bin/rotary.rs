@@ -410,126 +410,15 @@ fn handle_slash(input: &str, agent: &mut Agent) -> bool {
     let cmd = parts.next().unwrap_or("");
     let arg = parts.next();
     match cmd {
-        "/quit" | "/exit" => {
-            eprintln!("goodbye");
-            true
-        }
-        "/help" => {
-            eprintln!("slash commands:");
-            eprintln!("  /model <name>   set the model");
-            eprintln!("  /tools          list registered tools");
-            eprintln!("  /scope <name>   set scope (coding, research, plan, ask)");
-            eprintln!("  /sessions       list saved sessions");
-            eprintln!("  /new            clear conversation");
-            eprintln!("  /save           save current session to ~/.agents/sessions/");
-            eprintln!("  /load <id>      load a session by id");
-            eprintln!("  /help           show this help");
-            eprintln!("  /quit           exit");
-            false
-        }
-        "/model" => {
-            if let Some(m) = arg {
-                agent.set_model(m);
-                eprintln!("model set to {m}");
-            } else {
-                eprintln!("current model: {}", agent.model);
-            }
-            false
-        }
-        "/tools" => {
-            for def in agent.tools.definitions() {
-                let name = def.get("name").and_then(|v| v.as_str()).unwrap_or("?");
-                let desc = def
-                    .get("description")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-                eprintln!("  {name:<12} {desc}");
-            }
-            eprintln!("{} tools registered", agent.tools.count());
-            false
-        }
-        "/scope" => {
-            if let Some(s) = arg {
-                if let Some(scope) = Scope::parse_scope(s) {
-                    agent.set_scope(scope);
-                    eprintln!("scope set to {scope}");
-                } else {
-                    eprintln!("unknown scope: {s} (try coding, research, plan, ask)");
-                }
-            } else {
-                eprintln!("current scope: {}", agent.scope);
-            }
-            false
-        }
-        "/new" => {
-            agent.clear_messages();
-            eprintln!("conversation cleared");
-            false
-        }
-        "/sessions" => {
-            let dir = sessions_dir();
-            match std::fs::read_dir(&dir) {
-                Ok(entries) => {
-                    let mut found = false;
-                    for entry in entries.flatten() {
-                        if let Some(name) = entry.file_name().to_str() {
-                            if name.ends_with(".jsonl") {
-                                eprintln!("  {}", name.trim_end_matches(".jsonl"));
-                                found = true;
-                            }
-                        }
-                    }
-                    if !found {
-                        eprintln!("no saved sessions in {}", dir.display());
-                    }
-                }
-                Err(_) => eprintln!("no sessions directory at {}", dir.display()),
-            }
-            false
-        }
-        "/save" => {
-            let dir = sessions_dir();
-            let _ = std::fs::create_dir_all(&dir);
-            let id = uuid::Uuid::new_v4().to_string();
-            let path = dir.join(format!("{id}.jsonl"));
-            let messages = agent.messages.read();
-            let mut content = String::new();
-            for msg in messages.iter() {
-                if let Ok(line) = serde_json::to_string(msg) {
-                    content.push_str(&line);
-                    content.push('\n');
-                }
-            }
-            match std::fs::write(&path, content) {
-                Ok(_) => eprintln!("saved session {id} to {}", path.display()),
-                Err(e) => eprintln!("save failed: {e}"),
-            }
-            false
-        }
-        "/load" => {
-            let id = match arg {
-                Some(id) => id,
-                None => {
-                    eprintln!("usage: /load <id>");
-                    return false;
-                }
-            };
-            let path = sessions_dir().join(format!("{id}.jsonl"));
-            match std::fs::read_to_string(&path) {
-                Ok(content) => {
-                    agent.clear_messages();
-                    let mut messages = agent.messages.write();
-                    for line in content.lines() {
-                        if let Ok(msg) = serde_json::from_str::<rx4::Message>(line) {
-                            messages.push(msg);
-                        }
-                    }
-                    eprintln!("loaded session {id} ({} messages)", messages.len());
-                }
-                Err(e) => eprintln!("load failed: {e}"),
-            }
-            false
-        }
+        "/quit" | "/exit" => cmd_quit(),
+        "/help" => cmd_help(),
+        "/model" => cmd_model(arg, agent),
+        "/tools" => cmd_tools(agent),
+        "/scope" => cmd_scope(arg, agent),
+        "/new" => cmd_new(agent),
+        "/sessions" => cmd_sessions(),
+        "/save" => cmd_save(agent),
+        "/load" => cmd_load(arg, agent),
         other => {
             eprintln!("unknown command: {other} (try /help)");
             false
@@ -538,8 +427,158 @@ fn handle_slash(input: &str, agent: &mut Agent) -> bool {
 }
 
 #[cfg(feature = "providers")]
+fn cmd_quit() -> bool {
+    eprintln!("goodbye");
+    true
+}
+
+#[cfg(feature = "providers")]
+fn cmd_help() -> bool {
+    eprintln!("slash commands:");
+    eprintln!("  /model <name>   set the model");
+    eprintln!("  /tools          list registered tools");
+    eprintln!("  /scope <name>   set scope (coding, research, plan, ask)");
+    eprintln!("  /sessions       list saved sessions");
+    eprintln!("  /new            clear conversation");
+    eprintln!("  /save           save current session to ~/.agents/sessions/");
+    eprintln!("  /load <id>      load a session by id");
+    eprintln!("  /help           show this help");
+    eprintln!("  /quit           exit");
+    false
+}
+
+#[cfg(feature = "providers")]
+fn cmd_model(arg: Option<&str>, agent: &mut Agent) -> bool {
+    if let Some(m) = arg {
+        agent.set_model(m);
+        eprintln!("model set to {m}");
+    } else {
+        eprintln!("current model: {}", agent.model);
+    }
+    false
+}
+
+#[cfg(feature = "providers")]
+fn cmd_tools(agent: &mut Agent) -> bool {
+    for def in agent.tools.definitions() {
+        let name = def.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+        let desc = def
+            .get("description")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        eprintln!("  {name:<12} {desc}");
+    }
+    eprintln!("{} tools registered", agent.tools.count());
+    false
+}
+
+#[cfg(feature = "providers")]
+fn cmd_scope(arg: Option<&str>, agent: &mut Agent) -> bool {
+    if let Some(s) = arg {
+        if let Some(scope) = Scope::parse_scope(s) {
+            agent.set_scope(scope);
+            eprintln!("scope set to {scope}");
+        } else {
+            eprintln!("unknown scope: {s} (try coding, research, plan, ask)");
+        }
+    } else {
+        eprintln!("current scope: {}", agent.scope);
+    }
+    false
+}
+
+#[cfg(feature = "providers")]
+fn cmd_new(agent: &mut Agent) -> bool {
+    agent.clear_messages();
+    eprintln!("conversation cleared");
+    false
+}
+
+#[cfg(feature = "providers")]
+fn cmd_sessions() -> bool {
+    let dir = sessions_dir();
+    match std::fs::read_dir(&dir) {
+        Ok(entries) => {
+            let mut found = false;
+            for entry in entries.flatten() {
+                if let Some(name) = entry.file_name().to_str() {
+                    if name.ends_with(".jsonl") {
+                        eprintln!("  {}", name.trim_end_matches(".jsonl"));
+                        found = true;
+                    }
+                }
+            }
+            if !found {
+                eprintln!("no saved sessions in {}", dir.display());
+            }
+        }
+        Err(_) => eprintln!("no sessions directory at {}", dir.display()),
+    }
+    false
+}
+
+#[cfg(feature = "providers")]
 fn sessions_dir() -> std::path::PathBuf {
     home_dir().join(".agents").join("sessions")
+}
+
+#[cfg(feature = "providers")]
+fn cmd_save(agent: &mut Agent) -> bool {
+    let dir = sessions_dir();
+    let _ = std::fs::create_dir_all(&dir);
+    let id = uuid::Uuid::new_v4().to_string();
+    let path = dir.join(format!("{id}.jsonl"));
+
+    let messages = agent.messages.read();
+
+    let mut content = String::new();
+    for msg in messages.iter() {
+        if let Ok(line) = serde_json::to_string(msg) {
+            content.push_str(&line);
+            content.push('\n');
+        }
+    }
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    match options.open(&path).and_then(|mut f| {
+        use std::io::Write;
+        f.write_all(content.as_bytes())
+    }) {
+        Ok(_) => eprintln!("saved session {id} to {}", path.display()),
+        Err(e) => eprintln!("save failed: {e}"),
+    }
+    false
+}
+
+#[cfg(feature = "providers")]
+fn cmd_load(arg: Option<&str>, agent: &mut Agent) -> bool {
+    let id = match arg {
+        Some(id) => id,
+        None => {
+            eprintln!("usage: /load <id>");
+            return false;
+        }
+    };
+    let path = sessions_dir().join(format!("{id}.jsonl"));
+    match std::fs::read_to_string(&path) {
+        Ok(content) => {
+            agent.clear_messages();
+            let mut messages = agent.messages.write();
+            for line in content.lines() {
+                if let Ok(msg) = serde_json::from_str::<rx4::Message>(line) {
+                    messages.push(msg);
+                }
+            }
+            eprintln!("loaded session {id} ({} messages)", messages.len());
+        }
+        Err(e) => eprintln!("load failed: {e}"),
+    }
+    false
 }
 
 fn home_dir() -> std::path::PathBuf {
