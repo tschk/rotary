@@ -336,3 +336,43 @@ fn find_in_path(name: &str) -> bool {
     }
     false
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_detect_sandbox_returns_valid_mode() {
+        let mode = detect_sandbox();
+        assert!(matches!(
+            mode,
+            OsSandbox::MacosSeatbelt | OsSandbox::LinuxBubblewrap | OsSandbox::UserspaceOnly
+        ));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn test_detect_sandbox_macos() {
+        if has_seatbelt() {
+            assert_eq!(detect_sandbox(), OsSandbox::MacosSeatbelt);
+        } else {
+            assert_eq!(detect_sandbox(), OsSandbox::UserspaceOnly);
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_detect_sandbox_linux() {
+        if has_bubblewrap() {
+            assert_eq!(detect_sandbox(), OsSandbox::LinuxBubblewrap);
+        } else {
+            assert_eq!(detect_sandbox(), OsSandbox::UserspaceOnly);
+        }
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    #[test]
+    fn test_detect_sandbox_other_platforms() {
+        assert_eq!(detect_sandbox(), OsSandbox::UserspaceOnly);
+    }
+}
