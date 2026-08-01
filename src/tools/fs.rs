@@ -55,12 +55,12 @@ pub(crate) fn exec_write(ctx: Arc<ToolContext>, args: String) -> ToolFuture {
         };
         if let Some(parent) = full.parent() {
             if !parent.exists() {
-                if let Err(e) = std::fs::create_dir_all(parent) {
+                if let Err(e) = tokio::fs::create_dir_all(parent).await {
                     return ToolResult::err("write", format!("mkdir failed: {e}"));
                 }
             }
         }
-        match std::fs::write(&full, &content) {
+        match tokio::fs::write(&full, &content).await {
             Ok(_) => {
                 debug!("wrote {} bytes to {}", content.len(), full.display());
                 ToolResult::ok(
