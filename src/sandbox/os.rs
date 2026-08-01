@@ -338,14 +338,14 @@ fn find_in_path(name: &str) -> bool {
 }
 
 #[cfg(test)]
+pub(crate) static PATH_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::env;
     use std::fs::File;
-    use std::sync::Mutex;
     use tempfile::tempdir;
-
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     struct EnvGuard {
         _lock: std::sync::MutexGuard<'static, ()>,
@@ -354,7 +354,7 @@ mod tests {
 
     impl EnvGuard {
         fn new() -> Self {
-            let lock = ENV_LOCK.lock().unwrap();
+            let lock = PATH_ENV_LOCK.lock().unwrap();
             let original_path = env::var("PATH").ok();
             Self {
                 _lock: lock,

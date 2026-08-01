@@ -452,6 +452,7 @@ mod tests {
 
     #[test]
     fn detect_sandbox_returns_a_valid_variant() {
+        let _guard = os::PATH_ENV_LOCK.lock().unwrap();
         let mode = detect_sandbox();
         assert!(matches!(
             mode,
@@ -462,6 +463,7 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn detect_sandbox_prefers_seatbelt_on_macos() {
+        let _guard = os::PATH_ENV_LOCK.lock().unwrap();
         assert_eq!(detect_sandbox(), OsSandbox::MacosSeatbelt);
         assert!(has_seatbelt());
     }
@@ -469,6 +471,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn detect_sandbox_on_linux() {
+        let _guard = os::PATH_ENV_LOCK.lock().unwrap();
         if has_bubblewrap() {
             assert_eq!(detect_sandbox(), OsSandbox::LinuxBubblewrap);
         } else {
@@ -479,11 +482,13 @@ mod tests {
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     #[test]
     fn detect_sandbox_falls_back_on_other_platforms() {
+        let _guard = os::PATH_ENV_LOCK.lock().unwrap();
         assert_eq!(detect_sandbox(), OsSandbox::UserspaceOnly);
     }
 
     #[test]
     fn os_sandbox_runner_is_available_matches_detect() {
+        let _guard = os::PATH_ENV_LOCK.lock().unwrap();
         assert_eq!(OsSandboxRunner::is_available(), detect_sandbox());
     }
 
