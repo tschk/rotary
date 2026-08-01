@@ -152,6 +152,8 @@ pub(crate) fn exec_bash(ctx: Arc<ToolContext>, args: String) -> ToolFuture {
 
         let mut cmd = if let Some(os) = ctx.os_sandbox.as_ref() {
             // Wrap bash -c under seatbelt/bwrap; convert std Command → tokio.
+            // Note: executing user-supplied strings directly via `bash -c`
+            // intentionally permits shell operators (&, |, ;).
             match os.command("bash", &["-c", &command]) {
                 Ok(mut c) => {
                     c.current_dir(&working_dir);
@@ -171,6 +173,8 @@ pub(crate) fn exec_bash(ctx: Arc<ToolContext>, args: String) -> ToolFuture {
                 .kill_on_drop(true);
             c
         } else {
+            // Note: executing user-supplied strings directly via `bash -c`
+            // intentionally permits shell operators (&, |, ;).
             let mut c = Command::new("bash");
             c.arg("-c").arg(&command);
             c.current_dir(&working_dir);
