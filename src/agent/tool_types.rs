@@ -281,3 +281,67 @@ impl Default for ToolRegistry {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_normalize_tool_name() {
+        // Test standard mappings
+        assert_eq!(normalize_tool_name("read_file"), "read");
+        assert_eq!(normalize_tool_name("read"), "read");
+
+        assert_eq!(normalize_tool_name("write_file"), "write");
+        assert_eq!(normalize_tool_name("write"), "write");
+
+        assert_eq!(normalize_tool_name("list_dir"), "ls");
+        assert_eq!(normalize_tool_name("ls"), "ls");
+
+        assert_eq!(normalize_tool_name("run_command"), "bash");
+        assert_eq!(normalize_tool_name("bash"), "bash");
+
+        assert_eq!(normalize_tool_name("find_files"), "find");
+        assert_eq!(normalize_tool_name("find"), "find");
+
+        assert_eq!(normalize_tool_name("code_intel"), "grep");
+        assert_eq!(normalize_tool_name("grep"), "grep");
+
+        assert_eq!(normalize_tool_name("hashline_edit"), "edit");
+        assert_eq!(normalize_tool_name("search_replace"), "edit");
+        assert_eq!(normalize_tool_name("apply_patch"), "edit");
+        assert_eq!(normalize_tool_name("edit"), "edit");
+
+        assert_eq!(normalize_tool_name("spawn_agent"), "spawn_agent");
+        assert_eq!(normalize_tool_name("agent"), "spawn_agent");
+
+        assert_eq!(normalize_tool_name("web_fetch"), "web_fetch");
+        assert_eq!(normalize_tool_name("fetch"), "web_fetch");
+        assert_eq!(normalize_tool_name("fetch_url"), "web_fetch");
+
+        assert_eq!(normalize_tool_name("todo"), "todo");
+        assert_eq!(normalize_tool_name("todo_write"), "todo");
+        assert_eq!(normalize_tool_name("todo_list"), "todo");
+
+        assert_eq!(normalize_tool_name("enter_plan_mode"), "enter_plan_mode");
+        assert_eq!(normalize_tool_name("plan_mode"), "enter_plan_mode");
+
+        assert_eq!(normalize_tool_name("exit_plan_mode"), "exit_plan_mode");
+
+        assert_eq!(normalize_tool_name("lsp_diagnostics"), "lsp_diagnostics");
+        assert_eq!(normalize_tool_name("diagnostics"), "lsp_diagnostics");
+
+        assert_eq!(normalize_tool_name("lsp_definition"), "lsp_definition");
+        assert_eq!(normalize_tool_name("definition"), "lsp_definition");
+        assert_eq!(normalize_tool_name("go_to_definition"), "lsp_definition");
+
+        assert_eq!(normalize_tool_name("lsp_references"), "lsp_references");
+        assert_eq!(normalize_tool_name("references"), "lsp_references");
+        assert_eq!(normalize_tool_name("find_references"), "lsp_references");
+
+        // Test fallback for unknown tools
+        assert_eq!(normalize_tool_name("unknown_tool"), "unknown_tool");
+        assert_eq!(normalize_tool_name("custom_command"), "custom_command");
+        assert_eq!(normalize_tool_name(""), "");
+    }
+}
