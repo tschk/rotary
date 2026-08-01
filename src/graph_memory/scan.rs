@@ -74,14 +74,26 @@ impl CodebaseScanner {
             Ok(f) => f,
             Err(_) => return,
         };
-        let mut content = String::new();
-        if file
-            .take(10 * 1024 * 1024)
-            .read_to_string(&mut content)
-            .is_err()
-        {
+        let mut buf = Vec::new();
+        if file.take(10 * 1024 * 1024).read_to_end(&mut buf).is_err() {
             return;
         }
+        let content = match String::from_utf8(buf) {
+            Ok(s) => s,
+            Err(e) => {
+                let utf8_err = e.utf8_error();
+                if utf8_err.error_len().is_none() {
+                    let mut buf = e.into_bytes();
+                    buf.truncate(utf8_err.valid_up_to());
+                    match String::from_utf8(buf) {
+                        Ok(s) => s,
+                        Err(_) => return,
+                    }
+                } else {
+                    return;
+                }
+            }
+        };
 
         let file_id = next_node_id();
         file_ids.insert(rel.clone(), file_id.clone());
