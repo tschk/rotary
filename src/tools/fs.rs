@@ -163,6 +163,9 @@ pub(crate) fn exec_bash(ctx: Arc<ToolContext>, args: String) -> ToolFuture {
                 Err(e) => return ToolResult::err("bash", e.to_string()),
             }
         } else if cfg!(target_os = "windows") {
+            // SECURITY: The `bash` tool is explicitly designed to execute arbitrary shell commands
+            // from the LLM. Command injection via operators is an intended feature.
+            // The LLM is instructed in the tool definition to not pass unsanitized external input.
             let mut c = Command::new("cmd");
             c.arg("/C").arg(&command);
             c.current_dir(&working_dir);
@@ -171,6 +174,9 @@ pub(crate) fn exec_bash(ctx: Arc<ToolContext>, args: String) -> ToolFuture {
                 .kill_on_drop(true);
             c
         } else {
+            // SECURITY: The `bash` tool is explicitly designed to execute arbitrary shell commands
+            // from the LLM. Command injection via operators (&, |, ;) is an intended feature.
+            // The LLM is instructed in the tool definition to not pass unsanitized external input.
             let mut c = Command::new("bash");
             c.arg("-c").arg(&command);
             c.current_dir(&working_dir);
