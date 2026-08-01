@@ -152,7 +152,25 @@ impl IpcServer {
             }
         }
 
-        let result: Result<Value, String> = match method {
+        let result: Result<Value, String> = self.execute_method(method, &params).await;
+
+        match result {
+            Ok(value) => {
+                serde_json::json!({"jsonrpc": "2.0", "id": id, "result": value}).to_string()
+            }
+            Err(e) => {
+                let code = if e.starts_with("unknown method:") {
+                    -32601
+                } else {
+                    -32603
+                };
+                error_response(id, code, &e)
+            }
+        }
+    }
+
+    async fn execute_method(&self, method: &str, params: &Value) -> Result<Value, String> {
+        match method {
             "ping" => Ok(Value::String("pong".into())),
             "state" => {
                 let agent = self.agent.lock().await;
@@ -273,14 +291,7 @@ impl IpcServer {
                 self.agent.lock().await.clear_messages();
                 Ok(Value::String("cleared".into()))
             }
-            _ => return error_response(id, -32601, &format!("unknown method: {method}")),
-        };
-
-        match result {
-            Ok(value) => {
-                serde_json::json!({"jsonrpc": "2.0", "id": id, "result": value}).to_string()
-            }
-            Err(e) => error_response(id, -32603, &e),
+            _ => Err(format!("unknown method: {method}")),
         }
     }
 }
