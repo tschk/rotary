@@ -99,141 +99,118 @@ async fn execute_cancel_subagent(
 }
 
 pub fn register_builtin_tools(registry: &mut ToolRegistry) {
-    registry.register(
-        ToolDefinition::new_fn(
+    let tools: &[(&str, &str, &str, crate::agent::ToolExecuteFn, ToolEffect)] = &[
+        (
             "read",
             "Read the contents of a file at the given path. Returns content with line numbers.",
             r#"{"type":"object","properties":{"path":{"type":"string"},"offset":{"type":"integer"},"limit":{"type":"integer"}},"required":["path"]}"#,
             fs::exec_read,
-        )
-        .with_effect(ToolEffect::Read),
-    );
-    registry.register(
-        ToolDefinition::new_fn(
+            ToolEffect::Read,
+        ),
+        (
             "write",
             "Write content to a file, creating or overwriting it.",
             r#"{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"]}"#,
             fs::exec_write,
-        )
-        .with_effect(ToolEffect::Write),
-    );
-    registry.register(
-        ToolDefinition::new_fn(
+            ToolEffect::Write,
+        ),
+        (
             "edit",
             "Perform a string replacement in a file. old_string must be unique.",
             r#"{"type":"object","properties":{"path":{"type":"string"},"old_string":{"type":"string"},"new_string":{"type":"string"}},"required":["path","old_string","new_string"]}"#,
             fs::exec_edit,
-        )
-        .with_effect(ToolEffect::Write),
-    );
-    registry.register(
-        ToolDefinition::new_fn(
+            ToolEffect::Write,
+        ),
+        (
             "bash",
             "Execute a shell command and return stdout/stderr. Optional timeout in seconds.",
             r#"{"type":"object","properties":{"command":{"type":"string"},"cwd":{"type":"string"},"timeout":{"type":"integer"}},"required":["command"]}"#,
             fs::exec_bash,
-        )
-        .with_effect(ToolEffect::Process),
-    );
-    registry.register(
-        ToolDefinition::new_fn(
+            ToolEffect::Process,
+        ),
+        (
             "grep",
             "Search file contents using regex. Returns matching lines with context.",
             r#"{"type":"object","properties":{"pattern":{"type":"string"},"path":{"type":"string"},"context":{"type":"integer"}},"required":["pattern"]}"#,
             fs::exec_grep,
-        )
-        .with_effect(ToolEffect::Read),
-    );
-    registry.register(
-        ToolDefinition::new_fn(
+            ToolEffect::Read,
+        ),
+        (
             "find",
             "Find files by fuzzy/glob pattern. Uses fff indexed search.",
             r#"{"type":"object","properties":{"pattern":{"type":"string"},"path":{"type":"string"}},"required":["pattern"]}"#,
             fs::exec_find,
-        )
-        .with_effect(ToolEffect::Read),
-    );
-    registry.register(
-        ToolDefinition::new_fn(
+            ToolEffect::Read,
+        ),
+        (
             "ls",
             "List entries in a directory.",
             r#"{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}"#,
             fs::exec_ls,
-        )
-        .with_effect(ToolEffect::Read),
-    );
-    registry.register(
-        ToolDefinition::new_fn(
+            ToolEffect::Read,
+        ),
+        (
             "web_fetch",
             "HTTP GET a URL and return response text (truncated). Requires providers feature.",
             r#"{"type":"object","properties":{"url":{"type":"string"},"max_bytes":{"type":"integer"}},"required":["url"]}"#,
             extended::exec_web_fetch,
-        )
-        .with_effect(ToolEffect::Network),
-    );
-    registry.register(
-        ToolDefinition::new_fn(
+            ToolEffect::Network,
+        ),
+        (
             "todo",
             "Manage an in-memory session todo list. Actions: list, add, update, complete, clear.",
             r#"{"type":"object","properties":{"action":{"type":"string","enum":["list","add","update","complete","clear"]},"items":{"type":"array","items":{"type":"object","properties":{"id":{"type":"string"},"content":{"type":"string"},"status":{"type":"string"}},"required":["content"]}}},"required":["action"]}"#,
             extended::exec_todo,
-        )
-        .with_effect(ToolEffect::Write),
-    );
-    registry.register(
-        ToolDefinition::new_fn(
+            ToolEffect::Write,
+        ),
+        (
             "spawn_agent",
             "Spawn a nested subagent with a prompt. Uses ToolContext provider/tools when present.",
             r#"{"type":"object","properties":{"prompt":{"type":"string"},"name":{"type":"string"},"model":{"type":"string"},"isolate":{"type":"boolean"}},"required":["prompt"]}"#,
             extended::exec_spawn_agent,
-        )
-        .with_effect(ToolEffect::Process),
-    );
-    registry.register(
-        ToolDefinition::new_fn(
+            ToolEffect::Process,
+        ),
+        (
             "enter_plan_mode",
             "Request Plan scope and return plan-mode instructions for the model.",
             r#"{"type":"object","properties":{}}"#,
             extended::exec_enter_plan_mode,
-        )
-        .with_effect(ToolEffect::Read),
-    );
-    registry.register(
-        ToolDefinition::new_fn(
+            ToolEffect::Read,
+        ),
+        (
             "exit_plan_mode",
             "Request Coding scope and leave plan mode.",
             r#"{"type":"object","properties":{}}"#,
             extended::exec_exit_plan_mode,
-        )
-        .with_effect(ToolEffect::Read),
-    );
-    registry.register(
-        ToolDefinition::new_fn(
+            ToolEffect::Read,
+        ),
+        (
             "lsp_diagnostics",
             "Get LSP diagnostics for a document URI and language.",
             r#"{"type":"object","properties":{"uri":{"type":"string"},"language":{"type":"string"}},"required":["uri","language"]}"#,
             extended::exec_lsp_diagnostics,
-        )
-        .with_effect(ToolEffect::Read),
-    );
-    registry.register(
-        ToolDefinition::new_fn(
+            ToolEffect::Read,
+        ),
+        (
             "lsp_definition",
             "Resolve definition locations via LSP.",
             r#"{"type":"object","properties":{"uri":{"type":"string"},"language":{"type":"string"},"line":{"type":"integer"},"character":{"type":"integer"}},"required":["uri","language","line","character"]}"#,
             extended::exec_lsp_definition,
-        )
-        .with_effect(ToolEffect::Read),
-    );
-    registry.register(
-        ToolDefinition::new_fn(
+            ToolEffect::Read,
+        ),
+        (
             "lsp_references",
             "Find references via LSP.",
             r#"{"type":"object","properties":{"uri":{"type":"string"},"language":{"type":"string"},"line":{"type":"integer"},"character":{"type":"integer"}},"required":["uri","language","line","character"]}"#,
             extended::exec_lsp_references,
-        )
-        .with_effect(ToolEffect::Read),
-    );
+            ToolEffect::Read,
+        ),
+    ];
+
+    for (name, desc, params, exec, effect) in tools {
+        registry
+            .register(ToolDefinition::new_fn(*name, *desc, *params, *exec).with_effect(*effect));
+    }
 }
 
 /// Register spawn_agent backed by a host-owned SubagentManager.
