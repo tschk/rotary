@@ -423,11 +423,17 @@ pub(crate) fn exec_ls(ctx: Arc<ToolContext>, args: String) -> ToolFuture {
         match tokio::fs::read_dir(&full).await {
             Ok(mut entries) => {
                 let mut items: Vec<(String, bool)> = Vec::new();
-                while let Ok(Some(e)) = entries.next_entry().await {
-                    let name = e.file_name().to_string_lossy().to_string();
-                    if let Ok(file_type) = e.file_type().await {
-                        let is_dir = file_type.is_dir();
-                        items.push((name, is_dir));
+                loop {
+                    match entries.next_entry().await {
+                        Ok(Some(e)) => {
+                            let name = e.file_name().to_string_lossy().to_string();
+                            if let Ok(file_type) = e.file_type().await {
+                                let is_dir = file_type.is_dir();
+                                items.push((name, is_dir));
+                            }
+                        }
+                        Ok(None) => break,
+                        Err(_) => continue,
                     }
                 }
                 items.sort_by(|a, b| a.0.cmp(&b.0));
