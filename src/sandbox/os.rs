@@ -336,3 +336,99 @@ fn find_in_path(name: &str) -> bool {
     }
     false
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::env;
+    use std::fs::File;
+    use std::sync::Mutex;
+    use tempfile::tempdir;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    struct EnvGuard {
+        _lock: std::sync::MutexGuard<'static, ()>,
+        original_path: Option<String>,
+    }
+
+    impl EnvGuard {
+        fn new() -> Self {
+            let lock = ENV_LOCK.lock().unwrap();
+            let original_path = env::var("PATH").ok();
+            Self {
+                _lock: lock,
+                original_path,
+            }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            if let Some(ref path) = self.original_path {
+                env::set_var("PATH", path);
+            } else {
+                env::remove_var("PATH");
+            }
+        }
+    }
+
+    #[test]
+    fn test_has_bubblewrap_found() {
+        let _guard = EnvGuard::new();
+
+        let dir = tempdir().unwrap();
+        let bwrap_path = dir.path().join("bwrap");
+        File::create(&bwrap_path).unwrap();
+
+        env::set_var("PATH", dir.path());
+        assert!(has_bubblewrap());
+    }
+
+    #[test]
+    fn test_has_bubblewrap_not_found() {
+        let _guard = EnvGuard::new();
+
+        let dir = tempdir().unwrap();
+        env::set_var("PATH", dir.path());
+        assert!(!has_bubblewrap());
+    }
+
+    #[test]
+    fn test_find_in_path_multi() {
+        let _guard = EnvGuard::new();
+
+        let dir1 = tempdir().unwrap();
+        let dir2 = tempdir().unwrap();
+        let dir3 = tempdir().unwrap();
+
+        let bwrap_path = dir2.path().join("bwrap");
+        File::create(&bwrap_path).unwrap();
+
+        let path_var = env::join_paths([dir1.path(), dir2.path(), dir3.path()]).unwrap();
+        env::set_var("PATH", path_var);
+
+        assert!(find_in_path("bwrap"));
+    }
+
+    #[test]
+    fn test_find_in_path_empty_dirs() {
+        let _guard = EnvGuard::new();
+
+        let dir = tempdir().unwrap();
+        let bwrap_path = dir.path().join("bwrap");
+        File::create(&bwrap_path).unwrap();
+
+        let empty_path = std::path::Path::new("");
+        let path_var = env::join_paths([empty_path, empty_path, dir.path()]).unwrap();
+        env::set_var("PATH", path_var);
+
+        assert!(find_in_path("bwrap"));
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn test_has_seatbelt_macos() {
+        assert!(has_seatbelt());
+    }
+}
