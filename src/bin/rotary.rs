@@ -12,7 +12,6 @@ use std::sync::Arc;
 use rx4::computer_use;
 
 // OpenAI-compatible providers: (env_var, base_url, provider_id, display_name)
-#[cfg(feature = "providers")]
 const COMPAT_PROVIDERS: &[(&str, &str, &str, &str)] = &[
     ("XAI_API_KEY", "https://api.x.ai/v1", "xai", "xAI"),
     (
@@ -766,7 +765,6 @@ fn run_doctor() {
         anthropic_set,
     );
 
-    #[cfg(feature = "providers")]
     for &(key, _, _, _) in COMPAT_PROVIDERS {
         let set = std::env::var(key).map(|v| !v.is_empty()).unwrap_or(false);
         if set {
