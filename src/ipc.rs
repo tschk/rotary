@@ -61,7 +61,7 @@ impl IpcServer {
         *self.session.lock().unwrap() = session;
     }
 
-    pub fn run(&self) -> std::io::Result<()> {
+    fn bind_listener(&self) -> std::io::Result<UnixListener> {
         let path = Path::new(&self.socket_path);
         if path.exists() {
             std::fs::remove_file(path)?;
@@ -71,6 +71,11 @@ impl IpcServer {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
         }
+        Ok(listener)
+    }
+
+    pub fn run(&self) -> std::io::Result<()> {
+        let listener = self.bind_listener()?;
         info!("IPC server listening on {}", self.socket_path);
 
         let runtime = tokio::runtime::Handle::try_current().map_err(std::io::Error::other)?;
