@@ -565,24 +565,9 @@ impl Agent {
         }
     }
 
-    /// Run a prompt through the agent loop.
-    /// Streams events to subscribers, executes tools, cycles turns.
-    pub async fn prompt(&mut self, text: &str) -> Result<(), AgentError> {
-        let tokens = self.context_tokens();
-        let context_window = self.context_window();
-        let auto_compact_at = self.auto_compact_threshold();
-        self.emit(Event::ContextUsage {
-            used_tokens: tokens,
-            context_window,
-            auto_compact_at,
-        });
-        if tokens >= auto_compact_at {
-            self.compact("auto-compact before prompt");
-        }
-
-        // Inject activated skill instructions into system prompt for this turn.
-        #[cfg(feature = "skills")]
-        let active_skills = if let Some(reg) = &self.skill_registry {
+    #[cfg(feature = "skills")]
+    fn get_active_skills(&self, text: &str) -> Option<String> {
+        if let Some(reg) = &self.skill_registry {
             let matched = reg.match_prompt(text);
             for skill in &matched {
                 self.emit(Event::SkillActivated {
@@ -597,19 +582,11 @@ impl Agent {
             (!activated.is_empty()).then(|| activated.join("\n\n---\n\n"))
         } else {
             None
-        };
-        #[cfg(not(feature = "skills"))]
-        let active_skills: Option<String> = None;
+        }
+    }
 
-        self.messages.write().push(Message::user(text));
-        self.emit(Event::AgentStart);
-        self.budget_start = Some(Instant::now());
-
-        // Route the incoming user event through the personality turn router.
-        // This evaluates hard rules (mentions, commands, rate limits, consecutive
-        // turns) + learned policy, records the decision, and derives social
-        // signals — all automatically before the first turn.
-        #[cfg(feature = "personality")]
+    #[cfg(feature = "personality")]
+    async fn route_personality(&self, text: &str) {
         if let Some(pers) = &self.personality {
             let event = crate::personality::ConversationEvent {
                 epoch: 0,
@@ -632,8 +609,13 @@ impl Agent {
                 }
             }
         }
+    }
 
-        let provider = self.provider.clone().ok_or(AgentError::NoProvider)?;
+    fn create_tool_context(
+        &self,
+        provider: Arc<dyn Provider>,
+        pending_scope: Arc<parking_lot::Mutex<Option<Scope>>>,
+    ) -> Arc<ToolContext> {
         let mut tool_ctx = ToolContext::new(self.workspace_root.clone());
         tool_ctx.os_sandbox_required = self.policy.enable_os_sandbox && self.os_sandbox.is_none();
         #[cfg(feature = "ipc")]
@@ -646,303 +628,240 @@ impl Agent {
         if let Some(os) = self.os_sandbox.clone() {
             tool_ctx = tool_ctx.with_os_sandbox(os);
         }
-        tool_ctx.provider = Some(provider.clone());
+        tool_ctx.provider = Some(provider);
         tool_ctx.tools = Some(Arc::clone(&self.tools));
-        let pending_scope = Arc::new(parking_lot::Mutex::new(None));
-        tool_ctx.pending_scope = Some(Arc::clone(&pending_scope));
-        let ctx = Arc::new(tool_ctx);
+        tool_ctx.pending_scope = Some(pending_scope);
+        Arc::new(tool_ctx)
+    }
+
+    async fn augment_system_prompt(
+        &self,
+        #[allow(unused_variables)] text: &str,
+        active_skills: Option<&str>,
+    ) -> Option<String> {
+        let base_system = append_active_skills(self.system_prompt.clone(), active_skills);
 
         #[cfg(feature = "zkr-memory")]
-        let mut tool_error_seen = false;
-        for iteration in 0..self.max_tool_iterations {
-            if let Some(reason) = self.check_budget() {
-                self.emit(Event::BudgetExceeded {
-                    reason: reason.clone(),
-                });
-                return Err(AgentError::BudgetExceeded(reason));
+        let system = if let Some(improve) = &self.self_improve {
+            let base = base_system.as_deref().unwrap_or("");
+            match improve.augment(text, base).await {
+                Ok(augmented) => Some(augmented),
+                Err(error) => {
+                    warn!("self-improve augmentation failed: {error}");
+                    base_system.clone()
+                }
             }
-            self.emit(Event::TurnStart { turn: iteration });
+        } else {
+            base_system
+        };
+        #[cfg(not(feature = "zkr-memory"))]
+        let system = base_system;
 
-            let messages: Vec<Message> = self.messages.read().clone();
-            let base_system =
-                append_active_skills(self.system_prompt.clone(), active_skills.as_deref());
-            #[cfg(feature = "zkr-memory")]
-            let system = if let Some(improve) = &self.self_improve {
-                let base = base_system.as_deref().unwrap_or("");
-                match improve.augment(text, base).await {
-                    Ok(augmented) => Some(augmented),
-                    Err(error) => {
-                        warn!("self-improve augmentation failed: {error}");
-                        base_system.clone()
-                    }
+        // Personality augmentation chains after self-improve (or base prompt).
+        #[cfg(feature = "personality")]
+        let system = if let Some(pers) = &self.personality {
+            let base = system.as_deref().unwrap_or("");
+            match pers.augment(text, base).await {
+                Ok(augmented) => Some(augmented),
+                Err(error) => {
+                    warn!("personality augmentation failed: {error}");
+                    system
                 }
-            } else {
-                base_system
-            };
-            #[cfg(not(feature = "zkr-memory"))]
-            let system = base_system;
+            }
+        } else {
+            system
+        };
 
-            // Personality augmentation chains after self-improve (or base prompt).
-            #[cfg(feature = "personality")]
-            let system = if let Some(pers) = &self.personality {
-                let base = system.as_deref().unwrap_or("");
-                match pers.augment(text, base).await {
-                    Ok(augmented) => Some(augmented),
-                    Err(error) => {
-                        warn!("personality augmentation failed: {error}");
-                        system
-                    }
-                }
-            } else {
-                system
-            };
+        system
+    }
 
-            #[allow(unused_mut)]
-            let mut tool_calls: Vec<ToolCall> = Vec::new();
-            #[allow(unused_assignments)]
-            let mut assistant_content = String::new();
-
-            self.emit(Event::MessageStart {
-                role: Role::Assistant,
-            });
-
-            #[cfg(feature = "providers")]
-            {
-                use crate::provider::StreamEvent;
-                use futures::StreamExt;
-                let mut attempts = 0;
-                let stream = loop {
-                    #[cfg(feature = "ipc")]
-                    let result = ctx
-                        .cancellation
-                        .run(provider.stream(
-                            &messages,
-                            &system,
-                            &self.model,
-                            &self.tools.definitions(),
-                            self.reasoning_effort.as_deref(),
-                        ))
-                        .await
-                        .map_err(|_| AgentError::Cancelled)?;
-                    #[cfg(not(feature = "ipc"))]
-                    let result = provider
-                        .stream(
-                            &messages,
-                            &system,
-                            &self.model,
-                            &self.tools.definitions(),
-                            self.reasoning_effort.as_deref(),
-                        )
-                        .await;
-                    match result {
-                        Ok(stream) => break stream,
-                        Err(e) if e.is_transient() && attempts < 2 => {
-                            attempts += 1;
-                            #[cfg(feature = "ipc")]
-                            ctx.cancellation
-                                .run(tokio::time::sleep(std::time::Duration::from_millis(
-                                    250 * (1 << attempts),
-                                )))
-                                .await
-                                .map_err(|_| AgentError::Cancelled)?;
-                            #[cfg(not(feature = "ipc"))]
-                            tokio::time::sleep(std::time::Duration::from_millis(
+    async fn stream_provider_response(
+        &self,
+        provider: &Arc<dyn Provider>,
+        #[allow(unused_variables)] ctx: &Arc<ToolContext>,
+        messages: &[Message],
+        system: &Option<String>,
+        assistant_content: &mut String,
+        #[allow(unused_variables, clippy::ptr_arg)] tool_calls: &mut Vec<ToolCall>,
+    ) -> Result<(), AgentError> {
+        #[cfg(feature = "providers")]
+        {
+            use crate::provider::StreamEvent;
+            use futures::StreamExt;
+            let mut attempts = 0;
+            let stream = loop {
+                #[cfg(feature = "ipc")]
+                let result = ctx
+                    .cancellation
+                    .run(provider.stream(
+                        messages,
+                        system,
+                        &self.model,
+                        &self.tools.definitions(),
+                        self.reasoning_effort.as_deref(),
+                    ))
+                    .await
+                    .map_err(|_| AgentError::Cancelled)?;
+                #[cfg(not(feature = "ipc"))]
+                let result = provider
+                    .stream(
+                        messages,
+                        system,
+                        &self.model,
+                        &self.tools.definitions(),
+                        self.reasoning_effort.as_deref(),
+                    )
+                    .await;
+                match result {
+                    Ok(stream) => break stream,
+                    Err(e) if e.is_transient() && attempts < 2 => {
+                        attempts += 1;
+                        #[cfg(feature = "ipc")]
+                        ctx.cancellation
+                            .run(tokio::time::sleep(std::time::Duration::from_millis(
                                 250 * (1 << attempts),
-                            ))
+                            )))
+                            .await
+                            .map_err(|_| AgentError::Cancelled)?;
+                        #[cfg(not(feature = "ipc"))]
+                        tokio::time::sleep(std::time::Duration::from_millis(250 * (1 << attempts)))
                             .await;
-                        }
-                        Err(e) => {
-                            error!("provider stream error: {e}");
-                            self.emit(Event::Error(e.to_string()));
-                            return Err(AgentError::Provider(e.to_string()));
-                        }
                     }
-                };
-
-                let mut stream = stream;
-                loop {
-                    #[cfg(feature = "ipc")]
-                    let next = ctx
-                        .cancellation
-                        .run(stream.next())
-                        .await
-                        .map_err(|_| AgentError::Cancelled)?;
-                    #[cfg(not(feature = "ipc"))]
-                    let next = stream.next().await;
-                    let Some(event_result) = next else {
-                        break;
-                    };
-                    match event_result {
-                        Ok(StreamEvent::Delta(delta)) => {
-                            assistant_content.push_str(&delta);
-                            self.emit(Event::MessageDelta { delta });
-                        }
-                        Ok(StreamEvent::ToolCall(call)) => {
-                            tool_calls.push(call.clone());
-                            self.emit(Event::ToolSource {
-                                tool: call.name.clone(),
-                                source: tool_source(&call.name),
-                            });
-                            self.emit(Event::ToolCall(call));
-                        }
-                        Ok(StreamEvent::Done) => break,
-                        Err(e) => {
-                            error!("stream error: {e}");
-                            self.emit(Event::Error(e.to_string()));
-                            return Err(AgentError::Provider(e.to_string()));
-                        }
+                    Err(e) => {
+                        error!("provider stream error: {e}");
+                        self.emit(Event::Error(e.to_string()));
+                        return Err(AgentError::Provider(e.to_string()));
                     }
                 }
-            }
-
-            #[cfg(not(feature = "providers"))]
-            {
-                let _ = (&provider, &messages, &system);
-                assistant_content =
-                    "[providers feature not enabled — enable with --features providers]"
-                        .to_string();
-            }
-
-            self.emit(Event::MessageEnd {
-                role: Role::Assistant,
-                content: assistant_content.clone(),
-            });
-
-            self.messages.write().push(Message::assistant_with_tools(
-                assistant_content.clone(),
-                tool_calls.clone(),
-            ));
-
-            let input_tokens = estimate_messages(&messages)
-                + system
-                    .as_deref()
-                    .map(crate::compaction::estimate_tokens)
-                    .unwrap_or(0);
-            let output_tokens = crate::compaction::estimate_tokens(&assistant_content);
-            let usage = TokenUsage {
-                input_tokens,
-                output_tokens,
-                cache_read_tokens: 0,
-                cache_write_tokens: 0,
             };
-            self.session_cost
-                .record(&self.model, usage, &self.pricing_registry);
-            self.emit(Event::Usage {
-                model: self.model.clone(),
-                usage,
-                estimated: true,
-            });
-            self.emit(Event::ContextUsage {
-                used_tokens: self.context_tokens(),
-                context_window,
-                auto_compact_at,
-            });
-            if let Some(reason) = self.check_budget() {
-                self.emit(Event::BudgetExceeded {
-                    reason: reason.clone(),
-                });
-                return Err(AgentError::BudgetExceeded(reason));
-            }
 
-            if tool_calls.is_empty() {
-                self.emit(Event::TurnEnd { turn: iteration });
-
-                #[cfg(feature = "zkr-memory")]
-                if let Some(improve) = &self.self_improve {
-                    let outcome = if tool_error_seen { "error" } else { "success" };
-                    let lesson = if tool_error_seen {
-                        "avoid repeating the failing tool"
-                    } else {
-                        "continue the current strategy"
-                    };
-                    if let Err(error) = improve
-                        .record(text, &assistant_content, outcome, lesson)
-                        .await
-                    {
-                        warn!("self-improve reflection failed: {error}");
+            let mut stream = stream;
+            loop {
+                #[cfg(feature = "ipc")]
+                let next = ctx
+                    .cancellation
+                    .run(stream.next())
+                    .await
+                    .map_err(|_| AgentError::Cancelled)?;
+                #[cfg(not(feature = "ipc"))]
+                let next = stream.next().await;
+                let Some(event_result) = next else {
+                    break;
+                };
+                match event_result {
+                    Ok(StreamEvent::Delta(delta)) => {
+                        assistant_content.push_str(&delta);
+                        self.emit(Event::MessageDelta { delta });
+                    }
+                    Ok(StreamEvent::ToolCall(call)) => {
+                        tool_calls.push(call.clone());
+                        self.emit(Event::ToolSource {
+                            tool: call.name.clone(),
+                            source: tool_source(&call.name),
+                        });
+                        self.emit(Event::ToolCall(call));
+                    }
+                    Ok(StreamEvent::Done) => break,
+                    Err(e) => {
+                        error!("stream error: {e}");
+                        self.emit(Event::Error(e.to_string()));
+                        return Err(AgentError::Provider(e.to_string()));
                     }
                 }
-
-                #[cfg(feature = "personality")]
-                if let Some(pers) = &self.personality {
-                    let epoch = (iteration + 1) as u64;
-
-                    // Record the assistant's response as a conversation event.
-                    // Signals are derived automatically inside record_event.
-                    let assistant_event = crate::personality::ConversationEvent {
-                        epoch,
-                        participant: "agent".to_string(),
-                        event_kind: if tool_error_seen { "error" } else { "message" }.to_string(),
-                        content: assistant_content.chars().take(500).collect(),
-                    };
-                    if let Err(error) = pers.record_event(&assistant_event).await {
-                        warn!("personality assistant event recording failed: {error}");
-                    }
-
-                    // Assess risk of the candidate reply toward the user.
-                    let risk = pers.assess_risk("user", &assistant_content).await;
-                    if risk.recommendation == crate::personality::RiskRecommendation::Abort {
-                        warn!(
-                            "personality risk assessment: ABORT (overall {}bps) — {:?}",
-                            risk.overall_risk_basis_points, risk
-                        );
-                    } else if risk.recommendation == crate::personality::RiskRecommendation::Refine
-                    {
-                        debug!(
-                            "personality risk assessment: REFINE (overall {}bps)",
-                            risk.overall_risk_basis_points
-                        );
-                    }
-
-                    // Record a ToM hypothesis about the user based on this turn.
-                    let hyp = crate::personality::MindHypothesis {
-                        participant: "user".to_string(),
-                        belief: format!(
-                            "user sent: {}",
-                            text.chars().take(100).collect::<String>()
-                        ),
-                        emotion: if tool_error_seen {
-                            Some("frustrated".into())
-                        } else {
-                            None
-                        },
-                        goal: None,
-                        predicted_reaction: Some(
-                            if tool_error_seen {
-                                "likely frustrated by errors"
-                            } else {
-                                "likely satisfied with response"
-                            }
-                            .into(),
-                        ),
-                        confidence_basis_points: if tool_error_seen { 4000 } else { 7000 },
-                        valid_until: None,
-                    };
-                    if let Err(error) = pers.record_hypothesis(&hyp).await {
-                        warn!("personality ToM recording failed: {error}");
-                    }
-                }
-
-                break;
             }
-
-            let results = self.execute_tools_parallel(&tool_calls, &ctx).await;
-            for result in &results {
-                #[cfg(feature = "zkr-memory")]
-                {
-                    tool_error_seen |= result.is_error;
-                }
-                self.messages
-                    .write()
-                    .push(Message::tool(&result.id, &result.content));
-            }
-            if let Some(scope) = pending_scope.lock().take() {
-                self.set_scope(scope);
-            }
-
-            self.emit(Event::TurnEnd { turn: iteration });
         }
 
+        #[cfg(not(feature = "providers"))]
+        {
+            let _ = (provider, ctx, messages, system);
+            *assistant_content =
+                "[providers feature not enabled — enable with --features providers]".to_string();
+        }
+
+        Ok(())
+    }
+
+    async fn record_turn_reflection(
+        &self,
+        #[allow(unused_variables)] text: &str,
+        #[allow(unused_variables)] assistant_content: &str,
+        #[allow(unused_variables)] iteration: usize,
+        #[allow(unused_variables)] tool_error_seen: bool,
+    ) {
+        #[cfg(feature = "zkr-memory")]
+        if let Some(improve) = &self.self_improve {
+            let outcome = if tool_error_seen { "error" } else { "success" };
+            let lesson = if tool_error_seen {
+                "avoid repeating the failing tool"
+            } else {
+                "continue the current strategy"
+            };
+            if let Err(error) = improve
+                .record(text, assistant_content, outcome, lesson)
+                .await
+            {
+                warn!("self-improve reflection failed: {error}");
+            }
+        }
+
+        #[cfg(feature = "personality")]
+        if let Some(pers) = &self.personality {
+            let epoch = (iteration + 1) as u64;
+
+            // Record the assistant's response as a conversation event.
+            // Signals are derived automatically inside record_event.
+            let assistant_event = crate::personality::ConversationEvent {
+                epoch,
+                participant: "agent".to_string(),
+                event_kind: if tool_error_seen { "error" } else { "message" }.to_string(),
+                content: assistant_content.chars().take(500).collect(),
+            };
+            if let Err(error) = pers.record_event(&assistant_event).await {
+                warn!("personality assistant event recording failed: {error}");
+            }
+
+            // Assess risk of the candidate reply toward the user.
+            let risk = pers.assess_risk("user", assistant_content).await;
+            if risk.recommendation == crate::personality::RiskRecommendation::Abort {
+                warn!(
+                    "personality risk assessment: ABORT (overall {}bps) — {:?}",
+                    risk.overall_risk_basis_points, risk
+                );
+            } else if risk.recommendation == crate::personality::RiskRecommendation::Refine {
+                debug!(
+                    "personality risk assessment: REFINE (overall {}bps)",
+                    risk.overall_risk_basis_points
+                );
+            }
+
+            // Record a ToM hypothesis about the user based on this turn.
+            let hyp = crate::personality::MindHypothesis {
+                participant: "user".to_string(),
+                belief: format!("user sent: {}", text.chars().take(100).collect::<String>()),
+                emotion: if tool_error_seen {
+                    Some("frustrated".into())
+                } else {
+                    None
+                },
+                goal: None,
+                predicted_reaction: Some(
+                    if tool_error_seen {
+                        "likely frustrated by errors"
+                    } else {
+                        "likely satisfied with response"
+                    }
+                    .into(),
+                ),
+                confidence_basis_points: if tool_error_seen { 4000 } else { 7000 },
+                valid_until: None,
+            };
+            if let Err(error) = pers.record_hypothesis(&hyp).await {
+                warn!("personality ToM recording failed: {error}");
+            }
+        }
+    }
+
+    async fn perform_post_prompt_observability(&mut self) {
         // Personality observability: analyze the conversation window after the
         // prompt completes. Computes participation balance, error rate, and
         // generates evidence-cited findings with recommendations.
@@ -1016,6 +935,166 @@ impl Agent {
                 let _ = reviewer.apply_review(&reviews);
             }
         }
+    }
+
+    /// Run a prompt through the agent loop.
+    /// Streams events to subscribers, executes tools, cycles turns.
+    pub async fn prompt(&mut self, text: &str) -> Result<(), AgentError> {
+        let tokens = self.context_tokens();
+        let context_window = self.context_window();
+        let auto_compact_at = self.auto_compact_threshold();
+        self.emit(Event::ContextUsage {
+            used_tokens: tokens,
+            context_window,
+            auto_compact_at,
+        });
+        if tokens >= auto_compact_at {
+            self.compact("auto-compact before prompt");
+        }
+
+        // Inject activated skill instructions into system prompt for this turn.
+        #[cfg(feature = "skills")]
+        let active_skills = self.get_active_skills(text);
+        #[cfg(not(feature = "skills"))]
+        let active_skills: Option<String> = None;
+
+        self.messages.write().push(Message::user(text));
+        self.emit(Event::AgentStart);
+        self.budget_start = Some(Instant::now());
+
+        // Route the incoming user event through the personality turn router.
+        // This evaluates hard rules (mentions, commands, rate limits, consecutive
+        // turns) + learned policy, records the decision, and derives social
+        // signals — all automatically before the first turn.
+        #[cfg(feature = "personality")]
+        self.route_personality(text).await;
+
+        let provider = self.provider.clone().ok_or(AgentError::NoProvider)?;
+        let pending_scope = Arc::new(parking_lot::Mutex::new(None));
+        let ctx = self.create_tool_context(provider.clone(), Arc::clone(&pending_scope));
+
+        #[cfg(feature = "zkr-memory")]
+        let mut tool_error_seen = false;
+        for iteration in 0..self.max_tool_iterations {
+            if let Some(reason) = self.check_budget() {
+                self.emit(Event::BudgetExceeded {
+                    reason: reason.clone(),
+                });
+                return Err(AgentError::BudgetExceeded(reason));
+            }
+            self.emit(Event::TurnStart { turn: iteration });
+
+            let messages: Vec<Message> = self.messages.read().clone();
+            let system = self
+                .augment_system_prompt(text, active_skills.as_deref())
+                .await;
+
+            #[allow(unused_mut)]
+            let mut tool_calls: Vec<ToolCall> = Vec::new();
+            #[allow(unused_assignments)]
+            let mut assistant_content = String::new();
+
+            self.emit(Event::MessageStart {
+                role: Role::Assistant,
+            });
+
+            self.stream_provider_response(
+                &provider,
+                &ctx,
+                &messages,
+                &system,
+                &mut assistant_content,
+                &mut tool_calls,
+            )
+            .await?;
+
+            self.emit(Event::MessageEnd {
+                role: Role::Assistant,
+                content: assistant_content.clone(),
+            });
+
+            self.messages.write().push(Message::assistant_with_tools(
+                assistant_content.clone(),
+                tool_calls.clone(),
+            ));
+
+            let input_tokens = estimate_messages(&messages)
+                + system
+                    .as_deref()
+                    .map(crate::compaction::estimate_tokens)
+                    .unwrap_or(0);
+            let output_tokens = crate::compaction::estimate_tokens(&assistant_content);
+            let usage = TokenUsage {
+                input_tokens,
+                output_tokens,
+                cache_read_tokens: 0,
+                cache_write_tokens: 0,
+            };
+            self.session_cost
+                .record(&self.model, usage, &self.pricing_registry);
+            self.emit(Event::Usage {
+                model: self.model.clone(),
+                usage,
+                estimated: true,
+            });
+            self.emit(Event::ContextUsage {
+                used_tokens: self.context_tokens(),
+                context_window,
+                auto_compact_at,
+            });
+            if let Some(reason) = self.check_budget() {
+                self.emit(Event::BudgetExceeded {
+                    reason: reason.clone(),
+                });
+                return Err(AgentError::BudgetExceeded(reason));
+            }
+
+            if tool_calls.is_empty() {
+                self.emit(Event::TurnEnd { turn: iteration });
+
+                #[cfg(any(feature = "zkr-memory", feature = "personality"))]
+                let tool_error_seen_val = {
+                    #[cfg(feature = "zkr-memory")]
+                    {
+                        tool_error_seen
+                    }
+                    #[cfg(not(feature = "zkr-memory"))]
+                    {
+                        false
+                    }
+                };
+                #[cfg(not(any(feature = "zkr-memory", feature = "personality")))]
+                let tool_error_seen_val = false;
+
+                self.record_turn_reflection(
+                    text,
+                    &assistant_content,
+                    iteration,
+                    tool_error_seen_val,
+                )
+                .await;
+
+                break;
+            }
+
+            let results = self.execute_tools_parallel(&tool_calls, &ctx).await;
+            for result in &results {
+                #[cfg(feature = "zkr-memory")]
+                {
+                    tool_error_seen |= result.is_error;
+                }
+                self.messages
+                    .write()
+                    .push(Message::tool(&result.id, &result.content));
+            }
+            if let Some(scope) = pending_scope.lock().take() {
+                self.set_scope(scope);
+            }
+
+            self.emit(Event::TurnEnd { turn: iteration });
+        }
+
+        self.perform_post_prompt_observability().await;
 
         self.emit(Event::AgentEnd);
         Ok(())
@@ -1025,7 +1104,7 @@ impl Agent {
     async fn execute_tools_parallel(
         &self,
         calls: &[ToolCall],
-        ctx: &Arc<ToolContext>,
+        #[allow(unused_variables)] ctx: &Arc<ToolContext>,
     ) -> Vec<ToolResult> {
         let effects: Vec<ToolEffect> = calls
             .iter()
@@ -1142,7 +1221,7 @@ impl Agent {
     async fn execute_single_tool(
         &self,
         call: &ToolCall,
-        ctx: &Arc<ToolContext>,
+        #[allow(unused_variables)] ctx: &Arc<ToolContext>,
     ) -> (ToolCall, ToolResult) {
         let call = match self.apply_before_tool_hooks(call) {
             Ok(c) => c,
@@ -1176,7 +1255,7 @@ impl Agent {
         async_approver: Option<&dyn AsyncApprover>,
         tool_cache: &Cache<String, ToolResult>,
         call: &ToolCall,
-        ctx: &Arc<ToolContext>,
+        #[allow(unused_variables)] ctx: &Arc<ToolContext>,
     ) -> ToolResult {
         let resolved_name = normalize_tool_name(&call.name).to_string();
 
