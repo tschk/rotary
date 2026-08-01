@@ -8,7 +8,7 @@
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -355,6 +355,7 @@ impl LspServer {
 pub struct LspManager {
     registered: Vec<(String, String, Vec<String>)>,
     servers: DashMap<String, Arc<Mutex<LspServer>>>,
+    starting: Mutex<()>,
 }
 
 impl LspManager {
@@ -362,6 +363,7 @@ impl LspManager {
         Self {
             registered: Vec::new(),
             servers: DashMap::new(),
+            starting: Mutex::new(()),
         }
     }
 
@@ -410,10 +412,8 @@ impl LspManager {
         uri: &str,
         language: &str,
     ) -> Result<Vec<Diagnostic>, LspError> {
-        let server = self.lookup(language)?;
-        let arc = server.clone();
-        drop(server);
-        let guard = arc.lock().await;
+        let server = self.lookup_or_start(uri, language).await?;
+        let guard = server.lock().await;
         guard.diagnostics(uri).await
     }
 
@@ -425,10 +425,8 @@ impl LspManager {
         line: u32,
         char: u32,
     ) -> Result<Vec<Location>, LspError> {
-        let server = self.lookup(language)?;
-        let arc = server.clone();
-        drop(server);
-        let guard = arc.lock().await;
+        let server = self.lookup_or_start(uri, language).await?;
+        let guard = server.lock().await;
         guard.references(uri, line, char).await
     }
 
@@ -440,10 +438,8 @@ impl LspManager {
         line: u32,
         char: u32,
     ) -> Result<Vec<Location>, LspError> {
-        let server = self.lookup(language)?;
-        let arc = server.clone();
-        drop(server);
-        let guard = arc.lock().await;
+        let server = self.lookup_or_start(uri, language).await?;
+        let guard = server.lock().await;
         guard.definition(uri, line, char).await
     }
 
@@ -462,14 +458,31 @@ impl LspManager {
         Ok(())
     }
 
-    fn lookup(&self, language: &str) -> Result<Arc<Mutex<LspServer>>, LspError> {
-        if let Some(entry) = self.servers.get(language) {
-            Ok(entry.clone())
-        } else if self.is_registered(language) {
-            Err(LspError::NotStarted(language.to_string()))
-        } else {
-            Err(LspError::UnknownLanguage(language.to_string()))
+    async fn lookup_or_start(
+        &self,
+        uri: &str,
+        language: &str,
+    ) -> Result<Arc<Mutex<LspServer>>, LspError> {
+        if let Some(server) = self.servers.get(language) {
+            return Ok(server.clone());
         }
+        let _starting = self.starting.lock().await;
+        if let Some(server) = self.servers.get(language) {
+            return Ok(server.clone());
+        }
+        let (command, args, markers) = self
+            .registered
+            .iter()
+            .find(|(registered, _, _)| registered == language)
+            .map(|(_, command, args)| (command.clone(), args.clone(), &[][..]))
+            .or_else(|| detect_server(language))
+            .ok_or_else(|| LspError::UnknownLanguage(language.to_string()))?;
+        let workspace_root = nearest_root(uri, markers);
+        let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+        let server = LspServer::spawn(&command, &arg_refs, &workspace_root).await?;
+        let server = Arc::new(Mutex::new(server));
+        self.servers.insert(language.to_string(), server.clone());
+        Ok(server)
     }
 }
 
@@ -622,6 +635,75 @@ fn path_to_uri(path: &Path) -> String {
     format!("file://{}", absolute.display())
 }
 
+fn detect_server(language: &str) -> Option<(String, Vec<String>, &'static [&'static str])> {
+    let candidates: &[(&str, &[&str], &[&str])] = match language {
+        "rust" => &[("rust-analyzer", &[], &["Cargo.toml"])],
+        "typescript" | "typescriptreact" | "javascript" | "javascriptreact" => &[(
+            "typescript-language-server",
+            &["--stdio"],
+            &["package.json", "tsconfig.json", "jsconfig.json"],
+        )],
+        "go" => &[("gopls", &[], &["go.work", "go.mod"])],
+        "python" => &[
+            (
+                "basedpyright-langserver",
+                &["--stdio"],
+                &["pyproject.toml", "setup.py", "requirements.txt"],
+            ),
+            (
+                "pyright-langserver",
+                &["--stdio"],
+                &["pyproject.toml", "setup.py", "requirements.txt"],
+            ),
+        ],
+        "bash" | "shellscript" => &[("bash-language-server", &["start"], &[".git", "Makefile"])],
+        _ => return None,
+    };
+    candidates.iter().find_map(|(command, args, markers)| {
+        find_executable(command).map(|path| {
+            (
+                path.to_string_lossy().into_owned(),
+                args.iter().map(|arg| (*arg).to_string()).collect(),
+                *markers,
+            )
+        })
+    })
+}
+
+fn find_executable(command: &str) -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path)
+        .map(|dir| dir.join(command))
+        .find(|path| is_executable(path))
+}
+
+#[cfg(unix)]
+fn is_executable(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    path.metadata()
+        .map(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
+        .unwrap_or(false)
+}
+
+#[cfg(not(unix))]
+fn is_executable(path: &Path) -> bool {
+    path.is_file()
+}
+
+fn nearest_root(uri: &str, markers: &[&str]) -> PathBuf {
+    let path = Path::new(uri.strip_prefix("file://").unwrap_or(uri));
+    let start = if path.is_dir() {
+        path
+    } else {
+        path.parent().unwrap_or(path)
+    };
+    start
+        .ancestors()
+        .find(|directory| markers.iter().any(|marker| directory.join(marker).exists()))
+        .unwrap_or(start)
+        .to_path_buf()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -650,11 +732,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn manager_registered_but_not_started() {
+    async fn manager_registered_server_starts_lazily() {
         let mut manager = LspManager::new();
-        manager.register("rust", "rust-analyzer", &[]).unwrap();
+        manager
+            .register("rust", "rx4-nonexistent-language-server", &[])
+            .unwrap();
         let result = manager.diagnostics("file:///x.rs", "rust").await;
-        assert!(matches!(result, Err(LspError::NotStarted(_))));
+        assert!(matches!(result, Err(LspError::Spawn(_))));
     }
 
     #[test]
@@ -737,5 +821,27 @@ mod tests {
         assert!(!provider_enabled(&json!(false)));
         assert!(provider_enabled(&json!({"options": {}})));
         assert!(!provider_enabled(&Value::Null));
+    }
+
+    #[test]
+    fn nearest_root_uses_language_marker() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("Cargo.toml"), "").unwrap();
+        let nested = temp.path().join("src/deep");
+        std::fs::create_dir_all(&nested).unwrap();
+        let file = nested.join("main.rs");
+        assert_eq!(
+            nearest_root(&format!("file://{}", file.display()), &["Cargo.toml"]),
+            temp.path()
+        );
+    }
+
+    #[test]
+    fn known_language_without_installed_server_is_detectable() {
+        let detected = detect_server("rust");
+        if find_executable("rust-analyzer").is_some() {
+            assert!(detected.is_some());
+        }
+        assert!(detect_server("unknown").is_none());
     }
 }

@@ -2,7 +2,7 @@
 //! and oldest-first message removal that preserves the system prompt and
 //! a recent token window.
 
-use crate::provider::{Message, Role};
+use crate::provider::{Message, Provider, ProviderError, Role};
 use serde::{Deserialize, Serialize};
 
 /// Heuristic token estimate: ~3 characters per token.
@@ -219,6 +219,77 @@ pub fn apply_compaction(
     result
 }
 
+pub async fn compact_messages_semantically(
+    messages: &[Message],
+    config: &CompactionConfig,
+    provider: &dyn Provider,
+    model: &str,
+) -> Result<CompactionResult, ProviderError> {
+    let mut result = compact_messages(messages, config);
+    if result.removed_count == 0 {
+        return Ok(result);
+    }
+
+    let system_end = messages
+        .iter()
+        .position(|m| m.role != Role::System)
+        .unwrap_or(messages.len());
+    let removed_end = system_end + result.removed_count;
+    let system = Some(
+        "Summarize the conversation into a continuation-grade checkpoint. Preserve the user's objective and corrections, decisions and rationale, files changed or inspected, commands and test results, failures, and unfinished work. Be concise, factual, and specific. Do not continue the task."
+            .to_string(),
+    );
+    let transcript = messages[system_end..removed_end]
+        .iter()
+        .map(|message| {
+            let tool_calls = message
+                .tool_calls
+                .iter()
+                .map(|call| format!("\ntool call {} {}: {}", call.id, call.name, call.arguments))
+                .collect::<String>();
+            format!("{}: {}{}", message.role, message.content, tool_calls)
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    result.summary = provider
+        .generate(&[Message::user(transcript)], &system, model, &[])
+        .await?;
+    if result.summary.trim().is_empty() {
+        return Err(ProviderError::Api(
+            "compaction provider returned an empty summary".to_string(),
+        ));
+    }
+    Ok(result)
+}
+
+pub(crate) fn apply_compaction_result(
+    messages: &mut Vec<Message>,
+    original: &[Message],
+    result: &CompactionResult,
+) -> bool {
+    if result.removed_count == 0 {
+        return false;
+    }
+    if !messages.starts_with(original) {
+        return false;
+    }
+
+    let system_end = messages
+        .iter()
+        .position(|m| m.role != Role::System)
+        .unwrap_or(messages.len());
+    let removed_end = system_end + result.removed_count;
+    messages.drain(system_end..removed_end);
+    messages.insert(
+        system_end,
+        Message::system(format!(
+            "[context compacted] {} Markers preserved: {:?}",
+            result.summary, result.markers_preserved
+        )),
+    );
+    true
+}
+
 fn summarize_removed(removed: &[Message]) -> String {
     if removed.is_empty() {
         return String::new();
@@ -272,6 +343,45 @@ fn collect_markers(content: &str, out: &mut Vec<CompactionMarker>) {
 mod tests {
     use super::*;
     use crate::provider::Message;
+
+    struct SummaryProvider {
+        summary: Option<&'static str>,
+    }
+
+    #[async_trait::async_trait]
+    impl Provider for SummaryProvider {
+        fn id(&self) -> &str {
+            "summary"
+        }
+
+        fn name(&self) -> &str {
+            "Summary"
+        }
+
+        #[cfg(feature = "providers")]
+        async fn stream(
+            &self,
+            _messages: &[Message],
+            _system: &Option<String>,
+            _model: &str,
+            _tools: &[serde_json::Value],
+            _reasoning_effort: Option<&str>,
+        ) -> Result<crate::provider::StreamResult, ProviderError> {
+            unreachable!()
+        }
+
+        async fn generate(
+            &self,
+            _messages: &[Message],
+            _system: &Option<String>,
+            _model: &str,
+            _tools: &[serde_json::Value],
+        ) -> Result<String, ProviderError> {
+            self.summary
+                .map(str::to_string)
+                .ok_or_else(|| ProviderError::Api("summary failed".to_string()))
+        }
+    }
 
     #[test]
     fn estimate_tokens_three_chars_per_token() {
@@ -334,6 +444,86 @@ mod tests {
         assert!(messages
             .iter()
             .any(|m| m.content.contains("context compacted")));
+    }
+
+    #[tokio::test]
+    async fn semantic_compaction_uses_provider_summary() {
+        let config = CompactionConfig::new(100, 30, 20);
+        let messages = vec![
+            Message::system("system prompt"),
+            Message::user("old objective ".repeat(50)),
+            Message::assistant("old work ".repeat(50)),
+            Message::user("recent tail"),
+        ];
+        let provider = SummaryProvider {
+            summary: Some("Objective retained; tests still need to run."),
+        };
+        let result = compact_messages_semantically(&messages, &config, &provider, "test")
+            .await
+            .unwrap();
+        assert_eq!(
+            result.summary,
+            "Objective retained; tests still need to run."
+        );
+    }
+
+    #[tokio::test]
+    async fn semantic_compaction_failure_leaves_messages_untouched() {
+        let config = CompactionConfig::new(100, 30, 20);
+        let messages = vec![
+            Message::system("system prompt"),
+            Message::user("old objective ".repeat(50)),
+            Message::assistant("old work ".repeat(50)),
+            Message::user("recent tail"),
+        ];
+        let original = messages.clone();
+        let provider = SummaryProvider { summary: None };
+        assert!(
+            compact_messages_semantically(&messages, &config, &provider, "test")
+                .await
+                .is_err()
+        );
+        assert_eq!(messages, original);
+    }
+
+    #[test]
+    fn applying_semantic_result_preserves_messages_appended_after_snapshot() {
+        let config = CompactionConfig::new(100, 30, 20);
+        let snapshot = vec![
+            Message::system("system prompt"),
+            Message::user("old objective ".repeat(50)),
+            Message::assistant("old work ".repeat(50)),
+            Message::user("recent tail"),
+        ];
+        let mut result = compact_messages(&snapshot, &config);
+        result.summary = "checkpoint".to_string();
+        let mut messages = snapshot.clone();
+        messages.push(Message::user("appended while summarizing"));
+
+        assert!(apply_compaction_result(&mut messages, &snapshot, &result));
+        assert_eq!(
+            messages.last().unwrap().content,
+            "appended while summarizing"
+        );
+    }
+
+    #[test]
+    fn applying_semantic_result_rejects_divergent_prefix() {
+        let config = CompactionConfig::new(100, 30, 20);
+        let snapshot = vec![
+            Message::system("system prompt"),
+            Message::user("old objective ".repeat(50)),
+            Message::assistant("old work ".repeat(50)),
+            Message::user("recent tail"),
+        ];
+        let mut result = compact_messages(&snapshot, &config);
+        result.summary = "checkpoint".to_string();
+        let mut messages = snapshot.clone();
+        messages[1] = Message::user("changed while summarizing");
+        let divergent = messages.clone();
+
+        assert!(!apply_compaction_result(&mut messages, &snapshot, &result));
+        assert_eq!(messages, divergent);
     }
 
     #[test]

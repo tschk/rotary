@@ -101,7 +101,8 @@ pub use background_review::{
     BackgroundReviewConfig, BackgroundReviewer, ReviewResult, ReviewSignal,
 };
 pub use compaction::{
-    apply_compaction, compact_messages, CompactionConfig, CompactionMarker, CompactionResult,
+    apply_compaction, compact_messages, compact_messages_semantically, CompactionConfig,
+    CompactionMarker, CompactionResult,
 };
 pub use context::{compose_system_prompt, load_project_instructions, ProjectInstructions};
 pub use cost::{CostEntry, ModelPricing, PricingRegistry, SessionCost, TokenUsage};

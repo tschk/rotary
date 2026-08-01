@@ -8,7 +8,10 @@
 mod tool_types;
 pub use tool_types::*;
 
-use crate::compaction::{apply_compaction, estimate_messages, CompactionConfig};
+use crate::compaction::{
+    apply_compaction, apply_compaction_result, compact_messages_semantically, estimate_messages,
+    CompactionConfig,
+};
 use crate::cost::{PricingRegistry, SessionCost, TokenUsage};
 use crate::guardrails::{
     plan_tool_effect_batches, GuardrailConfig, GuardrailDecision, SelfHealingRetry, ToolGuardrails,
@@ -211,6 +214,8 @@ pub struct Agent {
     pub workspace_root: std::path::PathBuf,
     pub sandbox: Option<Arc<crate::sandbox::SandboxManager>>,
     pub os_sandbox: Option<Arc<crate::sandbox::OsSandboxRunner>>,
+    #[cfg(feature = "ipc")]
+    lsp: Arc<crate::lsp::LspManager>,
     /// True when policy requested OS sandboxing but setup failed. Shell tools
     /// must refuse execution rather than silently falling through to bare bash.
     os_sandbox_failed: bool,
@@ -262,6 +267,8 @@ impl Agent {
             workspace_root: std::env::current_dir().unwrap_or_else(|_| ".".into()),
             sandbox: None,
             os_sandbox: None,
+            #[cfg(feature = "ipc")]
+            lsp: Arc::new(crate::lsp::LspManager::new()),
             os_sandbox_failed: false,
             #[cfg(feature = "skills")]
             skill_registry: None,
@@ -318,6 +325,11 @@ impl Agent {
 
     pub fn set_tools(&mut self, tools: ToolRegistry) {
         self.tools = Arc::new(tools);
+    }
+
+    #[cfg(feature = "ipc")]
+    pub fn set_lsp_manager(&mut self, lsp: Arc<crate::lsp::LspManager>) {
+        self.lsp = lsp;
     }
 
     pub fn set_policy(&mut self, policy: Policy) {
@@ -644,6 +656,7 @@ impl Agent {
     /// Run a prompt through the agent loop.
     /// Streams events to subscribers, executes tools, cycles turns.
     pub async fn prompt(&mut self, text: &str) -> Result<(), AgentError> {
+        let provider = self.provider.clone().ok_or(AgentError::NoProvider)?;
         let tokens = self.context_tokens();
         let context_window = self.context_window();
         let auto_compact_at = self.auto_compact_threshold();
@@ -653,7 +666,12 @@ impl Agent {
             auto_compact_at,
         });
         if tokens >= auto_compact_at {
-            self.compact("auto-compact before prompt");
+            if let Err(error) = self
+                .compact_semantically("auto-compact before prompt", provider.as_ref())
+                .await
+            {
+                warn!("automatic context compaction failed: {error}");
+            }
         }
 
         // Inject activated skill instructions into system prompt for this turn.
@@ -709,19 +727,7 @@ impl Agent {
             }
         }
 
-        let provider = self.provider.clone().ok_or(AgentError::NoProvider)?;
-        let mut tool_ctx = ToolContext::new(self.workspace_root.clone());
-        tool_ctx.os_sandbox_required = self.policy.enable_os_sandbox && self.os_sandbox.is_none();
-        #[cfg(feature = "ipc")]
-        {
-            tool_ctx.cancellation = self.turn_cancellation.reset();
-        }
-        if let Some(sb) = self.sandbox.clone() {
-            tool_ctx = tool_ctx.with_sandbox(sb);
-        }
-        if let Some(os) = self.os_sandbox.clone() {
-            tool_ctx = tool_ctx.with_os_sandbox(os);
-        }
+        let mut tool_ctx = self.tool_context();
         tool_ctx.provider = Some(provider.clone());
         tool_ctx.tools = Some(Arc::clone(&self.tools));
         let pending_scope = Arc::new(parking_lot::Mutex::new(None));
@@ -1478,6 +1484,62 @@ impl Agent {
             result,
         });
     }
+
+    fn tool_context(&self) -> ToolContext {
+        let mut tool_ctx = ToolContext::new(self.workspace_root.clone());
+        tool_ctx.os_sandbox_required = self.policy.enable_os_sandbox && self.os_sandbox.is_none();
+        #[cfg(feature = "ipc")]
+        {
+            tool_ctx.cancellation = self.turn_cancellation.reset();
+            tool_ctx.lsp = Some(Arc::clone(&self.lsp));
+        }
+        if let Some(sandbox) = self.sandbox.clone() {
+            tool_ctx = tool_ctx.with_sandbox(sandbox);
+        }
+        if let Some(os_sandbox) = self.os_sandbox.clone() {
+            tool_ctx = tool_ctx.with_os_sandbox(os_sandbox);
+        }
+        tool_ctx
+    }
+
+    async fn compact_semantically(
+        &self,
+        reason: &str,
+        provider: &dyn Provider,
+    ) -> Result<(), crate::provider::ProviderError> {
+        info!("compacting context: {reason}");
+        if self.message_count() <= 2 {
+            return Ok(());
+        }
+        let before_tokens = self.context_tokens();
+        let snapshot = self.messages.read().clone();
+        let result = compact_messages_semantically(
+            &snapshot,
+            &self.compaction_config(),
+            provider,
+            &self.model,
+        )
+        .await?;
+        if result.removed_count == 0 {
+            return Ok(());
+        }
+        {
+            let mut messages = self.messages.write();
+            if !apply_compaction_result(&mut messages, &snapshot, &result) {
+                return Ok(());
+            }
+            messages.push(Message::system(format!("[compact reason: {reason}]")));
+        }
+        self.emit(Event::CompactionStart {
+            reason: reason.to_string(),
+            before_tokens,
+        });
+        self.emit(Event::CompactionEnd {
+            reason: reason.to_string(),
+            result,
+        });
+        Ok(())
+    }
 }
 
 #[cfg(any(feature = "providers", test))]
@@ -1750,6 +1812,14 @@ mod tests {
             .as_deref()
             .is_some_and(|value| value.contains("# Active Skills")));
         assert_eq!(base.as_deref(), Some("host instructions"));
+    }
+
+    #[cfg(feature = "ipc")]
+    #[test]
+    fn agent_tool_context_gets_lsp_manager() {
+        let agent = Agent::new();
+        let tool_ctx = agent.tool_context();
+        assert!(tool_ctx.lsp.is_some());
     }
 
     #[tokio::test]
