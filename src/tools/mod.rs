@@ -449,6 +449,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_register_spawn_agent_tool_registers_expected_tools() {
+        let mut registry = ToolRegistry::new();
+        let manager = Arc::new(Mutex::new(SubagentManager::new()));
+
+        register_spawn_agent_tool(&mut registry, manager);
+
+        let definitions = registry.definitions();
+        let tool_names: Vec<&str> = definitions
+            .iter()
+            .filter_map(|d| d.get("name").and_then(|n| n.as_str()))
+            .collect();
+
+        assert_eq!(tool_names.len(), 3);
+        assert!(tool_names.contains(&"spawn_agent"));
+        assert!(tool_names.contains(&"list_subagents"));
+        assert!(tool_names.contains(&"cancel_subagent"));
+    }
+
+    #[tokio::test]
     async fn host_subagent_tools_share_lifecycle_state() {
         let tmp = TempDir::new().unwrap();
         let manager = Arc::new(Mutex::new(SubagentManager::new()));
