@@ -107,13 +107,7 @@ impl RepoMap {
         self.cache = None;
     }
 
-    fn ranked(&self) -> Vec<(PathBuf, f64)> {
-        if let Some(cached) = &self.cache {
-            return cached.clone();
-        }
-        if let Some(cached) = self.load_cache() {
-            return cached;
-        }
+    fn compute_ranking(&self) -> Vec<(PathBuf, f64)> {
         let files = self.collect_source_files();
         let graph = self.build_graph(&files);
         let ranking = pagerank(&graph);
@@ -124,6 +118,16 @@ impl RepoMap {
             .collect();
         let _ = self.save_cache(&result);
         result
+    }
+
+    fn ranked(&self) -> Vec<(PathBuf, f64)> {
+        if let Some(cached) = &self.cache {
+            return cached.clone();
+        }
+        if let Some(cached) = self.load_cache() {
+            return cached;
+        }
+        self.compute_ranking()
     }
 
     fn collect_source_files(&self) -> Vec<PathBuf> {
