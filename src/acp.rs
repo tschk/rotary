@@ -65,6 +65,114 @@ impl AcpHost {
         self.running = false;
     }
 
+    fn handle_initialize(&self, id: Value) -> Value {
+        ok_response(
+            id,
+            json!({
+                "protocolVersion": self.protocol_version,
+                "serverInfo": {
+                    "name": "rx4",
+                    "version": env!("CARGO_PKG_VERSION"),
+                },
+                "capabilities": {
+                    "prompt": true,
+                    "tools": true,
+                    "sessions": true,
+                }
+            }),
+        )
+    }
+
+    fn handle_session_new(&self, id: Value) -> Value {
+        let sid = Uuid::new_v4().to_string();
+        self.sessions.lock().insert(
+            sid.clone(),
+            AcpSession {
+                id: sid.clone(),
+                cancelled: false,
+                turns: 0,
+            },
+        );
+        ok_response(id, json!({ "sessionId": sid }))
+    }
+
+    fn handle_session_list(&self, id: Value) -> Value {
+        let sessions: Vec<Value> = self
+            .sessions
+            .lock()
+            .values()
+            .map(|s| {
+                json!({
+                    "sessionId": s.id,
+                    "cancelled": s.cancelled,
+                    "turns": s.turns,
+                })
+            })
+            .collect();
+        ok_response(id, json!({ "sessions": sessions }))
+    }
+
+    fn handle_session_cancel(&self, id: Value, params: &Value) -> Value {
+        let sid = params
+            .get("sessionId")
+            .and_then(|s| s.as_str())
+            .unwrap_or("");
+        let mut sessions = self.sessions.lock();
+        if let Some(s) = sessions.get_mut(sid) {
+            s.cancelled = true;
+            ok_response(id, json!({ "cancelled": true }))
+        } else {
+            error_response(id, -32001, &format!("unknown session: {sid}"))
+        }
+    }
+
+    async fn handle_session_prompt(&self, id: Value, params: &Value) -> Value {
+        let sid = params
+            .get("sessionId")
+            .and_then(|s| s.as_str())
+            .unwrap_or("");
+        let prompt = params
+            .get("prompt")
+            .or_else(|| params.get("text"))
+            .and_then(|s| s.as_str())
+            .unwrap_or("");
+        if prompt.is_empty() {
+            return error_response(id, -32602, "prompt required");
+        }
+        {
+            let mut sessions = self.sessions.lock();
+            let Some(session) = sessions.get_mut(sid) else {
+                return error_response(id, -32001, &format!("unknown session: {sid}"));
+            };
+            if session.cancelled {
+                return error_response(id, -32002, "session cancelled");
+            }
+            session.turns += 1;
+        }
+
+        let mut agent = self.agent.lock().await;
+        match agent.prompt(prompt).await {
+            Ok(()) => {
+                let msgs = agent.messages.read().clone();
+                let content = msgs
+                    .iter()
+                    .rev()
+                    .find(|m| m.role == Role::Assistant)
+                    .map(|m| m.content.clone())
+                    .unwrap_or_default();
+                ok_response(
+                    id,
+                    json!({
+                        "sessionId": sid,
+                        "content": content,
+                        "messageCount": msgs.len(),
+                    }),
+                )
+            }
+            Err(e) => error_response(id, -32000, &e.to_string()),
+        }
+    }
+
     /// Handle one JSON-RPC request line and return a JSON-RPC response object.
     pub async fn handle_request(&self, request: &Value) -> Value {
         let id = request.get("id").cloned().unwrap_or(Value::Null);
@@ -72,107 +180,11 @@ impl AcpHost {
         let params = request.get("params").cloned().unwrap_or(Value::Null);
 
         match method {
-            "initialize" => ok_response(
-                id,
-                json!({
-                    "protocolVersion": self.protocol_version,
-                    "serverInfo": {
-                        "name": "rx4",
-                        "version": env!("CARGO_PKG_VERSION"),
-                    },
-                    "capabilities": {
-                        "prompt": true,
-                        "tools": true,
-                        "sessions": true,
-                    }
-                }),
-            ),
-            "session/new" => {
-                let sid = Uuid::new_v4().to_string();
-                self.sessions.lock().insert(
-                    sid.clone(),
-                    AcpSession {
-                        id: sid.clone(),
-                        cancelled: false,
-                        turns: 0,
-                    },
-                );
-                ok_response(id, json!({ "sessionId": sid }))
-            }
-            "session/list" => {
-                let sessions: Vec<Value> = self
-                    .sessions
-                    .lock()
-                    .values()
-                    .map(|s| {
-                        json!({
-                            "sessionId": s.id,
-                            "cancelled": s.cancelled,
-                            "turns": s.turns,
-                        })
-                    })
-                    .collect();
-                ok_response(id, json!({ "sessions": sessions }))
-            }
-            "session/cancel" => {
-                let sid = params
-                    .get("sessionId")
-                    .and_then(|s| s.as_str())
-                    .unwrap_or("");
-                let mut sessions = self.sessions.lock();
-                if let Some(s) = sessions.get_mut(sid) {
-                    s.cancelled = true;
-                    ok_response(id, json!({ "cancelled": true }))
-                } else {
-                    error_response(id, -32001, &format!("unknown session: {sid}"))
-                }
-            }
-            "session/prompt" => {
-                let sid = params
-                    .get("sessionId")
-                    .and_then(|s| s.as_str())
-                    .unwrap_or("");
-                let prompt = params
-                    .get("prompt")
-                    .or_else(|| params.get("text"))
-                    .and_then(|s| s.as_str())
-                    .unwrap_or("");
-                if prompt.is_empty() {
-                    return error_response(id, -32602, "prompt required");
-                }
-                {
-                    let mut sessions = self.sessions.lock();
-                    let Some(session) = sessions.get_mut(sid) else {
-                        return error_response(id, -32001, &format!("unknown session: {sid}"));
-                    };
-                    if session.cancelled {
-                        return error_response(id, -32002, "session cancelled");
-                    }
-                    session.turns += 1;
-                }
-
-                let mut agent = self.agent.lock().await;
-                match agent.prompt(prompt).await {
-                    Ok(()) => {
-                        let msgs = agent.messages.read().clone();
-                        let content = msgs
-                            .iter()
-                            .rev()
-                            .find(|m| m.role == Role::Assistant)
-                            .map(|m| m.content.clone())
-                            .unwrap_or_default();
-                        ok_response(
-                            id,
-                            json!({
-                                "sessionId": sid,
-                                "content": content,
-                                "messageCount": msgs.len(),
-                            }),
-                        )
-                    }
-                    Err(e) => error_response(id, -32000, &e.to_string()),
-                }
-            }
+            "initialize" => self.handle_initialize(id),
+            "session/new" => self.handle_session_new(id),
+            "session/list" => self.handle_session_list(id),
+            "session/cancel" => self.handle_session_cancel(id, &params),
+            "session/prompt" => self.handle_session_prompt(id, &params).await,
             "" => error_response(id, -32600, "method required"),
             other => error_response(id, -32601, &format!("method not found: {other}")),
         }
