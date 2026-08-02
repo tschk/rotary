@@ -4,10 +4,9 @@ Rotary is the product name for the MPL-2.0 agent harness crate and CLI. The Rust
 
 ```mermaid
 flowchart LR
-  Host["Product host"] --> Embed["Embed rx4 as a Rust dependency"]
-  Host --> IPC["Connect to rx4 serve"]
+  Host["Product host"] --> Runtime["HostRuntime"]
+  Runtime --> Embed["Embed rx4 as a Rust dependency"]
   Embed --> Engine["Rotary agent harness"]
-  IPC --> Engine
   Engine --> Capabilities["Loop, scopes, permissions, tools, sessions, skills"]
   Host --> Policy["UI, scheduling, provider policy"]
 ```
@@ -15,7 +14,8 @@ flowchart LR
 ## Guides
 
 - [Architecture](ARCHITECTURE.md) — module and agent-loop contracts.
-- [Hosts](HOSTS.md) — embedding and IPC integration boundaries.
+- [Hosts](HOSTS.md) — embedding and compatibility-adapter boundaries.
+- [Boundary ADR](https://github.com/semitechnological/telekinesis/blob/main/docs/ADR-001-rotary-engine-telekinesis-host.md) — rotary engine and telekinesis host ownership.
 - [Comparison](COMPARISON.md) — scope relative to other harnesses.
 - [Roadmap](ROADMAP.md) — completed capabilities and near-term work.
 

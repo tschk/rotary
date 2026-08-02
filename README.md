@@ -15,10 +15,9 @@ lifecycle decisions are the host's job.
 ```mermaid
 graph TD
   Host["Hosts<br/>telekinesis CLI/TUI · omi desktop · IDEs · CI"]
-  Host -->|cargo add rx4| Embed["in-process embed"]
-  Host -->|JSON-RPC| Serve["rx4 serve (IPC)"]
+  Host -->|cargo add rx4| Runtime["host runtime"]
+  Runtime --> Embed["in-process engine embed"]
   Embed --> Engine["rx4 agent harness engine"]
-  Serve --> Engine
   Engine --> Loop["agent loop + streaming events"]
   Engine --> Tools["tools + computer-use + MCP"]
   Engine --> Prov["providers (OpenAI/Anthropic/Ollama)"]
@@ -29,15 +28,8 @@ graph TD
 
 ## Install
 
-```toml
-[dependencies]
-rx4 = { version = "0.3", features = ["ipc", "builtin-tools", "providers", "computer-use"] }
-```
-
-Or via the CLI:
-
 ```bash
-cargo add rx4 --features ipc,builtin-tools,providers,computer-use
+cargo add rx4 --features builtin-tools,providers,computer-use
 ```
 
 ## Quick start
@@ -57,7 +49,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-## IPC server
+## Compatibility IPC adapter
 
 ```bash
 rx4 serve /tmp/rx4.sock
@@ -66,7 +58,9 @@ rx4 serve /tmp/rx4.sock
 JSON-RPC methods: `ping`, `state`, `prompt`, `set_model`, `tools`,
 `plugins`, `messages`, `session_list`, `session_clear`.
 
-Socket mode is `0o600`. Optional auth: set `RX4_IPC_TOKEN` and pass
+Socket mode is `0o600`. This adapter remains for compatibility while
+telekinesis owns the product host boundary. Optional auth: set
+`RX4_IPC_TOKEN` and pass
 `"token"` in each JSON-RPC `params` object (fail-open when unset — local
 socket only).
 

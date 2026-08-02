@@ -6,8 +6,10 @@
 graph TD
   subgraph Host["Hosts: telekinesis and Omi Desktop"]
     UX["product UX · slash palette · streaming UI<br/>pi protocol compat (JSONL v3, RPC, extensions)"]
+    Runtime["host runtime"]
   end
-  Host -->|tokio channels (in-process)<br/>or JSON-RPC IPC| Engine
+  Host -->|typed calls and events| Runtime
+  Runtime -->|in-process first; transport later| Engine
   subgraph Engine["rotary — agent harness engine"]
     Loop["loop · tools · providers · sessions"]
     Ctrl["permissions · hooks · scopes · guardrails"]
@@ -21,14 +23,12 @@ Primary host. One CLI, one TUI.
 
 ```bash
 tk                          # launch the telekinesis TUI
-rx4 serve /tmp/rx4.sock     # optional Rotary IPC daemon
 ```
 
 Wire:
 
-- `rx4` is a **Cargo dependency** (`rx4 = "0.4"` in `ui/tui/Cargo.toml`),
-  not a submodule.
-- `ui/tui/src/main.rs` imports rx4 directly and drives the agent loop
+- `rx4` is a published Cargo dependency, not a submodule.
+- `ui/tui/src/main.rs` currently imports rx4 directly and drives the agent loop
   in-process via tokio channels.
 - builtin tools + computer-use tools are registered at startup.
 - pi protocol compat (JSONL v3 sessions, RPC, extensions, QuickJS) is owned
@@ -46,16 +46,15 @@ agent.set_tools(tools);
 agent.set_scope(Scope::Coding);
 ```
 
-Or attach as IPC-only: start Rotary's server surface through `rx4 serve`.
+The existing `rx4 serve` surface remains a compatibility adapter during the
+boundary migration. New host surfaces should use telekinesis `HostRuntime`.
 
 ## Computer-use
 
 Do **not** shell out to Praefectus. Embed it through rx4's `computer-use`
 feature:
 
-```toml
-rx4 = { version = "0.4", features = ["computer-use"] }
-```
+Enable the `computer-use` feature when adding rx4.
 
 ```rust
 rx4::computer_use::register_tools(&mut tools);

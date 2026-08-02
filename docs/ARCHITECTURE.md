@@ -13,12 +13,12 @@ lifecycle decisions are the host's job.
 ```mermaid
 graph TD
   Host["Hosts<br/>telekinesis TUI/CLI · IDEs · CI"]
-  Host -->|JSON-RPC events / cargo add rx4| Ctrl
+  Host -->|typed engine API / cargo add rx4| Ctrl
   subgraph Ctrl["rotary control plane"]
     direction TB
     Agent["agent · tools · permissions · hooks · scopes"]
     Sess["sessions · plugins · skills · guardrails · context"]
-    Extra["extract · ranking · slash · ACP · LSP · IPC"]
+    Extra["extract · ranking · guardrails · LSP primitives"]
   end
   Ctrl --> Providers["providers (HTTP/SSE)"]
   Ctrl --> CU["computer-use (Praefectus)"]
@@ -68,15 +68,38 @@ lists + host approver.
 
 ### Events
 
-Tagged union pushed to subscribers and mirrored as IPC notifications
-(`method: "event"`). Hosts must treat events as the UI boundary (t3code
-pattern).
+Tagged union pushed to subscribers. A temporary IPC adapter may mirror events
+as (`method: "event"`), but hosts must treat the typed event stream as the UI
+boundary (t3code pattern).
 
 ### Capability vs policy
 
 Modules like `dream_scheduler` and `skill_curator` expose the *capability*
 to run a consolidation cycle or audit skills. The host decides *when* to
 invoke them — rotary never schedules on its own.
+
+## Boundary with telekinesis
+
+rotary is the reusable engine. telekinesis is the product host. Rotary owns
+the loop, providers, tools, permissions primitives, session model, compaction
+capability, MCP/skills/subagent capabilities, and typed lifecycle events.
+Telekinesis owns persistence implementations, checkpoints, scheduling,
+transport, pi compatibility, ACP, IPC, SSE, slash commands, and surfaces.
+
+The current `acp.rs`, `ipc.rs`, `sse.rs`, `slash.rs`, and binary wiring are
+compatibility inventory. They migrate to telekinesis adapters in phases; they
+are not new host contracts.
+
+Session storage follows the same seam: rotary exposes session state and pure
+snapshot contracts, while hosts choose JSONL, SQLite, or another repository.
+Compaction algorithms remain engine capabilities; hosts choose when and how
+to schedule them.
+
+The initial refactor stays within this crate. A workspace split happens only
+when separate release or dependency boundaries are proven necessary.
+
+See the canonical decision record:
+[telekinesis ADR-001](https://github.com/semitechnological/telekinesis/blob/main/docs/ADR-001-rotary-engine-telekinesis-host.md).
 
 ## Versioning
 
