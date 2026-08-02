@@ -560,6 +560,9 @@ pub fn is_read_only_tool(name: &str) -> bool {
             | "code_intel"
             | "cu_list"
             | "web_fetch"
+            | "web_search"
+            | "darash"
+            | "darash_search"
             | "enter_plan_mode"
             | "exit_plan_mode"
     ) || name.starts_with("lsp_")
@@ -1387,5 +1390,21 @@ mod tests {
     fn h2_cu_see_not_read_only() {
         assert!(!is_read_only_tool("cu_see"));
         assert!(!is_read_only_tool("cu_image"));
+    }
+
+    #[test]
+    fn web_search_is_read_only() {
+        assert!(is_read_only_tool("web_search"));
+        assert!(is_read_only_tool("darash"));
+        assert!(is_read_only_tool("darash_search"));
+        assert_eq!(
+            authorize(
+                &Policy::read_only(),
+                "web_search",
+                r#"{"query":"rust"}"#,
+                None
+            ),
+            Decision::Allow
+        );
     }
 }

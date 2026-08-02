@@ -24,6 +24,7 @@ pub fn normalize_tool_name(name: &str) -> &str {
         "hashline_edit" | "search_replace" | "apply_patch" | "edit" => "edit",
         "spawn_agent" | "agent" => "spawn_agent",
         "web_fetch" | "fetch" | "fetch_url" => "web_fetch",
+        "web_search" | "darash" | "darash_search" => "web_search",
         "todo" | "todo_write" | "todo_list" => "todo",
         "enter_plan_mode" | "plan_mode" => "enter_plan_mode",
         "exit_plan_mode" => "exit_plan_mode",
@@ -279,5 +280,17 @@ impl ToolRegistry {
 impl Default for ToolRegistry {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_tool_name;
+
+    #[test]
+    fn normalizes_web_search_aliases() {
+        assert_eq!(normalize_tool_name("web_search"), "web_search");
+        assert_eq!(normalize_tool_name("darash"), "web_search");
+        assert_eq!(normalize_tool_name("darash_search"), "web_search");
     }
 }

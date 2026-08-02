@@ -69,6 +69,9 @@ pub const CODING_TOOLS: &[&str] = &[
     "list_dir",
     "spawn_agent",
     "web_fetch",
+    "web_search",
+    "darash",
+    "darash_search",
     "todo",
     "enter_plan_mode",
     "exit_plan_mode",
@@ -88,6 +91,9 @@ pub const RESEARCH_TOOLS: &[&str] = &[
     "bash",
     "run_command",
     "web_fetch",
+    "web_search",
+    "darash",
+    "darash_search",
     "lsp_diagnostics",
     "lsp_definition",
     "lsp_references",
@@ -103,6 +109,9 @@ pub const PLAN_TOOLS: &[&str] = &[
     "code_intel",
     "todo",
     "web_fetch",
+    "web_search",
+    "darash",
+    "darash_search",
     "enter_plan_mode",
     "exit_plan_mode",
     "lsp_diagnostics",
@@ -198,5 +207,14 @@ mod tests {
         let p = profile(Scope::Plan);
         assert!(tool_allowed(&p, "read_file"));
         assert!(!tool_allowed(&p, "write_file"));
+    }
+
+    #[test]
+    fn web_search_is_available_in_non_mutating_scopes() {
+        for scope in [Scope::Coding, Scope::Research, Scope::Plan] {
+            assert!(tool_allowed(&profile(scope), "web_search"));
+            assert!(tool_allowed(&profile(scope), "darash_search"));
+        }
+        assert!(!tool_allowed(&profile(Scope::Ask), "web_search"));
     }
 }
