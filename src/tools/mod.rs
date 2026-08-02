@@ -294,6 +294,42 @@ mod tests {
     use std::sync::Arc;
     use tempfile::TempDir;
 
+    #[test]
+    fn test_register_builtin_tools() {
+        let mut registry = ToolRegistry::new();
+        super::register_builtin_tools(&mut registry);
+
+        let expected_tools = vec![
+            "read",
+            "write",
+            "edit",
+            "bash",
+            "grep",
+            "find",
+            "ls",
+            "web_fetch",
+            "todo",
+            "spawn_agent",
+            "enter_plan_mode",
+            "exit_plan_mode",
+            "lsp_diagnostics",
+            "lsp_definition",
+            "lsp_references",
+        ];
+
+        assert_eq!(registry.count(), expected_tools.len());
+
+        let defs = registry.definitions();
+        for tool in expected_tools {
+            assert!(
+                defs.iter()
+                    .any(|d| d.get("name").unwrap().as_str().unwrap() == tool),
+                "Missing tool: {}",
+                tool
+            );
+        }
+    }
+
     #[tokio::test]
     async fn test_write_and_read() {
         let tmp = TempDir::new().unwrap();
