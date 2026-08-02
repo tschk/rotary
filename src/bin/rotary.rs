@@ -11,6 +11,149 @@ use std::sync::Arc;
 #[cfg(feature = "computer-use")]
 use rx4::computer_use;
 
+// OpenAI-compatible providers: (env_var, base_url, provider_id, display_name)
+const COMPAT_PROVIDERS: &[(&str, &str, &str, &str)] = &[
+    ("XAI_API_KEY", "https://api.x.ai/v1", "xai", "xAI"),
+    (
+        "OPENAI_API_KEY",
+        "https://api.openai.com/v1",
+        "openai",
+        "OpenAI",
+    ),
+    (
+        "GROQ_API_KEY",
+        "https://api.groq.com/openai/v1",
+        "groq",
+        "Groq",
+    ),
+    (
+        "DEEPINFRA_API_KEY",
+        "https://api.deepinfra.com/v1/openai",
+        "deepinfra",
+        "Deep Infra",
+    ),
+    (
+        "CEREBRAS_API_KEY",
+        "https://api.cerebras.ai/v1",
+        "cerebras",
+        "Cerebras",
+    ),
+    (
+        "OPENROUTER_API_KEY",
+        "https://openrouter.ai/api/v1",
+        "openrouter",
+        "OpenRouter",
+    ),
+    (
+        "MISTRAL_API_KEY",
+        "https://api.mistral.ai/v1",
+        "mistral",
+        "Mistral AI",
+    ),
+    (
+        "MOONSHOT_API_KEY",
+        "https://api.moonshot.ai/v1",
+        "moonshot",
+        "Moonshot AI (Kimi)",
+    ),
+    (
+        "KIMI_API_KEY",
+        "https://api.moonshot.ai/v1",
+        "moonshot",
+        "Moonshot AI (Kimi)",
+    ),
+    (
+        "DASHSCOPE_API_KEY",
+        "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+        "alibaba",
+        "Alibaba (Qwen)",
+    ),
+    (
+        "QWEN_API_KEY",
+        "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+        "alibaba",
+        "Alibaba (Qwen)",
+    ),
+    (
+        "DEEPSEEK_API_KEY",
+        "https://api.deepseek.com",
+        "deepseek",
+        "DeepSeek",
+    ),
+    (
+        "FIREWORKS_API_KEY",
+        "https://api.fireworks.ai/inference/v1",
+        "fireworks",
+        "Fireworks AI",
+    ),
+    (
+        "TOGETHER_API_KEY",
+        "https://api.together.xyz/v1",
+        "together",
+        "Together AI",
+    ),
+    (
+        "TOGETHER_AI_API_KEY",
+        "https://api.together.xyz/v1",
+        "together",
+        "Together AI",
+    ),
+    (
+        "PERPLEXITY_API_KEY",
+        "https://api.perplexity.ai",
+        "perplexity",
+        "Perplexity",
+    ),
+    (
+        "NVIDIA_API_KEY",
+        "https://integrate.api.nvidia.com/v1",
+        "nvidia",
+        "NVIDIA",
+    ),
+    (
+        "GITHUB_TOKEN",
+        "https://models.github.ai/inference",
+        "github-models",
+        "GitHub Models",
+    ),
+    (
+        "NOVITA_API_KEY",
+        "https://api.novita.ai/v3/openai",
+        "novita",
+        "Novita AI",
+    ),
+    (
+        "SILICONFLOW_API_KEY",
+        "https://api.siliconflow.cn/v1",
+        "siliconflow",
+        "SiliconFlow",
+    ),
+    (
+        "NEBIUS_API_KEY",
+        "https://api.studio.nebius.ai/v1",
+        "nebius",
+        "Nebius",
+    ),
+    (
+        "HF_TOKEN",
+        "https://api-inference.huggingface.co/models",
+        "huggingface",
+        "Hugging Face",
+    ),
+    (
+        "GOOGLE_API_KEY",
+        "https://generativelanguage.googleapis.com/v1beta",
+        "google",
+        "Google Gemini",
+    ),
+    (
+        "GEMINI_API_KEY",
+        "https://generativelanguage.googleapis.com/v1beta",
+        "google",
+        "Google Gemini",
+    ),
+];
+
 #[derive(Parser)]
 #[command(name = "rx4", version, about = "Agent harness engine")]
 struct Cli {
@@ -168,149 +311,6 @@ fn setup_provider() -> Option<Arc<dyn rx4::Provider>> {
             return Some(Arc::new(OpenAIProvider::anthropic(key)));
         }
     }
-
-    // OpenAI-compatible providers: (env_var, base_url, provider_id, display_name)
-    const COMPAT_PROVIDERS: &[(&str, &str, &str, &str)] = &[
-        ("XAI_API_KEY", "https://api.x.ai/v1", "xai", "xAI"),
-        (
-            "OPENAI_API_KEY",
-            "https://api.openai.com/v1",
-            "openai",
-            "OpenAI",
-        ),
-        (
-            "GROQ_API_KEY",
-            "https://api.groq.com/openai/v1",
-            "groq",
-            "Groq",
-        ),
-        (
-            "DEEPINFRA_API_KEY",
-            "https://api.deepinfra.com/v1/openai",
-            "deepinfra",
-            "Deep Infra",
-        ),
-        (
-            "CEREBRAS_API_KEY",
-            "https://api.cerebras.ai/v1",
-            "cerebras",
-            "Cerebras",
-        ),
-        (
-            "OPENROUTER_API_KEY",
-            "https://openrouter.ai/api/v1",
-            "openrouter",
-            "OpenRouter",
-        ),
-        (
-            "MISTRAL_API_KEY",
-            "https://api.mistral.ai/v1",
-            "mistral",
-            "Mistral AI",
-        ),
-        (
-            "MOONSHOT_API_KEY",
-            "https://api.moonshot.ai/v1",
-            "moonshot",
-            "Moonshot AI (Kimi)",
-        ),
-        (
-            "KIMI_API_KEY",
-            "https://api.moonshot.ai/v1",
-            "moonshot",
-            "Moonshot AI (Kimi)",
-        ),
-        (
-            "DASHSCOPE_API_KEY",
-            "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
-            "alibaba",
-            "Alibaba (Qwen)",
-        ),
-        (
-            "QWEN_API_KEY",
-            "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
-            "alibaba",
-            "Alibaba (Qwen)",
-        ),
-        (
-            "DEEPSEEK_API_KEY",
-            "https://api.deepseek.com",
-            "deepseek",
-            "DeepSeek",
-        ),
-        (
-            "FIREWORKS_API_KEY",
-            "https://api.fireworks.ai/inference/v1",
-            "fireworks",
-            "Fireworks AI",
-        ),
-        (
-            "TOGETHER_API_KEY",
-            "https://api.together.xyz/v1",
-            "together",
-            "Together AI",
-        ),
-        (
-            "TOGETHER_AI_API_KEY",
-            "https://api.together.xyz/v1",
-            "together",
-            "Together AI",
-        ),
-        (
-            "PERPLEXITY_API_KEY",
-            "https://api.perplexity.ai",
-            "perplexity",
-            "Perplexity",
-        ),
-        (
-            "NVIDIA_API_KEY",
-            "https://integrate.api.nvidia.com/v1",
-            "nvidia",
-            "NVIDIA",
-        ),
-        (
-            "GITHUB_TOKEN",
-            "https://models.github.ai/inference",
-            "github-models",
-            "GitHub Models",
-        ),
-        (
-            "NOVITA_API_KEY",
-            "https://api.novita.ai/v3/openai",
-            "novita",
-            "Novita AI",
-        ),
-        (
-            "SILICONFLOW_API_KEY",
-            "https://api.siliconflow.cn/v1",
-            "siliconflow",
-            "SiliconFlow",
-        ),
-        (
-            "NEBIUS_API_KEY",
-            "https://api.studio.nebius.ai/v1",
-            "nebius",
-            "Nebius",
-        ),
-        (
-            "HF_TOKEN",
-            "https://api-inference.huggingface.co/models",
-            "huggingface",
-            "Hugging Face",
-        ),
-        (
-            "GOOGLE_API_KEY",
-            "https://generativelanguage.googleapis.com/v1beta",
-            "google",
-            "Google Gemini",
-        ),
-        (
-            "GEMINI_API_KEY",
-            "https://generativelanguage.googleapis.com/v1beta",
-            "google",
-            "Google Gemini",
-        ),
-    ];
 
     for &(env_var, base_url, id, name) in COMPAT_PROVIDERS {
         if let Ok(key) = std::env::var(env_var) {
@@ -748,40 +748,31 @@ fn run_doctor() {
     println!();
 
     println!("api keys:");
-    const CHECK_KEYS: &[&str] = &[
-        "ANTHROPIC_API_KEY",
-        "OPENAI_API_KEY",
-        "XAI_API_KEY",
-        "GROQ_API_KEY",
-        "DEEPINFRA_API_KEY",
-        "CEREBRAS_API_KEY",
-        "OPENROUTER_API_KEY",
-        "MISTRAL_API_KEY",
-        "MOONSHOT_API_KEY",
-        "KIMI_API_KEY",
-        "DASHSCOPE_API_KEY",
-        "QWEN_API_KEY",
-        "DEEPSEEK_API_KEY",
-        "FIREWORKS_API_KEY",
-        "TOGETHER_API_KEY",
-        "PERPLEXITY_API_KEY",
-        "NVIDIA_API_KEY",
-        "GITHUB_TOKEN",
-        "NOVITA_API_KEY",
-        "SILICONFLOW_API_KEY",
-        "NEBIUS_API_KEY",
-        "HF_TOKEN",
-        "GOOGLE_API_KEY",
-        "GEMINI_API_KEY",
-    ];
+
     let mut any_key = false;
-    for key in CHECK_KEYS {
+
+    // Check Anthropic first
+    let anthropic_key = "ANTHROPIC_API_KEY";
+    let anthropic_set = std::env::var(anthropic_key)
+        .map(|v| !v.is_empty())
+        .unwrap_or(false);
+    if anthropic_set {
+        any_key = true;
+    }
+    print_status(
+        anthropic_key,
+        if anthropic_set { "set" } else { "not set" },
+        anthropic_set,
+    );
+
+    for &(key, _, _, _) in COMPAT_PROVIDERS {
         let set = std::env::var(key).map(|v| !v.is_empty()).unwrap_or(false);
         if set {
             any_key = true;
         }
         print_status(key, if set { "set" } else { "not set" }, set);
     }
+
     if !any_key {
         println!("\n  hint: set any one of the above env vars to use rx4");
     }
