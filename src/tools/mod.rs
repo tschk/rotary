@@ -129,7 +129,7 @@ pub fn register_builtin_tools(registry: &mut ToolRegistry) {
     registry.register(
         ToolDefinition::new_fn(
             "bash",
-            "Execute a shell command and return stdout/stderr. Optional timeout in seconds.",
+            "Execute a shell command and return stdout/stderr. Optional timeout in seconds. SECURITY WARNING: Allows arbitrary command execution; do not use with unsanitized external input.",
             r#"{"type":"object","properties":{"command":{"type":"string"},"cwd":{"type":"string"},"timeout":{"type":"integer"}},"required":["command"]}"#,
             fs::exec_bash,
         )
