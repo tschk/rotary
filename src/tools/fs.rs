@@ -20,7 +20,7 @@ pub(crate) fn exec_read(ctx: Arc<ToolContext>, args: String) -> ToolFuture {
             Ok(p) => p,
             Err(e) => return ToolResult::err("read", e),
         };
-        match std::fs::read_to_string(&full) {
+        match tokio::fs::read_to_string(&full).await {
             Ok(content) => {
                 let lines: Vec<&str> = content.lines().collect();
                 let start = offset.min(lines.len());
@@ -54,13 +54,13 @@ pub(crate) fn exec_write(ctx: Arc<ToolContext>, args: String) -> ToolFuture {
             Err(e) => return ToolResult::err("write", e),
         };
         if let Some(parent) = full.parent() {
-            if !parent.exists() {
-                if let Err(e) = std::fs::create_dir_all(parent) {
+            if !tokio::fs::try_exists(parent).await.unwrap_or(false) {
+                if let Err(e) = tokio::fs::create_dir_all(parent).await {
                     return ToolResult::err("write", format!("mkdir failed: {e}"));
                 }
             }
         }
-        match std::fs::write(&full, &content) {
+        match tokio::fs::write(&full, &content).await {
             Ok(_) => {
                 debug!("wrote {} bytes to {}", content.len(), full.display());
                 ToolResult::ok(
@@ -91,7 +91,7 @@ pub(crate) fn exec_edit(ctx: Arc<ToolContext>, args: String) -> ToolFuture {
             Ok(p) => p,
             Err(e) => return ToolResult::err("edit", e),
         };
-        let content = match std::fs::read_to_string(&full) {
+        let content = match tokio::fs::read_to_string(&full).await {
             Ok(c) => c,
             Err(e) => return ToolResult::err("edit", format!("read failed: {e}")),
         };
@@ -106,7 +106,7 @@ pub(crate) fn exec_edit(ctx: Arc<ToolContext>, args: String) -> ToolFuture {
             );
         }
         let new_content = content.replacen(&old_string, &new_string, 1);
-        match std::fs::write(&full, &new_content) {
+        match tokio::fs::write(&full, &new_content).await {
             Ok(_) => ToolResult::ok("edit", format!("edited {}", path)),
             Err(e) => ToolResult::err("edit", format!("write failed: {e}")),
         }
@@ -420,16 +420,21 @@ pub(crate) fn exec_ls(ctx: Arc<ToolContext>, args: String) -> ToolFuture {
             Ok(p) => p,
             Err(e) => return ToolResult::err("ls", e),
         };
-        match std::fs::read_dir(&full) {
-            Ok(entries) => {
-                let mut items: Vec<(String, bool)> = entries
-                    .flatten()
-                    .filter_map(|e| {
-                        let name = e.file_name().to_string_lossy().to_string();
-                        let is_dir = e.file_type().ok()?.is_dir();
-                        Some((name, is_dir))
-                    })
-                    .collect();
+        match tokio::fs::read_dir(&full).await {
+            Ok(mut entries) => {
+                let mut items: Vec<(String, bool)> = Vec::new();
+                loop {
+                    match entries.next_entry().await {
+                        Ok(Some(e)) => {
+                            let name = e.file_name().to_string_lossy().to_string();
+                            if let Ok(file_type) = e.file_type().await {
+                                items.push((name, file_type.is_dir()));
+                            }
+                        }
+                        Ok(None) => break,
+                        Err(_) => continue,
+                    }
+                }
                 items.sort_by(|a, b| a.0.cmp(&b.0));
                 let out: Vec<String> = items
                     .iter()
