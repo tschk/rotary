@@ -211,3 +211,21 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub fn print_banner() {
     eprintln!("rx4 {VERSION} — agent harness engine");
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_print_banner() {
+        // print_banner just prints to stderr.
+        // We call it to ensure it doesn't panic.
+        print_banner();
+    }
+
+    #[test]
+    fn test_version() {
+        // Ensure VERSION is properly populated from the crate version.
+        assert!(!VERSION.is_empty(), "VERSION should not be empty");
+    }
+}
