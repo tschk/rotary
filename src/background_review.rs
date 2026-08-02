@@ -100,6 +100,19 @@ impl<'a> BackgroundReviewer<'a> {
 
         let mut results = Vec::new();
 
+        self.detect_user_corrections(conversation, &mut results);
+        self.detect_non_trivial_techniques(conversation, outcome, &mut results);
+        self.detect_skill_gaps(conversation, &mut results);
+
+        Ok(results)
+    }
+
+    /// Helper to detect user corrections in the conversation.
+    fn detect_user_corrections(
+        &self,
+        conversation: &[ConversationTurn],
+        results: &mut Vec<ReviewResult>,
+    ) {
         // Detect user corrections.
         for turn in conversation {
             if !turn.role.eq_ignore_ascii_case("user") {
@@ -139,7 +152,15 @@ impl<'a> BackgroundReviewer<'a> {
                 confidence_delta: delta,
             });
         }
+    }
 
+    /// Helper to detect non-trivial techniques (e.g. 3+ tool calls).
+    fn detect_non_trivial_techniques(
+        &self,
+        conversation: &[ConversationTurn],
+        outcome: SkillOutcome,
+        results: &mut Vec<ReviewResult>,
+    ) {
         // Detect non-trivial techniques: assistant turns with 3+ tool calls
         // that succeeded.
         if outcome == SkillOutcome::Success {
@@ -181,7 +202,14 @@ impl<'a> BackgroundReviewer<'a> {
                 });
             }
         }
+    }
 
+    /// Helper to detect skill gaps (no existing skill matched the intent).
+    fn detect_skill_gaps(
+        &self,
+        conversation: &[ConversationTurn],
+        results: &mut Vec<ReviewResult>,
+    ) {
         // Detect skill gaps: if no existing skill matched the conversation intent.
         if self.match_skill_for_conversation(conversation).is_none() {
             let first_user = conversation
@@ -203,8 +231,6 @@ impl<'a> BackgroundReviewer<'a> {
                 });
             }
         }
-
-        Ok(results)
     }
 
     /// Apply review results to the skill engine.
