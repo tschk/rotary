@@ -5,6 +5,9 @@
 ### Added
 - Opt-in autoresearch sessions with resumable `.auto/` state, structured
   `METRIC name=value` parsing, correctness checks, and keep/discard decisions.
+- Isolated `AutoresearchController` with detached Git checkpoints, rollback,
+  median measurements, budgets, cancellation, append-only lifecycle events,
+  and explicit final-patch acceptance; see `docs/AUTORESEARCH.md`.
 - Stable tool-definition ordering and a loadout fingerprint for prompt-cache
   diagnostics.
 - Provider-reported token and cache usage in `Event::Usage` and

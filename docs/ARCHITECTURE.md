@@ -82,9 +82,12 @@ invoke them — rotary never schedules on its own.
 
 rotary is the reusable engine. telekinesis is the product host. Rotary owns
 the loop, providers, tools, permissions primitives, session model, compaction
-capability, MCP/skills/subagent capabilities, and typed lifecycle events.
-Telekinesis owns persistence implementations, checkpoints, scheduling,
-transport, pi compatibility, ACP, IPC, SSE, slash commands, and surfaces.
+capability, MCP/skills/subagent capabilities, typed lifecycle events, and the
+opt-in autoresearch controller's Git/checkpoint capability.
+Telekinesis owns persistence implementations for its product state, scheduling,
+transport, pi compatibility, ACP, IPC, SSE, slash commands, and surfaces. For
+autoresearch, Telekinesis owns the user-facing schedule and approval flow
+while rx4 owns the isolated-worktree mechanics and acceptance invariant.
 
 The current `acp.rs`, `ipc.rs`, `sse.rs`, `slash.rs`, and binary wiring are
 compatibility inventory. They migrate to telekinesis adapters in phases; they
@@ -94,6 +97,12 @@ Session storage follows the same seam: rotary exposes session state and pure
 snapshot contracts, while hosts choose JSONL, SQLite, or another repository.
 Compaction algorithms remain engine capabilities; hosts choose when and how
 to schedule them.
+
+Autoresearch follows the same seam: `AutoresearchController` exposes one
+hypothesis-at-a-time execution, measurements, rollback, budgets, cancellation,
+and typed events. The host supplies hypothesis generation, the agent/session
+callback, UI, and explicit final-patch consent. See
+[`docs/AUTORESEARCH.md`](AUTORESEARCH.md) for the minimal Telekinesis contract.
 
 The initial refactor stays within this crate. A workspace split happens only
 when separate release or dependency boundaries are proven necessary.

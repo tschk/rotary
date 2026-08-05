@@ -65,6 +65,12 @@ each candidate change. The session persists results in `.auto/log.jsonl` and
 returns `keep`, `discard`, `crash`, or `checks_failed`. Hosts decide when to
 loop and whether to commit or revert a candidate.
 
+For isolated rollback, repeated median measurements, budgets, structured
+lifecycle events, and explicit final-patch acceptance, use
+[`AutoresearchController`](docs/AUTORESEARCH.md). The controller is an SDK
+capability; attaching it to an `Agent` does not schedule it or mutate the
+user's checkout.
+
 ## Compatibility IPC adapter
 
 ```bash
@@ -144,11 +150,11 @@ flowchart TD
   opt-in: `Agent::set_graph_memory` extracts nodes/edges after each run.
 - **Dream scheduler** (`graph-memory`) — consolidation capability; host opt-in
   `Agent::enable_auto_dream(true)` runs one cycle after graph extract.
-- **Autoresearch** — opt-in experiment sessions persist `.auto/prompt.md`,
-  `.auto/measure.sh`, and append-only `.auto/log.jsonl`; `METRIC name=value`
-  output is classified as keep, discard, crash, or checks-failed. Register the
-  tools with `register_autoresearch_tools`; rotary reports the decision while
-  the host owns commit/revert policy and loop scheduling.
+- **Autoresearch** — the legacy opt-in session tools persist `.auto/` metadata;
+  `AutoresearchController` adds detached Git worktrees, checkpoint rollback,
+  warmups/median aggregation, required guards, budgets, append-only typed
+  events, and explicit final-patch acceptance. It is host-driven and never
+  mutates the real checkout automatically.
 - **Model router / multi-agent / cost / repo map / rollout** — library APIs for
   hosts; not auto-selected inside `Agent::prompt`.
 - **Secret redaction** — pattern-based redaction applied to tool results.
