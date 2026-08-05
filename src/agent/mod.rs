@@ -239,6 +239,8 @@ pub struct Agent {
     tool_cache: Cache<String, ToolResult>,
     pub budget: Option<AgentBudget>,
     pub pricing_registry: PricingRegistry,
+    /// Provider-reported prompt-cache usage for this agent session.
+    pub cache_stats: crate::prompt_cache::CacheStatsTracker,
     session_cost: SessionCost,
     budget_start: Option<Instant>,
 }
@@ -293,6 +295,7 @@ impl Agent {
                 .build(),
             budget: None,
             pricing_registry: PricingRegistry::new(),
+            cache_stats: crate::prompt_cache::CacheStatsTracker::new(),
             session_cost: SessionCost::new(),
             budget_start: None,
         };
@@ -506,6 +509,11 @@ impl Agent {
 
     pub fn session_cost(&self) -> &SessionCost {
         &self.session_cost
+    }
+
+    /// Current provider prompt-cache statistics.
+    pub fn cache_stats(&self) -> crate::prompt_cache::CacheStats {
+        self.cache_stats.stats()
     }
 
     fn check_budget(&self) -> Option<String> {
@@ -792,6 +800,8 @@ impl Agent {
             let mut tool_calls: Vec<ToolCall> = Vec::new();
             #[allow(unused_assignments)]
             let mut assistant_content = String::new();
+            #[allow(unused_mut)]
+            let mut provider_usage: Option<TokenUsage> = None;
 
             self.emit(Event::MessageStart {
                 role: Role::Assistant,
@@ -876,6 +886,9 @@ impl Agent {
                             });
                             self.emit(Event::ToolCall(call));
                         }
+                        Ok(StreamEvent::Usage(usage)) => {
+                            provider_usage = Some(usage);
+                        }
                         Ok(StreamEvent::Done) => break,
                         Err(e) => {
                             error!("stream error: {e}");
@@ -910,18 +923,22 @@ impl Agent {
                     .map(crate::compaction::estimate_tokens)
                     .unwrap_or(0);
             let output_tokens = crate::compaction::estimate_tokens(&assistant_content);
-            let usage = TokenUsage {
+            let estimated = provider_usage.is_none();
+            let usage = provider_usage.unwrap_or(TokenUsage {
                 input_tokens,
                 output_tokens,
                 cache_read_tokens: 0,
                 cache_write_tokens: 0,
-            };
+            });
+            if !estimated {
+                self.cache_stats.record_tokens(usage);
+            }
             self.session_cost
                 .record(&self.model, usage, &self.pricing_registry);
             self.emit(Event::Usage {
                 model: self.model.clone(),
                 usage,
-                estimated: true,
+                estimated,
             });
             self.emit(Event::ContextUsage {
                 used_tokens: self.context_tokens(),

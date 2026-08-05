@@ -49,6 +49,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
+### Opt-in autoresearch
+
+Autoresearch stays out of the default tool loadout. A host that has a
+measurable optimization task can enable it explicitly:
+
+```rust
+let handle = rx4::new_autoresearch_handle();
+rx4::register_autoresearch_tools(&mut tools, handle);
+```
+
+Then initialize a session with `init_experiment`, let the benchmark emit
+`METRIC total_ms=123` from `.auto/measure.sh`, and call `run_experiment` after
+each candidate change. The session persists results in `.auto/log.jsonl` and
+returns `keep`, `discard`, `crash`, or `checks_failed`. Hosts decide when to
+loop and whether to commit or revert a candidate.
+
 ## Compatibility IPC adapter
 
 ```bash
@@ -128,11 +144,20 @@ flowchart TD
   opt-in: `Agent::set_graph_memory` extracts nodes/edges after each run.
 - **Dream scheduler** (`graph-memory`) — consolidation capability; host opt-in
   `Agent::enable_auto_dream(true)` runs one cycle after graph extract.
+- **Autoresearch** — opt-in experiment sessions persist `.auto/prompt.md`,
+  `.auto/measure.sh`, and append-only `.auto/log.jsonl`; `METRIC name=value`
+  output is classified as keep, discard, crash, or checks-failed. Register the
+  tools with `register_autoresearch_tools`; rotary reports the decision while
+  the host owns commit/revert policy and loop scheduling.
 - **Model router / multi-agent / cost / repo map / rollout** — library APIs for
   hosts; not auto-selected inside `Agent::prompt`.
 - **Secret redaction** — pattern-based redaction applied to tool results.
 - **Prompt caching** — Anthropic `cache_control` applied automatically on
-  `OpenAIProvider` stream bodies when `provider_id == "anthropic"`.
+  `OpenAIProvider` stream bodies when `provider_id == "anthropic"`; provider
+  usage is surfaced through `Event::Usage` and `Agent::cache_stats()`.
+- **Context discipline** — tool definitions are serialized in stable name
+  order, and `ToolRegistry::definitions_fingerprint()` lets hosts detect
+  loadout changes that can invalidate a cached prompt prefix.
 - **OS sandbox** — optional seatbelt/bwrap wrap for bash via
   `Agent::enable_os_sandbox` (userspace `SandboxManager` still separate).
 - **Slash command parsing** — `/command` parsing for host UIs.

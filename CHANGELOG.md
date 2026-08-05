@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- Opt-in autoresearch sessions with resumable `.auto/` state, structured
+  `METRIC name=value` parsing, correctness checks, and keep/discard decisions.
+- Stable tool-definition ordering and a loadout fingerprint for prompt-cache
+  diagnostics.
+- Provider-reported token and cache usage in `Event::Usage` and
+  `Agent::cache_stats()`.
+
 ## [0.5.0] — 2026-07-30
 
 ### Breaking

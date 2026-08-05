@@ -316,6 +316,14 @@ impl CacheStatsTracker {
         self.total_cache_write_tokens += cache_write;
     }
 
+    /// Record normalized usage reported by a provider stream.
+    pub fn record_tokens(&mut self, usage: crate::cost::TokenUsage) {
+        self.call_count += 1;
+        self.total_input_tokens += usage.input_tokens;
+        self.total_cache_read_tokens += usage.cache_read_tokens;
+        self.total_cache_write_tokens += usage.cache_write_tokens;
+    }
+
     /// Compute the current cache statistics snapshot.
     pub fn stats(&self) -> CacheStats {
         let cache_hit_rate = if self.total_input_tokens > 0 {

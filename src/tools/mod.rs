@@ -213,6 +213,15 @@ pub fn register_builtin_tools(registry: &mut ToolRegistry) {
     }
 }
 
+/// Register the opt-in autoresearch tools. They are kept separate from the
+/// default coding loadout so ordinary prompts retain a small, stable prefix.
+pub fn register_autoresearch_tools(
+    registry: &mut ToolRegistry,
+    handle: crate::autoresearch::AutoresearchHandle,
+) {
+    crate::autoresearch::register_tools(registry, handle);
+}
+
 /// Register spawn_agent backed by a host-owned SubagentManager.
 pub fn register_spawn_agent_tool(
     registry: &mut ToolRegistry,

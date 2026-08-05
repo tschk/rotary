@@ -250,11 +250,35 @@ impl ToolRegistry {
     }
 
     pub fn definitions(&self) -> Vec<serde_json::Value> {
-        self.tools.iter().map(|t| serde_json::json!({
-            "name": t.name,
-            "description": t.description,
-            "parameters": serde_json::from_str::<serde_json::Value>(&t.parameters_json).unwrap_or(serde_json::Value::Null),
-        })).collect()
+        let mut definitions: Vec<serde_json::Value> = self
+            .tools
+            .iter()
+            .map(|t| {
+                serde_json::json!({
+                    "name": t.name,
+                    "description": t.description,
+                    "parameters": serde_json::from_str::<serde_json::Value>(&t.parameters_json).unwrap_or(serde_json::Value::Null),
+                })
+            })
+            .collect();
+        // DashMap iteration order is intentionally unspecified. Stable tool
+        // ordering keeps the serialized prompt prefix stable for providers
+        // that cache it automatically.
+        definitions.sort_by(|a, b| {
+            a.get("name")
+                .and_then(serde_json::Value::as_str)
+                .cmp(&b.get("name").and_then(serde_json::Value::as_str))
+        });
+        definitions
+    }
+
+    /// Stable digest of the tool loadout, useful for host cache diagnostics.
+    pub fn definitions_fingerprint(&self) -> String {
+        use sha2::{Digest, Sha256};
+
+        let bytes = serde_json::to_vec(&self.definitions()).unwrap_or_default();
+        let digest = Sha256::digest(bytes);
+        digest.iter().map(|byte| format!("{byte:02x}")).collect()
     }
 
     pub async fn execute(
@@ -285,12 +309,30 @@ impl Default for ToolRegistry {
 
 #[cfg(test)]
 mod tests {
-    use super::normalize_tool_name;
+    use super::*;
+
+    fn noop(_ctx: Arc<ToolContext>, _args: String) -> ToolFuture {
+        Box::pin(async { ToolResult::ok("noop", "ok") })
+    }
 
     #[test]
     fn normalizes_web_search_aliases() {
         assert_eq!(normalize_tool_name("web_search"), "web_search");
         assert_eq!(normalize_tool_name("darash"), "web_search");
         assert_eq!(normalize_tool_name("darash_search"), "web_search");
+    }
+
+    #[test]
+    fn definitions_are_stable_and_fingerprinted() {
+        let mut registry = ToolRegistry::new();
+        registry.register(ToolDefinition::new_fn("zeta", "z", "{}", noop));
+        registry.register(ToolDefinition::new_fn("alpha", "a", "{}", noop));
+        let definitions = registry.definitions();
+        let names: Vec<_> = definitions
+            .iter()
+            .map(|definition| definition["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, vec!["alpha", "zeta"]);
+        assert_eq!(registry.definitions_fingerprint().len(), 64);
     }
 }

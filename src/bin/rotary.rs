@@ -724,7 +724,7 @@ fn run_version() {
     println!("  memory:       {}", cfg_feature("memory"));
     println!("  mcp:          {}", cfg_feature("mcp"));
     println!("  sqlite-sessions: {}", cfg_feature("sqlite-sessions"));
-    println!("modules: agent, compaction, config, context, cost, extract, guardrails, hooks, mode, permissions, plugin, prompt_cache, provider, ranking, repomap, rollout, routing, sandbox, secrets, session, slash, sse, tools, models, acp, marketplace");
+    println!("modules: agent, autoresearch, compaction, config, context, cost, extract, guardrails, hooks, mode, permissions, plugin, prompt_cache, provider, ranking, repomap, rollout, routing, sandbox, secrets, session, slash, sse, tools, models, acp, marketplace");
 }
 
 fn cfg_feature(name: &str) -> &'static str {
