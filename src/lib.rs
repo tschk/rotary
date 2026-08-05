@@ -23,6 +23,7 @@
 
 pub mod agent;
 pub mod autoresearch;
+pub mod autoresearch_controller;
 #[cfg(feature = "skills")]
 pub mod background_review;
 pub mod compaction;
@@ -101,6 +102,13 @@ pub use autoresearch::{
     new_handle as new_autoresearch_handle, parse_metrics, AutoresearchConfig, AutoresearchError,
     AutoresearchHandle, AutoresearchSession, ExperimentMeasurement, ExperimentRun,
     ExperimentStatus, MetricDirection,
+};
+pub use autoresearch_controller::{
+    new_controller_handle, AggregatedMeasurement, AutoresearchBudget, AutoresearchCancellation,
+    AutoresearchCompletion, AutoresearchController, AutoresearchControllerConfig,
+    AutoresearchControllerError, AutoresearchControllerHandle, AutoresearchEvent,
+    AutoresearchIteration, AutoresearchSubscriber, BaselineResult, BudgetKind, CompletionReason,
+    ExperimentHypothesis, ExperimentWorkspace, FinalPatch, HypothesisOutcome, IterationStatus,
 };
 #[cfg(feature = "skills")]
 pub use background_review::{

@@ -212,6 +212,10 @@ pub struct Agent {
     pub max_tool_iterations: usize,
     pub auto_compact_after: usize,
     pub workspace_root: std::path::PathBuf,
+    /// Optional host-owned autoresearch controller. Attaching it exposes the
+    /// SDK primitive without scheduling iterations or changing tool policy.
+    pub autoresearch_controller:
+        Option<crate::autoresearch_controller::AutoresearchControllerHandle>,
     pub sandbox: Option<Arc<crate::sandbox::SandboxManager>>,
     pub os_sandbox: Option<Arc<crate::sandbox::OsSandboxRunner>>,
     #[cfg(feature = "ipc")]
@@ -267,6 +271,7 @@ impl Agent {
             max_tool_iterations: 50,
             auto_compact_after: 0,
             workspace_root: std::env::current_dir().unwrap_or_else(|_| ".".into()),
+            autoresearch_controller: None,
             sandbox: None,
             os_sandbox: None,
             #[cfg(feature = "ipc")]
@@ -439,6 +444,26 @@ impl Agent {
                 tracing::warn!("OS sandbox unavailable after workspace change — shell tools will be blocked: {e}");
             }
         }
+    }
+
+    /// Attach an explicitly created autoresearch controller. The controller is
+    /// host-driven; the agent loop never starts, schedules, accepts, or
+    /// applies an experiment because of this attachment.
+    pub fn set_autoresearch_controller(
+        &mut self,
+        controller: crate::autoresearch_controller::AutoresearchControllerHandle,
+    ) {
+        self.autoresearch_controller = Some(controller);
+    }
+
+    pub fn autoresearch_controller(
+        &self,
+    ) -> Option<crate::autoresearch_controller::AutoresearchControllerHandle> {
+        self.autoresearch_controller.clone()
+    }
+
+    pub fn clear_autoresearch_controller(&mut self) {
+        self.autoresearch_controller = None;
     }
 
     /// Attach a `zkr`-backed self-improvement loop.
