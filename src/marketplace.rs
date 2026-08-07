@@ -543,11 +543,10 @@ fn hash_entries(
         let file_name = entry.file_name();
         let file_name_str = file_name.to_string_lossy();
 
-        let file_type = entry
-            .file_type()
-            .map_err(|e| MarketplaceError::InstallFailed(e.to_string()))?;
+        let metadata =
+            std::fs::metadata(&path).map_err(|e| MarketplaceError::InstallFailed(e.to_string()))?;
 
-        if file_type.is_dir() {
+        if metadata.is_dir() {
             if file_name_str == ".git" {
                 continue;
             }
@@ -952,6 +951,21 @@ mod tests {
             }
             other => panic!("expected IntegrityCheckFailed, got {other:?}"),
         }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_verify_integrity_with_directory_symlink() {
+        use std::os::unix::fs::symlink;
+        let tmp = TempDir::new().unwrap();
+        let source_dir = tmp.path().join("source");
+        write_plugin_dir(&source_dir, &sample_manifest());
+        let subdir = source_dir.join("extra");
+        fs::create_dir(&subdir).unwrap();
+        fs::write(subdir.join("data.txt"), "data").unwrap();
+        let link = source_dir.join("extra_link");
+        symlink(&subdir, &link).unwrap();
+        assert!(compute_dir_sha256(&source_dir).is_ok());
     }
 
     #[test]
