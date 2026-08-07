@@ -115,6 +115,14 @@ mod inner {
         pub fn search(&self, query: &str, limit: usize) -> Result<Vec<MemoryEntry>, MemoryError> {
             let conn = self.conn.lock();
 
+            // Sanitize the query to prevent FTS syntax errors or SQL injection.
+            // Split by whitespace, escape inner quotes, and wrap each token in quotes.
+            let sanitized_query = query
+                .split_whitespace()
+                .map(|token| format!("\"{}\"", token.replace('"', "\"\"")))
+                .collect::<Vec<String>>()
+                .join(" ");
+
             let mut stmt = conn.prepare(
                 "SELECT m.id, m.key, m.content, m.source, m.created, m.accessed, m.access_count,
                         bm25(memories_fts) AS score
@@ -125,7 +133,7 @@ mod inner {
                  LIMIT ?2",
             )?;
 
-            let rows = stmt.query_map(params![query, limit as i64], |row| {
+            let rows = stmt.query_map(params![sanitized_query, limit as i64], |row| {
                 let id: String = row.get(0)?;
                 let key: String = row.get(1)?;
                 let content: String = row.get(2)?;
@@ -340,6 +348,17 @@ mod inner {
         fn get_missing_returns_none() {
             let s = store();
             assert!(s.get("nonexistent").unwrap().is_none());
+        }
+
+        #[test]
+        fn search_with_quotes_does_not_crash() {
+            let s = store();
+            s.store("a", "rust memory management", "test").unwrap();
+
+            // This query contains quotes which would normally cause an FTS syntax error
+            // if not sanitized properly.
+            let results = s.search("rust \"memory\"", 10).unwrap();
+            assert!(!results.is_empty());
         }
     }
 }
