@@ -172,6 +172,20 @@ impl SandboxManager {
         &self.workspace_root
     }
 
+    /// Return the declarative configuration, including host allow/deny lists.
+    /// Hosts can use this when moving an agent to a new workspace without
+    /// accidentally dropping custom confinement settings.
+    pub fn config(&self) -> SandboxConfig {
+        SandboxConfig {
+            profile: self.profile.clone(),
+            workspace_root: self.workspace_root.clone(),
+            allow_paths: self.allow_paths.clone(),
+            deny_paths: self.deny_paths.clone(),
+            allow_network: self.allow_network,
+            allow_env: self.allow_env.clone(),
+        }
+    }
+
     /// Validate that `path` may be accessed, with `write` indicating whether
     /// the caller intends to mutate it.
     pub fn validate_path(&self, path: &Path, write: bool) -> Result<(), SandboxError> {

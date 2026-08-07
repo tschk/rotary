@@ -96,7 +96,8 @@ pub mod marketplace;
 
 pub use agent::{
     normalize_tool_name, Agent, AgentBudget, Event, ToolCall, ToolContext, ToolDefinition,
-    ToolEffect, ToolExecuteBox, ToolExecuteFn, ToolExecutor, ToolFuture, ToolRegistry, ToolResult,
+    ToolEffect, ToolErrorKind, ToolExecuteBox, ToolExecuteFn, ToolExecutor, ToolFuture,
+    ToolRegistry, ToolResult,
 };
 pub use autoresearch::{
     new_handle as new_autoresearch_handle, parse_metrics, AutoresearchConfig, AutoresearchError,

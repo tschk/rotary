@@ -8,9 +8,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use tracing::info;
 
-#[cfg(feature = "ipc")]
 use cancellation_token::{CancellationToken, CancellationTokenSource};
-#[cfg(feature = "ipc")]
 use parking_lot::RwLock;
 
 pub fn normalize_tool_name(name: &str) -> &str {
@@ -37,13 +35,11 @@ pub fn normalize_tool_name(name: &str) -> &str {
 
 pub type ToolFuture = Pin<Box<dyn Future<Output = ToolResult> + Send>>;
 
-#[cfg(feature = "ipc")]
 #[derive(Clone)]
 pub struct CancellationHandle {
     source: Arc<RwLock<CancellationTokenSource>>,
 }
 
-#[cfg(feature = "ipc")]
 impl CancellationHandle {
     pub(crate) fn new() -> Self {
         Self {
@@ -75,6 +71,15 @@ pub struct ToolResult {
     pub id: String,
     pub content: String,
     pub is_error: bool,
+    /// Structured classification for errors that require host approval.
+    /// This avoids making the agent loop infer control flow from text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_kind: Option<ToolErrorKind>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ToolErrorKind {
+    ApprovalRequired,
 }
 
 impl ToolResult {
@@ -83,6 +88,7 @@ impl ToolResult {
             id: id.into(),
             content: content.into(),
             is_error: false,
+            error_kind: None,
         }
     }
     pub fn err(id: impl Into<String>, content: impl Into<String>) -> Self {
@@ -90,14 +96,27 @@ impl ToolResult {
             id: id.into(),
             content: content.into(),
             is_error: true,
+            error_kind: None,
         }
+    }
+
+    pub fn approval_required(id: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            content: "approval required".to_string(),
+            is_error: true,
+            error_kind: Some(ToolErrorKind::ApprovalRequired),
+        }
+    }
+
+    pub fn requires_approval(&self) -> bool {
+        self.error_kind == Some(ToolErrorKind::ApprovalRequired)
     }
 }
 
 /// Context passed to tool execution — provides workspace root, cancellation, etc.
 pub struct ToolContext {
     pub workspace_root: std::path::PathBuf,
-    #[cfg(feature = "ipc")]
     pub cancellation: CancellationToken,
     pub sandbox: Option<std::sync::Arc<crate::sandbox::SandboxManager>>,
     pub os_sandbox: Option<std::sync::Arc<crate::sandbox::OsSandboxRunner>>,
@@ -119,7 +138,6 @@ impl ToolContext {
     pub fn new(workspace_root: impl Into<std::path::PathBuf>) -> Self {
         Self {
             workspace_root: workspace_root.into(),
-            #[cfg(feature = "ipc")]
             cancellation: CancellationToken::new(false),
             sandbox: None,
             os_sandbox: None,

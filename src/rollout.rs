@@ -118,12 +118,13 @@ impl RolloutEntry {
         }
     }
 
-    /// Returns a mutable reference to the content field, if present.
+    /// Returns a mutable reference to user/model-controlled text, if present.
     fn content_mut(&mut self) -> Option<&mut String> {
         match self {
             RolloutEntry::Message { content, .. } => Some(content),
             RolloutEntry::ToolCall { arguments, .. } => Some(arguments),
             RolloutEntry::ToolResult { content, .. } => Some(content),
+            RolloutEntry::Error { message, .. } => Some(message),
             _ => None,
         }
     }
@@ -156,6 +157,7 @@ impl RolloutManager {
     pub fn record(&mut self, entry: &RolloutEntry) -> Result<()> {
         let mut to_write = entry.clone();
         if let Some(content) = to_write.content_mut() {
+            *content = crate::secrets::Redactor::new().redact(content);
             if content.len() > PAYLOAD_THRESHOLD {
                 let rollout_dir = self.dir.join("rollout");
                 let path = write_payload(&rollout_dir, content)?;
@@ -303,6 +305,28 @@ mod tests {
         } else {
             panic!("expected message entry");
         }
+    }
+
+    #[test]
+    fn record_redacts_secret_content() {
+        let tmp = temp_dir();
+        let secret = "sk-abc123def456ghi789jkl012mno345pqr678stu901vwx234yza567b";
+        let mut manager = RolloutManager::new(tmp.path().to_path_buf()).expect("new manager");
+        manager
+            .record(&RolloutEntry::Message {
+                role: "assistant".into(),
+                content: secret.into(),
+                timestamp: Utc::now(),
+            })
+            .expect("record secret");
+        manager.close().expect("close");
+
+        let loaded = RolloutManager::load(tmp.path()).expect("load");
+        assert!(matches!(
+            &loaded[0],
+            RolloutEntry::Message { content, .. }
+                if content == "[REDACTED:api-key]"
+        ));
     }
 
     #[test]

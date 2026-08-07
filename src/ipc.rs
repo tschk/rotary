@@ -4,7 +4,6 @@ use crate::agent::{Agent, ToolRegistry};
 use crate::plugin::PluginRegistry;
 use crate::session::Session;
 use serde_json::Value;
-use std::os::unix::net::UnixListener;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use subtle::ConstantTimeEq;
@@ -43,10 +42,18 @@ impl IpcServer {
     }
 
     pub fn attach_agent(&self, agent: Agent) {
-        let agent_arc = self.agent.clone();
-        tokio::spawn(async move {
-            *agent_arc.lock().await = agent;
-        });
+        // This synchronous setup method is intended to be called before the
+        // server starts. `try_lock` makes that contract explicit instead of
+        // silently racing a request that may observe the default agent.
+        let mut guard = self
+            .agent
+            .try_lock()
+            .expect("attach_agent must run before IPC requests are active");
+        *guard = agent;
+    }
+
+    pub async fn attach_agent_async(&self, agent: Agent) {
+        *self.agent.lock().await = agent;
     }
 
     pub fn attach_tools(&self, tools: ToolRegistry) {
@@ -61,25 +68,25 @@ impl IpcServer {
         *self.session.lock().unwrap() = session;
     }
 
-    pub fn run(&self) -> std::io::Result<()> {
+    /// Run the IPC server on the current Tokio runtime.
+    pub async fn run_async(&self) -> std::io::Result<()> {
         let path = Path::new(&self.socket_path);
         if path.exists() {
             std::fs::remove_file(path)?;
         }
-        let listener = UnixListener::bind(path)?;
+        let listener = tokio::net::UnixListener::bind(path)?;
         {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
         }
         info!("IPC server listening on {}", self.socket_path);
 
-        let runtime = tokio::runtime::Handle::try_current().map_err(std::io::Error::other)?;
         let this = self.clone();
-        for stream in listener.incoming() {
-            match stream {
-                Ok(stream) => {
+        loop {
+            match listener.accept().await {
+                Ok((stream, _)) => {
                     let s = this.clone();
-                    runtime.spawn(async move {
+                    tokio::spawn(async move {
                         if let Err(e) = s.handle_connection(stream).await {
                             warn!("connection error: {e}");
                         }
@@ -88,27 +95,38 @@ impl IpcServer {
                 Err(e) => warn!("accept error: {e}"),
             }
         }
-        Ok(())
     }
 
-    async fn handle_connection(
-        &self,
-        mut stream: std::os::unix::net::UnixStream,
-    ) -> std::io::Result<()> {
-        use std::io::{BufRead, BufReader, Write};
-        let reader = BufReader::new(stream.try_clone()?);
-        for line in reader.lines() {
-            let line = line?;
+    /// Blocking compatibility wrapper for hosts that run `serve` from a
+    /// synchronous entry point. Async hosts should call [`Self::run_async`].
+    pub fn run(&self) -> std::io::Result<()> {
+        tokio::runtime::Runtime::new()?.block_on(self.run_async())
+    }
+
+    async fn handle_connection(&self, stream: tokio::net::UnixStream) -> std::io::Result<()> {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        let (reader, mut writer) = stream.into_split();
+        let mut lines = BufReader::new(reader).lines();
+        while let Some(line) = lines.next_line().await? {
             if line.is_empty() {
                 continue;
             }
             let response = self.handle_request(&line).await;
-            writeln!(stream, "{response}")?;
+            writer.write_all(response.as_bytes()).await?;
+            writer.write_all(b"\n").await?;
         }
         Ok(())
     }
 
     async fn handle_request(&self, line: &str) -> String {
+        let required_token = std::env::var("RX4_IPC_TOKEN")
+            .ok()
+            .filter(|s| !s.is_empty());
+        self.handle_request_with_token(line, required_token.as_deref())
+            .await
+    }
+
+    async fn handle_request_with_token(&self, line: &str, required_token: Option<&str>) -> String {
         let req: Value = match serde_json::from_str(line) {
             Ok(v) => v,
             Err(e) => return error_response(None, -32700, &format!("parse error: {e}")),
@@ -117,9 +135,6 @@ impl IpcServer {
         let method = req.get("method").and_then(|m| m.as_str()).unwrap_or("");
         let params = req.get("params").cloned().unwrap_or(Value::Null);
 
-        let required_token = std::env::var("RX4_IPC_TOKEN")
-            .ok()
-            .filter(|s| !s.is_empty());
         let provided = params.get("token").and_then(|t| t.as_str()).unwrap_or("");
         let mutating = matches!(
             method,
@@ -128,13 +143,15 @@ impl IpcServer {
                 | "set_policy"
                 | "set_approver"
                 | "clear_authorizer"
+                | "set_model"
                 | "cancel"
                 | "reset"
                 | "load_session"
                 | "save_session"
+                | "session_clear"
         );
         if method != "ping" {
-            match &required_token {
+            match required_token {
                 Some(token)
                     if provided.len() != token.len()
                         || !bool::from(provided.as_bytes().ct_eq(token.as_bytes())) =>
@@ -275,12 +292,15 @@ impl IpcServer {
                     .and_then(|t| t.as_str())
                     .unwrap_or("")
                     .to_string();
-                let agent = self.agent.clone();
-                tokio::spawn(async move {
-                    let mut a = agent.lock().await;
-                    let _ = a.prompt(&text).await;
-                });
-                Ok(Value::String("prompt accepted".into()))
+                if text.is_empty() {
+                    return Err("missing prompt text".into());
+                }
+                let mut agent = self.agent.lock().await;
+                agent
+                    .prompt(&text)
+                    .await
+                    .map_err(|e| format!("prompt failed: {e}"))?;
+                Ok(Value::String("prompt completed".into()))
             }
             "session_list" => {
                 let s = self.session.lock().unwrap();
@@ -325,5 +345,45 @@ mod tests {
 
         let agent_lock = server.agent.lock().await;
         assert_eq!(agent_lock.model, "test-model-abc");
+    }
+
+    #[tokio::test]
+    async fn mutating_requests_require_a_token_when_unconfigured() {
+        let server = IpcServer::new("/tmp/test_ipc_auth_socket");
+        let response = server
+            .handle_request_with_token(
+                r#"{"jsonrpc":"2.0","id":1,"method":"set_model","params":{"model":"unsafe"}}"#,
+                None,
+            )
+            .await;
+        assert!(response.contains("RX4_IPC_TOKEN required"), "{response}");
+
+        let ping = server
+            .handle_request_with_token(
+                r#"{"jsonrpc":"2.0","id":2,"method":"ping","params":{}}"#,
+                None,
+            )
+            .await;
+        assert!(ping.contains("pong"), "{ping}");
+    }
+
+    #[tokio::test]
+    async fn configured_ipc_token_authenticates_all_non_ping_methods() {
+        let server = IpcServer::new("/tmp/test_ipc_auth_socket_2");
+        let denied = server
+            .handle_request_with_token(
+                r#"{"jsonrpc":"2.0","id":1,"method":"state","params":{}}"#,
+                Some("secret"),
+            )
+            .await;
+        assert!(denied.contains("invalid or missing token"), "{denied}");
+
+        let allowed = server
+            .handle_request_with_token(
+                r#"{"jsonrpc":"2.0","id":2,"method":"state","params":{"token":"secret"}}"#,
+                Some("secret"),
+            )
+            .await;
+        assert!(allowed.contains("policy_mode"), "{allowed}");
     }
 }

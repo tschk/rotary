@@ -212,7 +212,6 @@ pub(crate) fn exec_bash(ctx: Arc<ToolContext>, args: String) -> ToolFuture {
             };
             let wait_task = async {
                 loop {
-                    #[cfg(feature = "ipc")]
                     if ctx.cancellation.is_canceled() {
                         let _ = child.kill().await;
                         let _ = child.wait().await;
@@ -286,18 +285,14 @@ pub(crate) fn exec_grep(ctx: Arc<ToolContext>, args: String) -> ToolFuture {
 
         #[cfg(feature = "builtin-tools")]
         {
-            let root = if full.is_file() {
-                full.parent().unwrap_or(&ctx.workspace_root).to_path_buf()
-            } else {
-                full
-            };
-
-            let shared = match crate::search::picker_for(root) {
-                Ok(p) => p,
-                Err(e) => return ToolResult::err("grep", e),
-            };
-
+            let workspace_root = ctx.workspace_root.clone();
             let result = tokio::task::spawn_blocking(move || {
+                let root = if full.is_file() {
+                    full.parent().unwrap_or(&workspace_root).to_path_buf()
+                } else {
+                    full
+                };
+                let shared = crate::search::picker_for(root)?;
                 let guard = shared.read().map_err(|e| e.to_string())?;
                 let picker = guard.as_ref().ok_or("picker missing")?;
                 let query = fff_search::parse_grep_query(&pattern);
@@ -368,12 +363,8 @@ pub(crate) fn exec_find(ctx: Arc<ToolContext>, args: String) -> ToolFuture {
 
         #[cfg(feature = "builtin-tools")]
         {
-            let shared = match crate::search::picker_for(full) {
-                Ok(p) => p,
-                Err(e) => return ToolResult::err("find", e),
-            };
-
             let result = tokio::task::spawn_blocking(move || {
+                let shared = crate::search::picker_for(full)?;
                 let guard = shared.read().map_err(|e| e.to_string())?;
                 let picker = guard.as_ref().ok_or("picker missing")?;
                 let parser = fff_search::QueryParser::<fff_search::FileSearchConfig>::default();

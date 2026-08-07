@@ -117,8 +117,11 @@ impl Session {
         std::fs::create_dir_all(dir)?;
         let path = dir.join(format!("{}.jsonl", self.id));
         let mut content = String::new();
+        let redactor = crate::secrets::Redactor::new();
         for entry in &self.entries {
-            content.push_str(&serde_json::to_string(entry).unwrap());
+            let mut safe_entry = entry.clone();
+            safe_entry.content = redactor.redact(&safe_entry.content);
+            content.push_str(&serde_json::to_string(&safe_entry).unwrap());
             content.push('\n');
         }
         std::fs::write(&path, content)?;
@@ -150,6 +153,7 @@ impl Session {
             std::fs::create_dir_all(parent)?;
         }
         let mut out = String::new();
+        let redactor = crate::secrets::Redactor::new();
         let meta = serde_json::json!({
             "type": "session_meta",
             "id": self.id,
@@ -159,12 +163,13 @@ impl Session {
         out.push_str(&meta.to_string());
         out.push('\n');
         for entry in &self.entries {
+            let safe_content = redactor.redact(&entry.content);
             let line = serde_json::json!({
                 "type": "message",
                 "id": entry.id,
                 "parent_id": entry.parent_id,
                 "role": entry.role.to_string(),
-                "content": entry.content,
+                "content": safe_content,
             });
             out.push_str(&line.to_string());
             out.push('\n');
@@ -281,7 +286,9 @@ impl Session {
         )
         .map_err(|e| e.to_string())?;
 
+        let redactor = crate::secrets::Redactor::new();
         for entry in &self.entries {
+            let safe_content = redactor.redact(&entry.content);
             conn.execute(
                 "INSERT INTO entries (session_id, id, parent_id, role, content)
                  VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -290,7 +297,7 @@ impl Session {
                     entry.id as i64,
                     entry.parent_id.map(|p| p as i64),
                     entry.role.to_string(),
-                    entry.content,
+                    safe_content,
                 ],
             )
             .map_err(|e| e.to_string())?;
@@ -384,6 +391,19 @@ mod tests {
         assert_eq!(loaded.entries.len(), 2);
         assert_eq!(loaded.entries[0].content, "ping");
         assert_eq!(loaded.entries[1].content, "pong");
+    }
+
+    #[test]
+    fn persistence_redacts_secrets_without_mutating_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let secret = "sk-abc123def456ghi789jkl012mno345pqr678stu901vwx234yza567b";
+        let mut s = Session::new("safe", "redaction-test");
+        s.append(Role::Assistant, format!("token {secret}"));
+        let path = s.save_jsonl(dir.path()).unwrap();
+        let on_disk = std::fs::read_to_string(path).unwrap();
+        assert!(!on_disk.contains(secret));
+        assert!(on_disk.contains("[REDACTED:api-key]"));
+        assert!(s.entries[0].content.contains(secret));
     }
 
     #[cfg(feature = "sqlite-sessions")]

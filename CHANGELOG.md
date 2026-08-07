@@ -13,6 +13,18 @@
 - Provider-reported token and cache usage in `Event::Usage` and
   `Agent::cache_stats()`.
 
+### Security and reliability
+- IPC uses async Tokio socket I/O, waits for prompts, and authenticates every
+  mutating method, including model and session changes.
+- Workspace changes preserve sandbox configuration and invalidate tool-cache
+  entries; filesystem resolution now returns the symlink-checked path.
+- Cancellation works for embedded builds without `ipc`; parallel tool failures
+  retain their task error and approval-required results are typed.
+- Assistant events, sessions, rollouts, and persisted tool text are redacted;
+  OS sandbox profiles deny global file reads, clean up temporary profiles, and
+  pass only a minimal environment by default.
+- Added `deny.toml` so dependency license checks have an explicit allowlist.
+
 ## [0.5.0] — 2026-07-30
 
 ### Breaking

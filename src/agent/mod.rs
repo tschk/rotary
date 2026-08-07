@@ -236,7 +236,6 @@ pub struct Agent {
     pub self_improve: Option<crate::self_improve::SelfImprove>,
     #[cfg(feature = "personality")]
     pub personality: Option<crate::personality::Personality>,
-    #[cfg(feature = "ipc")]
     turn_cancellation: CancellationHandle,
     subscribers: Vec<Subscriber>,
     pub messages: Arc<RwLock<Vec<Message>>>,
@@ -289,7 +288,6 @@ impl Agent {
             self_improve: None,
             #[cfg(feature = "personality")]
             personality: None,
-            #[cfg(feature = "ipc")]
             turn_cancellation: CancellationHandle::new(),
             subscribers: Vec::new(),
             messages: Arc::new(RwLock::new(Vec::new())),
@@ -342,6 +340,9 @@ impl Agent {
 
     pub fn set_policy(&mut self, policy: Policy) {
         self.policy = policy;
+        // A custom authorizer may have captured the previous policy. Drop the
+        // snapshot so subsequent calls use the new live policy by default.
+        self.authorizer = None;
         self.ensure_userspace_sandbox();
         if self.policy.enable_os_sandbox && self.os_sandbox.is_none() && !self.os_sandbox_failed {
             if let Err(e) = self.enable_os_sandbox() {
@@ -356,6 +357,7 @@ impl Agent {
         let profile = mode::profile(scope);
         // Scope changes mode/sandbox only — keep host shell lists / allowlists.
         self.policy.apply_scope(&profile.policy);
+        self.authorizer = None;
         self.ensure_userspace_sandbox();
         if self.policy.enable_os_sandbox && self.os_sandbox.is_none() && !self.os_sandbox_failed {
             if let Err(e) = self.enable_os_sandbox() {
@@ -428,18 +430,42 @@ impl Agent {
     }
 
     pub fn set_workspace_root(&mut self, path: impl Into<std::path::PathBuf>) {
-        self.workspace_root = path.into();
-        // Rebuild confinement against new root (avoid stale SandboxManager root).
-        let mut sb = crate::sandbox::SandboxManager::new(
-            crate::sandbox::SandboxProfile::Workspace,
-            self.workspace_root.clone(),
-        );
-        sb.set_allow_network(true);
-        self.sandbox = Some(std::sync::Arc::new(sb));
+        let new_root = path.into();
+        let mut sandbox_config = self.sandbox.as_ref().map(|sb| sb.config());
+        if let Some(config) = sandbox_config.as_mut() {
+            config.workspace_root = new_root.clone();
+        }
+        let mut os_config = self.os_sandbox.as_ref().map(|os| os.config().clone());
+        if let Some(config) = os_config.as_mut() {
+            config.workspace = new_root.clone();
+        }
+
+        self.workspace_root = new_root;
+        self.authorizer = None;
+        // Rebuild confinement against the new root while retaining custom
+        // allow/deny lists and network policy.
+        self.sandbox = Some(Arc::new(match sandbox_config {
+            Some(config) => crate::sandbox::SandboxManager::from_config(config),
+            None => {
+                let mut sb = crate::sandbox::SandboxManager::new(
+                    crate::sandbox::SandboxProfile::Workspace,
+                    self.workspace_root.clone(),
+                );
+                sb.set_allow_network(true);
+                sb
+            }
+        }));
+        self.tool_cache.invalidate_all();
         self.os_sandbox = None;
         self.os_sandbox_failed = false;
         if self.policy.enable_os_sandbox {
-            if let Err(e) = self.enable_os_sandbox() {
+            let result = match os_config {
+                Some(config) => crate::sandbox::OsSandboxRunner::new(config)
+                    .map(Arc::new)
+                    .map(|runner| self.os_sandbox = Some(runner)),
+                None => self.enable_os_sandbox().map(|_| ()),
+            };
+            if let Err(e) = result {
                 self.os_sandbox_failed = true;
                 tracing::warn!("OS sandbox unavailable after workspace change — shell tools will be blocked: {e}");
             }
@@ -478,12 +504,10 @@ impl Agent {
         self.personality = Some(personality);
     }
 
-    #[cfg(feature = "ipc")]
     pub fn cancel(&self) {
         self.turn_cancellation.cancel();
     }
 
-    #[cfg(feature = "ipc")]
     pub fn cancellation_handle(&self) -> CancellationHandle {
         self.turn_cancellation.clone()
     }
@@ -707,10 +731,13 @@ impl Agent {
             }
         }
 
+        let redactor = crate::secrets::Redactor::new();
+        let safe_text = redactor.redact(text);
+
         // Inject activated skill instructions into system prompt for this turn.
         #[cfg(feature = "skills")]
         let active_skills = if let Some(reg) = &self.skill_registry {
-            let matched = reg.match_prompt(text);
+            let matched = reg.match_prompt(&safe_text);
             for skill in &matched {
                 self.emit(Event::SkillActivated {
                     id: skill.id.clone(),
@@ -728,7 +755,7 @@ impl Agent {
         #[cfg(not(feature = "skills"))]
         let active_skills: Option<String> = None;
 
-        self.messages.write().push(Message::user(text));
+        self.messages.write().push(Message::user(safe_text.clone()));
         self.emit(Event::AgentStart);
         self.budget_start = Some(Instant::now());
 
@@ -742,7 +769,7 @@ impl Agent {
                 epoch: 0,
                 participant: "user".to_string(),
                 event_kind: "message".to_string(),
-                content: text.chars().take(500).collect(),
+                content: safe_text.chars().take(500).collect(),
             };
             match pers.route_event(&event).await {
                 Ok(result) => {
@@ -793,7 +820,7 @@ impl Agent {
             #[cfg(feature = "zkr-memory")]
             let system = if let Some(improve) = &self.self_improve {
                 let base = base_system.as_deref().unwrap_or("");
-                match improve.augment(text, base).await {
+                match improve.augment(&safe_text, base).await {
                     Ok(augmented) => Some(augmented),
                     Err(error) => {
                         warn!("self-improve augmentation failed: {error}");
@@ -810,7 +837,7 @@ impl Agent {
             #[cfg(feature = "personality")]
             let system = if let Some(pers) = &self.personality {
                 let base = system.as_deref().unwrap_or("");
-                match pers.augment(text, base).await {
+                match pers.augment(&safe_text, base).await {
                     Ok(augmented) => Some(augmented),
                     Err(error) => {
                         warn!("personality augmentation failed: {error}");
@@ -838,7 +865,6 @@ impl Agent {
                 use futures::StreamExt;
                 let mut attempts = 0;
                 let stream = loop {
-                    #[cfg(feature = "ipc")]
                     let result = ctx
                         .cancellation
                         .run(provider.stream(
@@ -850,32 +876,16 @@ impl Agent {
                         ))
                         .await
                         .map_err(|_| AgentError::Cancelled)?;
-                    #[cfg(not(feature = "ipc"))]
-                    let result = provider
-                        .stream(
-                            &messages,
-                            &system,
-                            &self.model,
-                            &self.tools.definitions(),
-                            self.reasoning_effort.as_deref(),
-                        )
-                        .await;
                     match result {
                         Ok(stream) => break stream,
                         Err(e) if e.is_transient() && attempts < 2 => {
                             attempts += 1;
-                            #[cfg(feature = "ipc")]
                             ctx.cancellation
                                 .run(tokio::time::sleep(std::time::Duration::from_millis(
                                     250 * (1 << attempts),
                                 )))
                                 .await
                                 .map_err(|_| AgentError::Cancelled)?;
-                            #[cfg(not(feature = "ipc"))]
-                            tokio::time::sleep(std::time::Duration::from_millis(
-                                250 * (1 << attempts),
-                            ))
-                            .await;
                         }
                         Err(e) => {
                             error!("provider stream error: {e}");
@@ -887,21 +897,21 @@ impl Agent {
 
                 let mut stream = stream;
                 loop {
-                    #[cfg(feature = "ipc")]
                     let next = ctx
                         .cancellation
                         .run(stream.next())
                         .await
                         .map_err(|_| AgentError::Cancelled)?;
-                    #[cfg(not(feature = "ipc"))]
-                    let next = stream.next().await;
                     let Some(event_result) = next else {
                         break;
                     };
                     match event_result {
                         Ok(StreamEvent::Delta(delta)) => {
                             assistant_content.push_str(&delta);
-                            self.emit(Event::MessageDelta { delta });
+                            // Deltas are emitted after the complete assistant
+                            // response is redacted below. This prevents a
+                            // credential split across provider chunks from
+                            // leaking through the streaming event path.
                         }
                         Ok(StreamEvent::ToolCall(call)) => {
                             tool_calls.push(call.clone());
@@ -909,7 +919,7 @@ impl Agent {
                                 tool: call.name.clone(),
                                 source: tool_source(&call.name),
                             });
-                            self.emit(Event::ToolCall(call));
+                            self.emit(Event::ToolCall(redact_tool_call(&call)));
                         }
                         Ok(StreamEvent::Usage(usage)) => {
                             provider_usage = Some(usage);
@@ -932,6 +942,13 @@ impl Agent {
                         .to_string();
             }
 
+            let redacted_assistant = redactor.redact(&assistant_content);
+            if !redacted_assistant.is_empty() {
+                self.emit(Event::MessageDelta {
+                    delta: redacted_assistant.clone(),
+                });
+            }
+            assistant_content = redacted_assistant;
             self.emit(Event::MessageEnd {
                 role: Role::Assistant,
                 content: assistant_content.clone(),
@@ -989,7 +1006,7 @@ impl Agent {
                         "continue the current strategy"
                     };
                     if let Err(error) = improve
-                        .record(text, &assistant_content, outcome, lesson)
+                        .record(&safe_text, &assistant_content, outcome, lesson)
                         .await
                     {
                         warn!("self-improve reflection failed: {error}");
@@ -1032,7 +1049,7 @@ impl Agent {
                         participant: "user".to_string(),
                         belief: format!(
                             "user sent: {}",
-                            text.chars().take(100).collect::<String>()
+                            safe_text.chars().take(100).collect::<String>()
                         ),
                         emotion: if tool_error_seen {
                             Some("frustrated".into())
@@ -1067,9 +1084,9 @@ impl Agent {
             if !plan_approved {
                 if let Some(gate) = self.plan_approver.clone() {
                     let proposal = PlanProposal {
-                        prompt: text.to_string(),
+                        prompt: safe_text.clone(),
                         plan: assistant_content.clone(),
-                        calls: tool_calls.clone(),
+                        calls: tool_calls.iter().map(redact_tool_call).collect(),
                         turn: iteration,
                     };
                     self.emit(Event::PlanProposed(proposal.clone()));
@@ -1273,16 +1290,20 @@ impl Agent {
             .collect();
         let batches = plan_tool_effect_batches(&effects);
         let mut results: Vec<Option<ToolResult>> = vec![None; calls.len()];
+        let mut join_failures: Vec<Option<String>> = vec![None; calls.len()];
 
         for batch in batches {
             if batch.len() == 1 {
                 let idx = batch[0];
                 let original = &calls[idx];
-                self.emit(Event::ToolExecutionStart(original.clone()));
+                self.emit(Event::ToolExecutionStart(redact_tool_call(original)));
                 let (call, result) = self.execute_single_tool(original, ctx).await;
-                if result.is_error && result.content == "approval required" {
+                if result.requires_approval() {
                     self.emit(Event::ApprovalRequired(
-                        crate::permissions::ApprovalRequest::from_call(&call, &self.policy),
+                        crate::permissions::ApprovalRequest::from_call(
+                            &redact_tool_call(&call),
+                            &self.policy,
+                        ),
                     ));
                 }
                 self.emit(Event::ToolExecutionEnd(result.clone()));
@@ -1304,14 +1325,14 @@ impl Agent {
                 let call = match self.apply_before_tool_hooks(original) {
                     Ok(c) => c,
                     Err(reason) => {
-                        self.emit(Event::ToolExecutionStart(original.clone()));
+                        self.emit(Event::ToolExecutionStart(redact_tool_call(original)));
                         let result = ToolResult::err(&original.id, reason);
                         self.emit(Event::ToolExecutionEnd(result.clone()));
                         results[idx] = Some(result);
                         continue;
                     }
                 };
-                self.emit(Event::ToolExecutionStart(call.clone()));
+                self.emit(Event::ToolExecutionStart(redact_tool_call(&call)));
                 let ctx = Arc::clone(ctx);
                 let tools = Arc::clone(&tools);
                 let policy = policy.clone();
@@ -1340,9 +1361,12 @@ impl Agent {
             while let Some(joined) = join_set.join_next().await {
                 match joined {
                     Ok((idx, call, result)) => {
-                        if result.is_error && result.content == "approval required" {
+                        if result.requires_approval() {
                             self.emit(Event::ApprovalRequired(
-                                crate::permissions::ApprovalRequest::from_call(&call, &self.policy),
+                                crate::permissions::ApprovalRequest::from_call(
+                                    &redact_tool_call(&call),
+                                    &self.policy,
+                                ),
                             ));
                         }
                         self.emit(Event::ToolExecutionEnd(result.clone()));
@@ -1350,6 +1374,13 @@ impl Agent {
                     }
                     Err(e) => {
                         warn!("parallel tool task join error: {e}");
+                        if let Some((idx, _)) = results
+                            .iter()
+                            .enumerate()
+                            .find(|(_, result)| result.is_none())
+                        {
+                            join_failures[idx] = Some(format!("parallel tool task failed: {e}"));
+                        }
                     }
                 }
             }
@@ -1362,7 +1393,9 @@ impl Agent {
                 r.unwrap_or_else(|| {
                     ToolResult::err(
                         calls.get(i).map(|c| c.id.as_str()).unwrap_or(""),
-                        "tool execution failed",
+                        join_failures[i]
+                            .as_deref()
+                            .unwrap_or("tool execution failed"),
                     )
                 })
             })
@@ -1465,11 +1498,16 @@ impl Agent {
             Decision::Ask => {
                 // No Approver, or Approver returned Ask: tool fails this turn.
                 // Prefer AsyncApprover / ChannelApprover for interactive Allow.
-                ToolResult::err(&call.id, "approval required")
+                ToolResult::approval_required(&call.id)
             }
             Decision::Allow => {
                 let effect = tools.effect_of(&resolved_name);
-                let cache_key = format!("{}:{}", resolved_name, call.arguments);
+                let cache_key = format!(
+                    "{}:{}:{}",
+                    ctx.workspace_root.display(),
+                    resolved_name,
+                    call.arguments
+                );
                 if effect == ToolEffect::Read {
                     if let Some(cached) = tool_cache.get(&cache_key).await {
                         debug!("tool cache hit: {}", resolved_name);
@@ -1530,9 +1568,9 @@ impl Agent {
     fn tool_context(&self) -> ToolContext {
         let mut tool_ctx = ToolContext::new(self.workspace_root.clone());
         tool_ctx.os_sandbox_required = self.policy.enable_os_sandbox && self.os_sandbox.is_none();
+        tool_ctx.cancellation = self.turn_cancellation.reset();
         #[cfg(feature = "ipc")]
         {
-            tool_ctx.cancellation = self.turn_cancellation.reset();
             tool_ctx.lsp = Some(Arc::clone(&self.lsp));
         }
         if let Some(sandbox) = self.sandbox.clone() {
@@ -1595,6 +1633,14 @@ fn tool_source(name: &str) -> ToolSource {
         return ToolSource::ComputerUse;
     }
     ToolSource::Builtin
+}
+
+fn redact_tool_call(call: &ToolCall) -> ToolCall {
+    ToolCall {
+        id: call.id.clone(),
+        name: call.name.clone(),
+        arguments: crate::secrets::Redactor::new().redact(&call.arguments),
+    }
 }
 
 #[cfg(test)]
@@ -1786,7 +1832,6 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "ipc")]
     #[test]
     fn cancellation_handle_cancels_reset_turn() {
         let handle = CancellationHandle::new();
@@ -1847,6 +1892,28 @@ mod tests {
     }
 
     #[test]
+    fn changing_workspace_refreshes_custom_sandbox_and_cache_boundary() {
+        let first = tempfile::tempdir().unwrap();
+        let second = tempfile::tempdir().unwrap();
+        let mut agent = Agent::new();
+        let mut sandbox = crate::sandbox::SandboxManager::new(
+            crate::sandbox::SandboxProfile::Custom,
+            first.path().to_path_buf(),
+        );
+        sandbox.set_allow_network(false);
+        agent.set_sandbox(Arc::new(sandbox));
+        agent.set_authorizer(Arc::new(crate::permissions::PolicyAuthorizer::new()));
+
+        agent.set_workspace_root(second.path());
+
+        let current = agent.sandbox.as_ref().expect("sandbox attached");
+        assert_eq!(current.workspace_root(), second.path());
+        assert!(current.validate_network().is_err());
+        assert_eq!(agent.tool_cache.entry_count(), 0);
+        assert!(agent.authorizer.is_none());
+    }
+
+    #[test]
     fn active_skills_are_added_to_a_turn_prompt_without_mutating_the_base() {
         let base = Some("host instructions".to_string());
         let prompt = append_active_skills(base.clone(), Some("skill instructions"));
@@ -1888,6 +1955,13 @@ mod tests {
         let (_c, result) = agent.execute_single_tool(&call, &ctx).await;
         assert_eq!(result.id, "call_xyz");
         assert_eq!(result.content, "ok");
+    }
+
+    #[test]
+    fn approval_required_results_are_typed() {
+        let result = ToolResult::approval_required("call_approval");
+        assert!(result.requires_approval());
+        assert_eq!(result.error_kind, Some(ToolErrorKind::ApprovalRequired));
     }
 
     // === Security regression tests ===
@@ -2095,6 +2169,7 @@ mod tests {
     }
 
     /// Collects event labels so a test can assert on what the host would see.
+    #[cfg(feature = "providers")]
     fn event_sink(agent: &mut Agent) -> Arc<parking_lot::Mutex<Vec<String>>> {
         let seen = Arc::new(parking_lot::Mutex::new(Vec::new()));
         let sink = Arc::clone(&seen);
@@ -2112,6 +2187,7 @@ mod tests {
         seen
     }
 
+    #[cfg(feature = "providers")]
     fn message_texts(agent: &Agent) -> Vec<String> {
         agent
             .messages

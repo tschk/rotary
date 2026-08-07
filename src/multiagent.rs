@@ -317,6 +317,21 @@ impl MultiAgentCoordinator {
             .collect()
     }
 
+    /// Async counterpart to [`Self::collect_results`]. Hosts running an agent
+    /// loop should prefer this method so result collection never blocks a
+    /// Tokio worker thread.
+    pub async fn collect_results_async(&self) -> Vec<TeamResult> {
+        let mut results = Vec::with_capacity(self.spawned.len());
+        for (name, handle, start) in &self.spawned {
+            results.push(TeamResult {
+                name: name.clone(),
+                result: handle.wait().await,
+                duration: start.elapsed(),
+            });
+        }
+        results
+    }
+
     /// Access the underlying subagent manager.
     pub fn manager(&self) -> &SubagentManager {
         &self.manager

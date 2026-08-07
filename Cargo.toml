@@ -22,7 +22,7 @@ path = "src/lib.rs"
 default = ["ipc", "builtin-tools"]
 computer-use = ["dep:ed25519-dalek", "dep:hex", "dep:rand_core", "dep:praefectus"]
 # Agent loop always needs tokio (JoinSet / sleep). IPC adds net/process extras.
-ipc = ["tokio/net", "tokio/io-util", "tokio/sync", "tokio/process", "tokio/rt-multi-thread", "dep:cancellation-token"]
+ipc = ["tokio/net", "tokio/io-util", "tokio/sync", "tokio/process", "tokio/rt-multi-thread"]
 providers = ["dep:reqwest", "dep:eventsource-stream", "dep:futures"]
 builtin-tools = [ "dep:regex", "fff"]
 memory = ["dep:rusqlite"]
@@ -49,8 +49,8 @@ clap = { version = "4", features = ["derive"] }
 # Core async runtime for agent loop (always on).
 tokio = { version = "1", features = ["rt", "time", "macros", "sync", "process", "fs", "io-util"] }
 
-# Optional — ipc
-cancellation-token = { version = "0.1", optional = true }
+# Core cancellation used by embedded and IPC hosts.
+cancellation-token = "0.1"
 
 # Optional — providers
 reqwest = { version = "0.12", features = ["json", "stream", "blocking"], default-features = false, optional = true }
