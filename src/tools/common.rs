@@ -192,4 +192,32 @@ mod tests {
     fn validate_identifier_rejects_null() {
         assert!(validate_identifier("foo\0bar").is_err());
     }
+
+    #[test]
+    fn assert_within_workspace_allows_nested_paths() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let workspace = temp_dir.path();
+        let nested_dir = workspace.join("nested");
+        std::fs::create_dir(&nested_dir).unwrap();
+        let nested_file = nested_dir.join("file.txt");
+        std::fs::write(&nested_file, "content").unwrap();
+
+        assert!(assert_within_workspace(&nested_file, workspace).is_ok());
+    }
+
+    #[test]
+    fn assert_within_workspace_rejects_escaping_paths() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let root = temp_dir.path();
+
+        let workspace = root.join("workspace");
+        std::fs::create_dir(&workspace).unwrap();
+
+        let sibling = root.join("sibling");
+        std::fs::create_dir(&sibling).unwrap();
+        let sibling_file = sibling.join("file.txt");
+        std::fs::write(&sibling_file, "content").unwrap();
+
+        assert!(assert_within_workspace(&sibling_file, &workspace).is_err());
+    }
 }
