@@ -257,7 +257,7 @@ impl Session {
     pub fn save_sqlite(&self, path: &std::path::Path) -> Result<(), String> {
         use rusqlite::{params, Connection};
 
-        let conn = Connection::open(path).map_err(|e| e.to_string())?;
+        let mut conn = Connection::open(path).map_err(|e| e.to_string())?;
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS sessions (
                 id TEXT PRIMARY KEY,
@@ -275,33 +275,43 @@ impl Session {
         )
         .map_err(|e| e.to_string())?;
 
-        conn.execute(
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+
+        tx.execute(
             "INSERT OR REPLACE INTO sessions (id, name, next_id) VALUES (?1, ?2, ?3)",
             params![self.id, self.name, self.next_id as i64],
         )
         .map_err(|e| e.to_string())?;
-        conn.execute(
+        tx.execute(
             "DELETE FROM entries WHERE session_id = ?1",
             params![self.id],
         )
         .map_err(|e| e.to_string())?;
 
-        let redactor = crate::secrets::Redactor::new();
-        for entry in &self.entries {
-            let safe_content = redactor.redact(&entry.content);
-            conn.execute(
-                "INSERT INTO entries (session_id, id, parent_id, role, content)
+        {
+            let mut stmt = tx
+                .prepare(
+                    "INSERT INTO entries (session_id, id, parent_id, role, content)
                  VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![
+                )
+                .map_err(|e| e.to_string())?;
+
+            let redactor = crate::secrets::Redactor::new();
+            for entry in &self.entries {
+                let safe_content = redactor.redact(&entry.content);
+                stmt.execute(params![
                     self.id,
                     entry.id as i64,
                     entry.parent_id.map(|p| p as i64),
                     entry.role.to_string(),
                     safe_content,
-                ],
-            )
-            .map_err(|e| e.to_string())?;
+                ])
+                .map_err(|e| e.to_string())?;
+            }
         }
+
+        tx.commit().map_err(|e| e.to_string())?;
+
         Ok(())
     }
 
