@@ -192,4 +192,57 @@ mod tests {
     fn validate_identifier_rejects_null() {
         assert!(validate_identifier("foo\0bar").is_err());
     }
+
+    #[test]
+    fn test_resolve_write_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = dir.path();
+        let ctx = ToolContext::new(ws);
+
+        // Simple relative paths inside the workspace
+        let p1 = resolve_write_path(&ctx, "foo.txt").unwrap();
+        assert_eq!(p1, ws.canonicalize().unwrap().join("foo.txt"));
+
+        // Absolute paths inside the workspace
+        let abs_inside = ws.join("bar.txt");
+        let p2 = resolve_write_path(&ctx, abs_inside.to_str().unwrap()).unwrap();
+        assert_eq!(p2, ws.canonicalize().unwrap().join("bar.txt"));
+
+        // Relative path escapes
+        let escape_rel = resolve_write_path(&ctx, "../outside.txt");
+        assert!(escape_rel.is_err());
+        assert!(escape_rel.unwrap_err().contains("escapes workspace"));
+
+        // Absolute paths outside the workspace
+        let p_outside = if cfg!(windows) {
+            "C:\\windows\\system32\\cmd.exe"
+        } else {
+            "/etc/passwd"
+        };
+        let escape_abs = resolve_write_path(&ctx, p_outside);
+        assert!(escape_abs.is_err());
+        assert!(escape_abs.unwrap_err().contains("escapes workspace"));
+
+        // Symlink resolution
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::symlink;
+
+            // Create a sub-directory and a symlink to it
+            std::fs::create_dir(ws.join("subdir")).unwrap();
+            symlink(ws.join("subdir"), ws.join("symlink_dir")).unwrap();
+
+            // Symlink within workspace
+            let p_sym = resolve_write_path(&ctx, "symlink_dir/file.txt").unwrap();
+            assert_eq!(p_sym, ws.canonicalize().unwrap().join("subdir").join("file.txt"));
+
+            // Symlink escaping workspace
+            let outside_dir = tempfile::tempdir().unwrap();
+            symlink(outside_dir.path(), ws.join("escape_link")).unwrap();
+
+            let escape_sym = resolve_write_path(&ctx, "escape_link/file.txt");
+            assert!(escape_sym.is_err());
+            assert!(escape_sym.unwrap_err().contains("escapes workspace"));
+        }
+    }
 }
