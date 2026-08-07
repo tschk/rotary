@@ -393,9 +393,16 @@ mod tests {
     }
 
     #[test]
-    fn estimate_image_tokens_is_fixed() {
-        assert_eq!(estimate_image_tokens(), 1200);
-        assert_eq!(estimate_image_tokens(), IMAGE_TOKEN_COST);
+    fn test_estimate_image_tokens_prevents_regressions() {
+        let tokens = estimate_image_tokens();
+        assert_eq!(
+            tokens, IMAGE_TOKEN_COST,
+            "Should return the constant IMAGE_TOKEN_COST"
+        );
+        assert_eq!(
+            tokens, 1200,
+            "Image token cost must remain exactly 1200 to prevent regressions"
+        );
     }
 
     #[test]
