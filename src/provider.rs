@@ -83,6 +83,8 @@ impl Message {
 pub enum StreamEvent {
     Delta(String),
     ToolCall(ToolCall),
+    /// Provider-reported token usage for the completed request.
+    Usage(crate::cost::TokenUsage),
     Done,
 }
 
@@ -309,7 +311,14 @@ impl Provider for OpenAIProvider {
                 &self.prompt_cache,
             )
         } else {
-            openai_request(messages, system, model, tools, reasoning_effort)
+            openai_request(
+                messages,
+                system,
+                model,
+                tools,
+                reasoning_effort,
+                self.provider_id == "openai",
+            )
         };
 
         let endpoint = if self.provider_id == "anthropic" {
@@ -380,12 +389,16 @@ fn openai_request(
     model: &str,
     tools: &[serde_json::Value],
     reasoning_effort: Option<&str>,
+    include_usage: bool,
 ) -> serde_json::Value {
     let mut body = serde_json::json!({
         "model": model,
         "stream": true,
         "messages": [],
     });
+    if include_usage {
+        body["stream_options"] = serde_json::json!({"include_usage": true});
+    }
 
     let msgs = body["messages"]
         .as_array_mut()
@@ -526,6 +539,7 @@ fn anthropic_request(
 #[derive(Default)]
 struct StreamState {
     tool_calls: BTreeMap<usize, ToolCall>,
+    usage: crate::cost::TokenUsage,
 }
 
 #[cfg(feature = "providers")]
@@ -535,7 +549,14 @@ fn parse_sse_events(
     state: &mut StreamState,
 ) -> Vec<Result<StreamEvent, ProviderError>> {
     if provider_id == "anthropic" {
-        return parse_anthropic_event(json, state).into_iter().collect();
+        return parse_anthropic_event(json, state);
+    }
+
+    // OpenAI-compatible providers send usage in a final stream chunk when
+    // `stream_options.include_usage` is enabled. That chunk commonly has no
+    // choices, so inspect it before looking for a delta.
+    if let Some(usage) = json.get("usage").and_then(parse_token_usage) {
+        return vec![Ok(StreamEvent::Usage(usage))];
     }
 
     let delta = &json["choices"][0]["delta"];
@@ -594,7 +615,7 @@ fn parse_sse_events(
 fn parse_anthropic_event(
     json: &serde_json::Value,
     state: &mut StreamState,
-) -> Option<Result<StreamEvent, ProviderError>> {
+) -> Vec<Result<StreamEvent, ProviderError>> {
     match json.get("type").and_then(|value| value.as_str()) {
         Some("content_block_start") if json["content_block"]["type"] == "tool_use" => {
             let index = json["index"].as_u64().unwrap_or(0) as usize;
@@ -612,37 +633,90 @@ fn parse_anthropic_event(
                     arguments: String::new(),
                 },
             );
-            None
+            Vec::new()
         }
         Some("content_block_delta") if json["delta"]["type"] == "text_delta" => json["delta"]
             ["text"]
             .as_str()
             .filter(|text| !text.is_empty())
-            .map(|text| Ok(StreamEvent::Delta(text.to_string()))),
+            .map(|text| vec![Ok(StreamEvent::Delta(text.to_string()))])
+            .unwrap_or_default(),
         Some("content_block_delta") if json["delta"]["type"] == "input_json_delta" => {
             let index = json["index"].as_u64().unwrap_or(0) as usize;
             if let Some(call) = state.tool_calls.get_mut(&index) {
                 call.arguments
                     .push_str(json["delta"]["partial_json"].as_str().unwrap_or_default());
             }
-            None
+            Vec::new()
         }
         Some("content_block_stop") => {
             let index = json["index"].as_u64().unwrap_or(0) as usize;
             state
                 .tool_calls
                 .remove(&index)
-                .map(|call| Ok(StreamEvent::ToolCall(call)))
+                .map(|call| vec![Ok(StreamEvent::ToolCall(call))])
+                .unwrap_or_default()
         }
-        Some("message_stop") => Some(Ok(StreamEvent::Done)),
-        Some("error") => Some(Err(ProviderError::Api(
+        Some("message_start") => {
+            if let Some(usage) = json
+                .get("message")
+                .and_then(|message| message.get("usage"))
+                .and_then(parse_token_usage)
+            {
+                state.usage.input_tokens = usage.input_tokens;
+                state.usage.cache_read_tokens = usage.cache_read_tokens;
+                state.usage.cache_write_tokens = usage.cache_write_tokens;
+            }
+            Vec::new()
+        }
+        Some("message_delta") => {
+            if let Some(usage) = json.get("usage").and_then(parse_token_usage) {
+                state.usage.output_tokens = usage.output_tokens;
+            }
+            vec![Ok(StreamEvent::Usage(state.usage))]
+        }
+        Some("message_stop") => {
+            let mut events = Vec::new();
+            if state.usage.input_tokens > 0
+                || state.usage.output_tokens > 0
+                || state.usage.cache_read_tokens > 0
+                || state.usage.cache_write_tokens > 0
+            {
+                events.push(Ok(StreamEvent::Usage(state.usage)));
+            }
+            events.push(Ok(StreamEvent::Done));
+            events
+        }
+        Some("error") => vec![Err(ProviderError::Api(
             json["error"]["message"]
                 .as_str()
                 .unwrap_or("Anthropic stream error")
                 .to_string(),
-        ))),
-        _ => None,
+        ))],
+        _ => Vec::new(),
     }
+}
+
+#[cfg(feature = "providers")]
+fn parse_token_usage(value: &serde_json::Value) -> Option<crate::cost::TokenUsage> {
+    let number = |key: &str| value.get(key).and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+    let usage = crate::cost::TokenUsage {
+        input_tokens: number("input_tokens").max(number("prompt_tokens")),
+        output_tokens: number("output_tokens").max(number("completion_tokens")),
+        cache_read_tokens: number("cache_read_input_tokens").max(
+            value
+                .get("prompt_tokens_details")
+                .and_then(|details| details.get("cached_tokens"))
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as usize,
+        ),
+        cache_write_tokens: number("cache_creation_input_tokens"),
+    };
+    (usage.input_tokens > 0
+        || usage.output_tokens > 0
+        || usage.cache_read_tokens > 0
+        || usage.cache_write_tokens > 0)
+        .then_some(usage)
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -714,9 +788,66 @@ mod tests {
         let tools = vec![serde_json::json!({
             "name":"read","description":"Read","parameters":{"type":"object"}
         })];
-        let body = openai_request(&[], &None, "grok-4.5", &tools, Some("high"));
+        let body = openai_request(&[], &None, "grok-4.5", &tools, Some("high"), false);
         assert_eq!(body["tools"][0]["type"], "function");
         assert_eq!(body["tools"][0]["function"], tools[0]);
+        assert!(body.get("stream_options").is_none());
+    }
+
+    #[cfg(feature = "providers")]
+    #[test]
+    fn parses_openai_usage_chunk() {
+        let mut state = StreamState::default();
+        let events = parse_sse_events(
+            &serde_json::json!({
+                "choices": [],
+                "usage": {
+                    "prompt_tokens": 1000,
+                    "completion_tokens": 200,
+                    "prompt_tokens_details": {"cached_tokens": 800}
+                }
+            }),
+            "openai",
+            &mut state,
+        );
+        assert!(matches!(
+            events.into_iter().next().unwrap().unwrap(),
+            StreamEvent::Usage(crate::cost::TokenUsage {
+                input_tokens: 1000,
+                output_tokens: 200,
+                cache_read_tokens: 800,
+                ..
+            })
+        ));
+    }
+
+    #[cfg(feature = "providers")]
+    #[test]
+    fn parses_anthropic_usage_events() {
+        let mut state = StreamState::default();
+        assert!(parse_sse_events(
+            &serde_json::json!({
+                "type": "message_start",
+                "message": {"usage": {"input_tokens": 100, "cache_read_input_tokens": 60}}
+            }),
+            "anthropic",
+            &mut state,
+        )
+        .is_empty());
+        let events = parse_sse_events(
+            &serde_json::json!({"type":"message_delta","usage":{"output_tokens":25}}),
+            "anthropic",
+            &mut state,
+        );
+        assert!(matches!(
+            events.into_iter().next().unwrap().unwrap(),
+            StreamEvent::Usage(crate::cost::TokenUsage {
+                input_tokens: 100,
+                output_tokens: 25,
+                cache_read_tokens: 60,
+                ..
+            })
+        ));
     }
 
     #[cfg(feature = "providers")]
@@ -784,7 +915,9 @@ mod tests {
             "gpt-5.6-sol",
             &[],
             Some("xhigh"),
+            true,
         );
+        assert_eq!(body["stream_options"]["include_usage"], true);
         assert_eq!(body["reasoning_effort"], "xhigh");
     }
 
@@ -797,6 +930,7 @@ mod tests {
             "grok-4.20-0309-reasoning",
             &[],
             Some("high"),
+            false,
         );
         assert!(body.get("reasoning_effort").is_none());
     }

@@ -22,6 +22,8 @@
 //! ```
 
 pub mod agent;
+pub mod autoresearch;
+pub mod autoresearch_controller;
 #[cfg(feature = "skills")]
 pub mod background_review;
 pub mod compaction;
@@ -94,7 +96,20 @@ pub mod marketplace;
 
 pub use agent::{
     normalize_tool_name, Agent, AgentBudget, Event, ToolCall, ToolContext, ToolDefinition,
-    ToolEffect, ToolExecuteBox, ToolExecuteFn, ToolExecutor, ToolFuture, ToolRegistry, ToolResult,
+    ToolEffect, ToolErrorKind, ToolExecuteBox, ToolExecuteFn, ToolExecutor, ToolFuture,
+    ToolRegistry, ToolResult,
+};
+pub use autoresearch::{
+    new_handle as new_autoresearch_handle, parse_metrics, AutoresearchConfig, AutoresearchError,
+    AutoresearchHandle, AutoresearchSession, ExperimentMeasurement, ExperimentRun,
+    ExperimentStatus, MetricDirection,
+};
+pub use autoresearch_controller::{
+    new_controller_handle, AggregatedMeasurement, AutoresearchBudget, AutoresearchCancellation,
+    AutoresearchCompletion, AutoresearchController, AutoresearchControllerConfig,
+    AutoresearchControllerError, AutoresearchControllerHandle, AutoresearchEvent,
+    AutoresearchIteration, AutoresearchSubscriber, BaselineResult, BudgetKind, CompletionReason,
+    ExperimentHypothesis, ExperimentWorkspace, FinalPatch, HypothesisOutcome, IterationStatus,
 };
 #[cfg(feature = "skills")]
 pub use background_review::{
@@ -178,7 +193,7 @@ pub use subagent::{
     SubagentBudget, SubagentConfig, SubagentError, SubagentEvent, SubagentHandle, SubagentLimits,
     SubagentManager, SubagentResult, SubagentStatus, SubagentSubscriber,
 };
-pub use tools::{register_builtin_tools, register_spawn_agent_tool};
+pub use tools::{register_autoresearch_tools, register_builtin_tools, register_spawn_agent_tool};
 pub use work_pack::{WorkPack, WorkPackError};
 
 #[cfg(feature = "personality")]

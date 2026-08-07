@@ -13,10 +13,22 @@ pub(crate) fn parse_num_field(args: &str, field: &str) -> Option<u64> {
 
 pub(crate) fn resolve_path(ctx: &ToolContext, path: &str, write: bool) -> Result<PathBuf, String> {
     let p = PathBuf::from(path);
-    let full = if p.is_absolute() {
+    let requested = if p.is_absolute() {
         p
     } else {
         ctx.workspace_root.join(p)
+    };
+    // Resolve existing symlinks and the nearest existing parent for create
+    // operations. The returned path is the checked path, so the later open or
+    // write cannot follow a different symlink target than the validator saw.
+    let full = if let Ok(canonical) = requested.canonicalize() {
+        canonical
+    } else {
+        let (ancestor, remainder) = find_existing_ancestor(&requested)?;
+        ancestor
+            .canonicalize()
+            .map_err(|e| format!("cannot resolve path: {e}"))?
+            .join(remainder)
     };
     if let Some(sb) = ctx.sandbox.as_ref() {
         sb.validate_path(&full, write).map_err(|e| e.to_string())?;

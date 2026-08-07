@@ -213,6 +213,15 @@ pub fn register_builtin_tools(registry: &mut ToolRegistry) {
     }
 }
 
+/// Register the opt-in autoresearch tools. They are kept separate from the
+/// default coding loadout so ordinary prompts retain a small, stable prefix.
+pub fn register_autoresearch_tools(
+    registry: &mut ToolRegistry,
+    handle: crate::autoresearch::AutoresearchHandle,
+) {
+    crate::autoresearch::register_tools(registry, handle);
+}
+
 /// Register spawn_agent backed by a host-owned SubagentManager.
 pub fn register_spawn_agent_tool(
     registry: &mut ToolRegistry,
@@ -398,7 +407,6 @@ mod tests {
         assert!(result.content.contains("timed out"));
     }
 
-    #[cfg(feature = "ipc")]
     #[tokio::test]
     async fn test_bash_cancellation() {
         let source = cancellation_token::CancellationTokenSource::new();
@@ -408,6 +416,26 @@ mod tests {
         let result = fs::exec_bash(Arc::new(ctx), r#"{"command":"sleep 5"}"#.to_string()).await;
         assert!(result.is_error);
         assert_eq!(result.content, "command cancelled");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn symlink_to_outside_workspace_is_rejected() {
+        use std::os::unix::fs::symlink;
+
+        let tmp = TempDir::new().unwrap();
+        symlink("/etc/passwd", tmp.path().join("outside-link")).unwrap();
+        let sandbox = crate::sandbox::SandboxManager::new(
+            crate::sandbox::SandboxProfile::Workspace,
+            tmp.path().to_path_buf(),
+        );
+        let ctx = Arc::new(ToolContext::new(tmp.path()).with_sandbox(Arc::new(sandbox)));
+        let result = fs::exec_read(ctx, r#"{"path":"outside-link"}"#.to_string()).await;
+        assert!(
+            result.is_error,
+            "symlink escape was read: {}",
+            result.content
+        );
     }
 
     #[tokio::test]
@@ -459,6 +487,22 @@ mod tests {
                 || result.content.contains("request failed")
                 || result.content.contains("error")
         );
+    }
+
+    #[tokio::test]
+    async fn web_fetch_honors_network_denial() {
+        let tmp = TempDir::new().unwrap();
+        let mut sandbox = crate::sandbox::SandboxManager::new(
+            crate::sandbox::SandboxProfile::Workspace,
+            tmp.path().to_path_buf(),
+        );
+        sandbox.set_allow_network(false);
+        let ctx = Arc::new(ToolContext::new(tmp.path()).with_sandbox(Arc::new(sandbox)));
+        let result =
+            extended::exec_web_fetch(ctx, r#"{"url":"https://example.invalid/"}"#.to_string())
+                .await;
+        assert!(result.is_error);
+        assert!(result.content.contains("network"), "{}", result.content);
     }
 
     #[tokio::test]

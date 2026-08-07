@@ -1,6 +1,7 @@
 use super::userspace::SandboxError;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 /// Which OS-level sandbox backend to use for enforcement.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -40,7 +41,10 @@ impl OsSandboxConfig {
             allow_network: false,
             allow_tmp: true,
             extra_ro_paths: Vec::new(),
-            env_whitelist: Vec::new(),
+            env_whitelist: ["PATH", "HOME", "USER", "LANG", "TERM"]
+                .into_iter()
+                .map(String::from)
+                .collect(),
         }
     }
 }
@@ -66,7 +70,6 @@ impl SandboxProfileGenerator {
         lines.push("(deny default)".to_string());
         lines.push("(allow process-exec)".to_string());
         lines.push("(allow process-fork)".to_string());
-        lines.push("(allow file-read*)".to_string());
         lines.push(format!("(allow file-read* (subpath \"{workspace}\"))"));
         lines.push("(allow file-read* (subpath \"/usr\"))".to_string());
         lines.push("(allow file-read* (subpath \"/bin\"))".to_string());
@@ -92,8 +95,6 @@ impl SandboxProfileGenerator {
         } else {
             lines.push("(deny network*)".to_string());
         }
-        lines.push(format!("(deny file-read* (subpath \"{home}\"))"));
-        lines.push(format!("(allow file-read* (subpath \"{workspace}\"))"));
         lines.push(format!(
             "(allow file-read* (literal \"{home}/.gitconfig\"))"
         ));
@@ -106,6 +107,12 @@ impl SandboxProfileGenerator {
         lines.push(format!(
             "(allow file-read* (literal \"{home}/.config/git/ignore\"))"
         ));
+        for extra in &config.extra_ro_paths {
+            lines.push(format!(
+                "(allow file-read* (subpath \"{}\"))",
+                extra.display()
+            ));
+        }
         lines.push(format!("(deny file-read* (subpath \"{home}/.ssh\"))"));
         lines.push(format!("(deny file-read* (subpath \"{home}/.aws\"))"));
         lines.push(format!(
@@ -131,7 +138,17 @@ impl SandboxProfileGenerator {
 pub struct OsSandboxRunner {
     pub(crate) config: OsSandboxConfig,
     /// Path to the written seatbelt profile (macOS only).
-    pub(crate) profile_path: Option<PathBuf>,
+    pub(crate) profile_path: Option<Arc<PathBuf>>,
+}
+
+impl Drop for OsSandboxRunner {
+    fn drop(&mut self) {
+        if let Some(path) = self.profile_path.take() {
+            if Arc::strong_count(&path) == 1 {
+                let _ = std::fs::remove_file(path.as_path());
+            }
+        }
+    }
 }
 
 impl OsSandboxRunner {
@@ -174,7 +191,7 @@ impl OsSandboxRunner {
         };
         Ok(Self {
             config,
-            profile_path,
+            profile_path: profile_path.map(Arc::new),
         })
     }
 
@@ -186,6 +203,10 @@ impl OsSandboxRunner {
     /// Return the active sandbox mode.
     pub fn mode(&self) -> OsSandbox {
         self.config.mode
+    }
+
+    pub fn config(&self) -> &OsSandboxConfig {
+        &self.config
     }
 
     /// Return the full command vector with the sandbox wrapper prepended.

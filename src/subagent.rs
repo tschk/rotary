@@ -257,7 +257,6 @@ impl SubagentHandle {
     }
 
     /// Block asynchronously until the subagent completes and return its result.
-    #[cfg(feature = "ipc")]
     pub async fn wait(&self) -> SubagentResult {
         loop {
             {
@@ -283,15 +282,25 @@ impl SubagentHandle {
 
     /// Synchronous variant of [`wait`](Self::wait) for non-async callers.
     pub fn wait_sync(&self) -> SubagentResult {
-        let guard = self.state.lock();
-        guard.result.clone().unwrap_or_else(|| SubagentResult {
-            output: String::new(),
-            files_modified: vec![],
-            tool_calls: 0,
-            error: Some("no result recorded".to_string()),
-            cost: 0.0,
-            duration_seconds: 0,
-        })
+        loop {
+            {
+                let guard = self.state.lock();
+                if matches!(
+                    guard.status,
+                    SubagentStatus::Completed | SubagentStatus::Failed | SubagentStatus::Cancelled
+                ) {
+                    return guard.result.clone().unwrap_or_else(|| SubagentResult {
+                        output: String::new(),
+                        files_modified: vec![],
+                        tool_calls: 0,
+                        error: Some("no result recorded".to_string()),
+                        cost: 0.0,
+                        duration_seconds: 0,
+                    });
+                }
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
     }
 
     fn transition(&self, status: SubagentStatus, result: Option<SubagentResult>) {
@@ -578,7 +587,6 @@ impl SubagentManager {
     }
 
     /// Wait for all subagents to complete and return their results.
-    #[cfg(feature = "ipc")]
     pub async fn wait_all(&self) -> Vec<SubagentResult> {
         let mut results = Vec::with_capacity(self.subagents.len());
         for handle in self.subagents.values() {

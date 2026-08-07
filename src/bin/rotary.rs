@@ -1,4 +1,4 @@
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use rx4::{print_banner, register_builtin_tools, ToolRegistry};
 
 #[cfg(feature = "providers")]
@@ -167,10 +167,18 @@ struct Cli {
     scope: Option<String>,
     /// Tool approval mode: ask (default) | always_allow | always_deny
     #[arg(long, global = true, default_value = "ask")]
-    approval: String,
+    approval: ApprovalMode,
     /// Elevate policy to FullAccess (also useful for computer_use scope)
     #[arg(long, global = true, default_value_t = false)]
     full_access: bool,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+#[value(rename_all = "snake_case")]
+enum ApprovalMode {
+    Ask,
+    AlwaysAllow,
+    AlwaysDeny,
 }
 
 #[derive(Subcommand)]
@@ -593,7 +601,7 @@ fn run_exec(
     stream_json: bool,
     model: Option<String>,
     scope: Option<String>,
-    approval: &str,
+    approval: &ApprovalMode,
     full_access: bool,
 ) {
     #[cfg(not(feature = "providers"))]
@@ -620,14 +628,14 @@ fn run_exec(
         let mut agent = build_agent(model.as_deref(), scope.as_deref(), full_access);
         // Default ask (fail closed without Approver); CI: --approval always_allow
         match approval {
-            "always_deny" | "deny" => {
+            ApprovalMode::AlwaysDeny => {
                 agent.set_approver(Arc::new(rx4::permissions::AlwaysDeny));
             }
-            "ask" => {
+            ApprovalMode::Ask => {
                 // leave no approver → Ask fails closed with approval required
                 agent.approver = None;
             }
-            _ => {
+            ApprovalMode::AlwaysAllow => {
                 agent.set_approver(Arc::new(rx4::permissions::AlwaysAllow));
             }
         }
@@ -724,7 +732,7 @@ fn run_version() {
     println!("  memory:       {}", cfg_feature("memory"));
     println!("  mcp:          {}", cfg_feature("mcp"));
     println!("  sqlite-sessions: {}", cfg_feature("sqlite-sessions"));
-    println!("modules: agent, compaction, config, context, cost, extract, guardrails, hooks, mode, permissions, plugin, prompt_cache, provider, ranking, repomap, rollout, routing, sandbox, secrets, session, slash, sse, tools, models, acp, marketplace");
+    println!("modules: agent, autoresearch, compaction, config, context, cost, extract, guardrails, hooks, mode, permissions, plugin, prompt_cache, provider, ranking, repomap, rollout, routing, sandbox, secrets, session, slash, sse, tools, models, acp, marketplace");
 }
 
 fn cfg_feature(name: &str) -> &'static str {

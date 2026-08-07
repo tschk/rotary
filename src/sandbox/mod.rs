@@ -143,6 +143,12 @@ mod tests {
     }
 
     #[test]
+    fn command_blocklist_allows_rm_rf_tmp() {
+        let mgr = SandboxManager::new(SandboxProfile::Workspace, workspace());
+        assert!(mgr.validate_command("rm -rf /tmp/rx4-build").is_ok());
+    }
+
+    #[test]
     fn command_blocklist_denies_sudo() {
         let mgr = SandboxManager::new(SandboxProfile::Workspace, workspace());
         assert!(mgr.validate_command("sudo apt-get install foo").is_err());
@@ -309,6 +315,7 @@ mod tests {
         assert!(profile.contains(".ssh"));
         assert!(profile.contains(".aws"));
         assert!(profile.contains(".config/gcloud"));
+        assert!(!profile.contains("(allow file-read*)\n"));
     }
 
     #[test]
@@ -324,7 +331,9 @@ mod tests {
         let config = OsSandboxConfig::new(OsSandbox::MacosSeatbelt, workspace());
         let runner = OsSandboxRunner {
             config,
-            profile_path: Some(PathBuf::from("/tmp/rx4-sandbox-test.sb")),
+            profile_path: Some(std::sync::Arc::new(PathBuf::from(
+                "/tmp/rx4-sandbox-test.sb",
+            ))),
         };
         let wrapped = runner.wrap_command("cargo", &["build", "--release"]);
         assert_eq!(wrapped[0], "sandbox-exec");
