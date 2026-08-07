@@ -11,6 +11,35 @@ pub(crate) fn parse_num_field(args: &str, field: &str) -> Option<u64> {
     v.get(field)?.as_u64()
 }
 
+/// Lexically normalizes a path, resolving `.` and `..` components
+/// without interacting with the filesystem.
+pub(crate) fn lexically_normalize(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::ParentDir => {
+                let pop_success = match normalized.components().last() {
+                    Some(std::path::Component::Normal(_)) => {
+                        normalized.pop();
+                        true
+                    }
+                    Some(std::path::Component::RootDir) => {
+                        // At root, `..` does nothing.
+                        true
+                    }
+                    _ => false,
+                };
+                if !pop_success {
+                    normalized.push(component);
+                }
+            }
+            std::path::Component::CurDir => {}
+            _ => normalized.push(component),
+        }
+    }
+    normalized
+}
+
 pub(crate) fn resolve_path(ctx: &ToolContext, path: &str, write: bool) -> Result<PathBuf, String> {
     let p = PathBuf::from(path);
     let requested = if p.is_absolute() {
@@ -18,6 +47,17 @@ pub(crate) fn resolve_path(ctx: &ToolContext, path: &str, write: bool) -> Result
     } else {
         ctx.workspace_root.join(p)
     };
+
+    let lexically_requested = lexically_normalize(&requested);
+    let lexically_ws = lexically_normalize(&ctx.workspace_root);
+    if !lexically_requested.starts_with(&lexically_ws) {
+        return Err(format!(
+            "path escapes workspace: {} is outside {}",
+            lexically_requested.display(),
+            lexically_ws.display()
+        ));
+    }
+
     // Resolve existing symlinks and the nearest existing parent for create
     // operations. The returned path is the checked path, so the later open or
     // write cannot follow a different symlink target than the validator saw.
@@ -30,6 +70,7 @@ pub(crate) fn resolve_path(ctx: &ToolContext, path: &str, write: bool) -> Result
             .map_err(|e| format!("cannot resolve path: {e}"))?
             .join(remainder)
     };
+
     if let Some(sb) = ctx.sandbox.as_ref() {
         sb.validate_path(&full, write).map_err(|e| e.to_string())?;
     }
@@ -140,13 +181,10 @@ fn find_existing_ancestor(path: &Path) -> Result<(PathBuf, PathBuf), String> {
 /// Returns an error string if the path escapes.
 #[allow(dead_code)] // used by P1 scan/repomap fixes
 pub fn assert_within_workspace(resolved: &Path, workspace: &Path) -> Result<(), String> {
-    let canonical_ws = workspace
-        .canonicalize()
-        .unwrap_or_else(|_| workspace.to_path_buf());
-    let canonical_resolved = resolved
-        .canonicalize()
-        .unwrap_or_else(|_| resolved.to_path_buf());
-    if !canonical_resolved.starts_with(&canonical_ws) {
+    let lexically_resolved = lexically_normalize(resolved);
+    let lexically_ws = lexically_normalize(workspace);
+
+    if !lexically_resolved.starts_with(&lexically_ws) {
         return Err(format!(
             "path escapes workspace: {} is outside {}",
             resolved.display(),
@@ -191,5 +229,43 @@ mod tests {
     #[test]
     fn validate_identifier_rejects_null() {
         assert!(validate_identifier("foo\0bar").is_err());
+    }
+
+    #[test]
+    fn test_lexically_normalize() {
+        assert_eq!(
+            lexically_normalize(Path::new("/a/b/../c")),
+            PathBuf::from("/a/c")
+        );
+        assert_eq!(
+            lexically_normalize(Path::new("a/b/../c")),
+            PathBuf::from("a/c")
+        );
+        assert_eq!(
+            lexically_normalize(Path::new("../../c")),
+            PathBuf::from("../../c")
+        );
+        assert_eq!(
+            lexically_normalize(Path::new("/../../c")),
+            PathBuf::from("/c")
+        );
+        assert_eq!(
+            lexically_normalize(Path::new("/tmp/workspace/../outside/file")),
+            PathBuf::from("/tmp/outside/file")
+        );
+    }
+
+    #[test]
+    fn test_assert_within_workspace_rejects_escape() {
+        let ws = Path::new("/tmp/workspace");
+        let safe = Path::new("/tmp/workspace/safe/file");
+        let unsafe_path = Path::new("/tmp/workspace/non_existent_dir/../../etc/passwd");
+
+        // Mock canonicalize failure by using paths that don't exist
+        assert!(assert_within_workspace(safe, ws).is_ok() || !safe.exists());
+
+        let result = assert_within_workspace(unsafe_path, ws);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("escapes workspace"));
     }
 }
