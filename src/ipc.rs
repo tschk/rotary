@@ -32,26 +32,31 @@ impl Clone for IpcServer {
     }
 }
 
+fn token_hash_from_env() -> Option<Vec<u8>> {
+    static HASH: std::sync::OnceLock<Option<Vec<u8>>> = std::sync::OnceLock::new();
+    HASH.get_or_init(|| {
+        std::env::var("RX4_IPC_TOKEN")
+            .ok()
+            .filter(|s| !s.is_empty())
+            .map(|t| {
+                use sha2::{Digest, Sha256};
+                let mut hasher = Sha256::new();
+                hasher.update(t.as_bytes());
+                hasher.finalize().to_vec()
+            })
+    })
+    .clone()
+}
+
 impl IpcServer {
     pub fn new(socket_path: impl Into<String>) -> Self {
-        let token = std::env::var("RX4_IPC_TOKEN")
-            .ok()
-            .filter(|s| !s.is_empty());
-        let token_hash = token.map(|t| {
-            use sha2::{Digest, Sha256};
-            let mut hasher = Sha256::new();
-            hasher.update(t.as_bytes());
-            std::env::remove_var("RX4_IPC_TOKEN");
-            hasher.finalize().to_vec()
-        });
-
         Self {
             socket_path: socket_path.into(),
             agent: Arc::new(AsyncMutex::new(Agent::new())),
             tools: Arc::new(Mutex::new(ToolRegistry::new())),
             plugins: Arc::new(Mutex::new(PluginRegistry::new())),
             session: Arc::new(Mutex::new(Session::new("default", "default"))),
-            token_hash,
+            token_hash: token_hash_from_env(),
         }
     }
 
