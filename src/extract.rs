@@ -74,4 +74,14 @@ mod tests {
         let loose = extract_knowledge_loose(&wrapped);
         assert_eq!(loose.len(), 1);
     }
+
+    #[test]
+    fn parse_and_loose_extract_proactive() {
+        let json = r#"[{"title":"t","description":"d","priority":1,"action":"a"}]"#;
+        let items = parse_proactive(json).unwrap();
+        assert_eq!(items[0].title, "t");
+        let wrapped = format!("here is data:\n```json\n{json}\n```");
+        let loose = extract_proactive_loose(&wrapped);
+        assert_eq!(loose.len(), 1);
+    }
 }
