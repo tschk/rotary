@@ -84,4 +84,58 @@ mod tests {
         rank_with_query(&mut items, "login auth");
         assert_eq!(items[0].title, "fix login");
     }
+
+    #[test]
+    fn test_top_n_limits_output() {
+        let mut items = vec![
+            ProactiveItem {
+                title: "a".into(),
+                description: "".into(),
+                priority: 1,
+                action: "".into(),
+            },
+            ProactiveItem {
+                title: "b".into(),
+                description: "".into(),
+                priority: 5,
+                action: "".into(),
+            },
+            ProactiveItem {
+                title: "c".into(),
+                description: "".into(),
+                priority: 3,
+                action: "".into(),
+            },
+        ];
+
+        let result = top_n(&mut items, 2);
+
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].title, "b"); // priority 5
+        assert_eq!(result[1].title, "c"); // priority 3
+    }
+
+    #[test]
+    fn test_top_n_more_than_available() {
+        let mut items = vec![
+            ProactiveItem {
+                title: "a".into(),
+                description: "".into(),
+                priority: 1,
+                action: "".into(),
+            },
+            ProactiveItem {
+                title: "b".into(),
+                description: "".into(),
+                priority: 5,
+                action: "".into(),
+            },
+        ];
+
+        let result = top_n(&mut items, 5);
+
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].title, "b"); // priority 5
+        assert_eq!(result[1].title, "a"); // priority 1
+    }
 }
