@@ -34,7 +34,9 @@ impl Clone for IpcServer {
 
 impl IpcServer {
     pub fn new(socket_path: impl Into<String>) -> Self {
-        let token = std::env::var("RX4_IPC_TOKEN").ok().filter(|s| !s.is_empty());
+        let token = std::env::var("RX4_IPC_TOKEN")
+            .ok()
+            .filter(|s| !s.is_empty());
         let token_hash = token.map(|t| {
             use sha2::{Digest, Sha256};
             let mut hasher = Sha256::new();
@@ -135,7 +137,11 @@ impl IpcServer {
             .await
     }
 
-    async fn handle_request_with_token(&self, line: &str, required_token_hash: Option<&[u8]>) -> String {
+    async fn handle_request_with_token(
+        &self,
+        line: &str,
+        required_token_hash: Option<&[u8]>,
+    ) -> String {
         let req: Value = match serde_json::from_str(line) {
             Ok(v) => v,
             Err(e) => return error_response(None, -32700, &format!("parse error: {e}")),
