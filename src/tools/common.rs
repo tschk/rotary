@@ -234,7 +234,10 @@ mod tests {
 
             // Symlink within workspace
             let p_sym = resolve_write_path(&ctx, "symlink_dir/file.txt").unwrap();
-            assert_eq!(p_sym, ws.canonicalize().unwrap().join("subdir").join("file.txt"));
+            assert_eq!(
+                p_sym,
+                ws.canonicalize().unwrap().join("subdir").join("file.txt")
+            );
 
             // Symlink escaping workspace
             let outside_dir = tempfile::tempdir().unwrap();
