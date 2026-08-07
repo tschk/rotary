@@ -12,7 +12,6 @@
 use crate::agent::{Agent, AgentBudget, ToolRegistry};
 use crate::permissions::{PermissionMode, Policy};
 use crate::provider::Provider;
-use chrono::{DateTime, Utc};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -187,15 +186,9 @@ impl SubagentResult {
 /// Internal shared state for a single subagent.
 #[derive(Debug)]
 struct SubagentState {
-    #[allow(dead_code)]
-    id: String,
-    #[allow(dead_code)]
-    name: String,
     status: SubagentStatus,
     result: Option<SubagentResult>,
     worktree_path: Option<PathBuf>,
-    #[allow(dead_code)]
-    spawned_at: DateTime<Utc>,
     parent_id: Option<String>,
     children: Vec<String>,
     depth: usize,
@@ -659,12 +652,9 @@ impl SubagentManager {
         }
 
         let state = Arc::new(Mutex::new(SubagentState {
-            id: id.clone(),
-            name: config.name.clone(),
             status: SubagentStatus::Pending,
             result: None,
             worktree_path: worktree_path.clone(),
-            spawned_at: Utc::now(),
             parent_id: config.parent_id.clone(),
             children: Vec::new(),
             depth,
@@ -1066,12 +1056,9 @@ mod tests {
     #[test]
     fn status_transitions_cover_all_variants() {
         let state = Arc::new(Mutex::new(SubagentState {
-            id: "x".to_string(),
-            name: "x".to_string(),
             status: SubagentStatus::Pending,
             result: None,
             worktree_path: None,
-            spawned_at: Utc::now(),
             parent_id: None,
             children: Vec::new(),
             depth: 0,
