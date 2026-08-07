@@ -2,6 +2,7 @@ use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 struct SymbolDef {
     name: String,
     kind: String,
@@ -20,7 +21,7 @@ fn symbol_reference_counts_original(
         }
     }
     let mut counts = HashMap::new();
-    for (_path, symbols) in index {
+    for symbols in index.values() {
         // Mock get_file_words
         let words: HashSet<&str> = symbols.iter().map(|s| s.name.as_str()).collect();
         for sym in symbols {
@@ -48,7 +49,7 @@ fn symbol_reference_counts_optimized(
         }
     }
     let mut counts: HashMap<String, usize> = HashMap::new();
-    for (_path, symbols) in index {
+    for symbols in index.values() {
         let words: HashSet<&str> = symbols.iter().map(|s| s.name.as_str()).collect();
         for sym in symbols {
             if name_to_files.get(&sym.name).map(|s| s.len()).unwrap_or(0) <= 1 {
