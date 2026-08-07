@@ -338,10 +338,10 @@ impl GraphMemory {
         for _ in 0..15 {
             let mut changed = false;
             for node in &order {
-                let mut counts: HashMap<String, usize> = HashMap::new();
+                let mut counts: HashMap<&str, usize> = HashMap::new();
                 let mut consider = |nb: &str| {
                     if let Some(l) = labels.get(nb) {
-                        *counts.entry(l.clone()).or_insert(0) += 1;
+                        *counts.entry(l.as_str()).or_insert(0) += 1;
                     }
                 };
                 if let Some(succs) = self.adjacency.get(node) {
@@ -362,8 +362,8 @@ impl GraphMemory {
                     .max_by_key(|(_, c)| *c)
                     .map(|(l, _)| l)
                     .unwrap();
-                if labels.get(node) != Some(&best) {
-                    labels.insert(node.clone(), best);
+                if labels.get(node).map(String::as_str) != Some(best) {
+                    labels.insert(node.clone(), best.to_string());
                     changed = true;
                 }
             }
