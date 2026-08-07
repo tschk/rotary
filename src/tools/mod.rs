@@ -11,8 +11,8 @@ use parking_lot::Mutex;
 use std::sync::Arc;
 
 fn parse_spawn_args(args: &str) -> Result<(SubagentConfig, String), String> {
-    let v: serde_json::Value = serde_json::from_str(args)
-        .map_err(|e| format!("invalid json: {e}"))?;
+    let v: serde_json::Value =
+        serde_json::from_str(args).map_err(|e| format!("invalid json: {e}"))?;
 
     let prompt = match v.get("prompt").and_then(|p| p.as_str()) {
         Some(p) if !p.is_empty() => p.to_string(),
