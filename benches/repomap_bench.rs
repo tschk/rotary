@@ -73,14 +73,18 @@ fn bench_repomap(c: &mut Criterion) {
         for j in 0..1000 {
             symbols.push(SymbolDef {
                 name: format!("symbol_{}", j % 100),
-                kind: "def".to_string()
+                kind: "def".to_string(),
             });
         }
         index.insert(format!("path_{}", i), symbols);
     }
 
-    c.bench_function("repomap_original", |b| b.iter(|| symbol_reference_counts_original(black_box(&index))));
-    c.bench_function("repomap_optimized", |b| b.iter(|| symbol_reference_counts_optimized(black_box(&index))));
+    c.bench_function("repomap_original", |b| {
+        b.iter(|| symbol_reference_counts_original(black_box(&index)))
+    });
+    c.bench_function("repomap_optimized", |b| {
+        b.iter(|| symbol_reference_counts_optimized(black_box(&index)))
+    });
 }
 
 criterion_group!(benches, bench_repomap);
