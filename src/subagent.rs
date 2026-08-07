@@ -475,49 +475,16 @@ impl SubagentManager {
         );
         handle.state.lock().background_active = true;
         let task_handle = handle.clone();
-        let join_handle = tokio::spawn(async move {
-            let started = Instant::now();
-            let mut result = if let Some(provider) = provider {
-                match run_agent_subagent_async(provider, tools, &config, &prompt, &workspace).await
-                {
-                    Ok(result) => result,
-                    Err(error) => SubagentResult {
-                        output: String::new(),
-                        files_modified: vec![],
-                        tool_calls: 0,
-                        error: Some(error),
-                        cost: 0.0,
-                        duration_seconds: 0,
-                    },
-                }
-            } else {
-                SubagentResult::offline(&config.name, &prompt)
-            };
-            result.duration_seconds = started.elapsed().as_secs();
-            if task_handle.status() != SubagentStatus::Cancelled {
-                let status = if result.error.is_some() {
-                    SubagentStatus::Failed
-                } else {
-                    SubagentStatus::Completed
-                };
-                task_handle.transition(status, Some(result));
-            }
-            let active = {
-                let mut state = task_handle.state.lock();
-                std::mem::replace(&mut state.background_active, false)
-            };
-            if active {
-                emit_subagent_event(
-                    &subscribers,
-                    SubagentEvent::Finished {
-                        id: task_handle.id.clone(),
-                        name: task_handle.name.clone(),
-                        status: task_handle.status(),
-                        running: background_running.fetch_sub(1, Ordering::SeqCst) - 1,
-                    },
-                );
-            }
-        });
+        let join_handle = tokio::spawn(execute_background_task(
+            provider,
+            tools,
+            config,
+            prompt,
+            workspace,
+            task_handle,
+            subscribers,
+            background_running,
+        ));
         handle.state.lock().abort_handle = Some(join_handle.abort_handle());
         Ok(handle)
     }
@@ -1200,6 +1167,62 @@ mod tests {
         assert_eq!(
             SubagentError::GitError("bad".to_string()).to_string(),
             "git error: bad"
+        );
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn execute_background_task(
+    provider: Option<Arc<dyn Provider>>,
+    tools: Option<Arc<ToolRegistry>>,
+    config: SubagentConfig,
+    prompt: String,
+    workspace: PathBuf,
+    task_handle: SubagentHandle,
+    subscribers: Vec<SubagentSubscriber>,
+    background_running: Arc<AtomicUsize>,
+) {
+    let started = Instant::now();
+    let mut result = if let Some(provider) = provider {
+        match run_agent_subagent_async(provider, tools, &config, &prompt, &workspace).await {
+            Ok(result) => result,
+            Err(error) => SubagentResult {
+                output: String::new(),
+                files_modified: vec![],
+                tool_calls: 0,
+                error: Some(error),
+                cost: 0.0,
+                duration_seconds: 0,
+            },
+        }
+    } else {
+        SubagentResult::offline(&config.name, &prompt)
+    };
+
+    result.duration_seconds = started.elapsed().as_secs();
+    if task_handle.status() != SubagentStatus::Cancelled {
+        let status = if result.error.is_some() {
+            SubagentStatus::Failed
+        } else {
+            SubagentStatus::Completed
+        };
+        task_handle.transition(status, Some(result));
+    }
+
+    let active = {
+        let mut state = task_handle.state.lock();
+        std::mem::replace(&mut state.background_active, false)
+    };
+
+    if active {
+        emit_subagent_event(
+            &subscribers,
+            SubagentEvent::Finished {
+                id: task_handle.id.clone(),
+                name: task_handle.name.clone(),
+                status: task_handle.status(),
+                running: background_running.fetch_sub(1, Ordering::SeqCst) - 1,
+            },
         );
     }
 }
