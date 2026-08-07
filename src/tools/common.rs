@@ -136,26 +136,6 @@ fn find_existing_ancestor(path: &Path) -> Result<(PathBuf, PathBuf), String> {
     Ok((ancestor, tail))
 }
 
-/// Assert that `resolved` (after canonicalization) stays within `workspace`.
-/// Returns an error string if the path escapes.
-#[allow(dead_code)] // used by P1 scan/repomap fixes
-pub fn assert_within_workspace(resolved: &Path, workspace: &Path) -> Result<(), String> {
-    let canonical_ws = workspace
-        .canonicalize()
-        .unwrap_or_else(|_| workspace.to_path_buf());
-    let canonical_resolved = resolved
-        .canonicalize()
-        .unwrap_or_else(|_| resolved.to_path_buf());
-    if !canonical_resolved.starts_with(&canonical_ws) {
-        return Err(format!(
-            "path escapes workspace: {} is outside {}",
-            resolved.display(),
-            workspace.display()
-        ));
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
