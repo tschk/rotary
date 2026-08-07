@@ -303,6 +303,28 @@ mod tests {
         let router = SmartRouter::new(config);
         let models = router.route_batch(&["hello", "analyze this"], "gpt-4o");
         assert_eq!(models, vec!["gpt-4o-mini", "gpt-4o"]);
+
+        // Test with routing disabled
+        let disabled_config = RoutingConfig {
+            enabled: false,
+            simple_model: Some("gpt-4o-mini".to_string()),
+            strong_model: Some("gpt-4o".to_string()),
+            ..Default::default()
+        };
+        let disabled_router = SmartRouter::new(disabled_config);
+        let models_disabled = disabled_router.route_batch(&["hello", "analyze this"], "gpt-4o");
+        assert_eq!(models_disabled, vec!["gpt-4o", "gpt-4o"]);
+
+        // Test with no simple/strong models specified
+        let empty_config = RoutingConfig {
+            enabled: true,
+            simple_model: None,
+            strong_model: None,
+            ..Default::default()
+        };
+        let empty_router = SmartRouter::new(empty_config);
+        let models_empty = empty_router.route_batch(&["hello", "analyze this"], "gpt-4o");
+        assert_eq!(models_empty, vec!["gpt-4o", "gpt-4o"]);
     }
 
     #[test]
