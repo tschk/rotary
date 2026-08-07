@@ -528,6 +528,17 @@ mod tests {
     }
 
     #[test]
+    fn test_classify_tool_edge_cases() {
+        // String matching is case-sensitive and exact
+        assert_eq!(classify_tool("READ"), ToolClass::Mutating);
+        assert_eq!(classify_tool("read "), ToolClass::Mutating);
+        assert_eq!(classify_tool(" read"), ToolClass::Mutating);
+        assert_eq!(classify_tool("r\0ead"), ToolClass::Mutating);
+        assert_eq!(classify_tool("Idempotent"), ToolClass::Mutating);
+        assert_eq!(classify_tool("Mutating"), ToolClass::Mutating);
+    }
+
+    #[test]
     fn test_classify_tool() {
         assert_eq!(classify_tool("read"), ToolClass::Idempotent);
         assert_eq!(classify_tool("grep"), ToolClass::Idempotent);
