@@ -520,12 +520,7 @@ pub fn verify_plugin_integrity(path: &Path, expected_sha256: &str) -> Result<(),
 /// Compute a stable directory hash used for plugin integrity checks.
 pub fn compute_dir_sha256(path: &Path) -> Result<String, MarketplaceError> {
     let mut hasher = Sha256::new();
-    let mut entries: Vec<PathBuf> = std::fs::read_dir(path)
-        .map_err(|e| MarketplaceError::InstallFailed(e.to_string()))?
-        .filter_map(|e| e.ok().map(|e| e.path()))
-        .collect();
-    entries.sort();
-    hash_entries(&mut hasher, path, &entries)?;
+    hash_entries(&mut hasher, path, path)?;
     let digest = hasher.finalize();
     Ok(format!("{:x}", digest))
 }
@@ -533,33 +528,40 @@ pub fn compute_dir_sha256(path: &Path) -> Result<String, MarketplaceError> {
 fn hash_entries(
     hasher: &mut Sha256,
     base: &Path,
-    entries: &[PathBuf],
+    current_dir: &Path,
 ) -> Result<(), MarketplaceError> {
+    let mut entries: Vec<std::fs::DirEntry> = std::fs::read_dir(current_dir)
+        .map_err(|e| MarketplaceError::InstallFailed(e.to_string()))?
+        .filter_map(Result::ok)
+        .collect();
+
+    // Sort by path for stable hashing, maintaining compatibility with the previous implementation
+    entries.sort_by_cached_key(|e| e.path());
+
     for entry in entries {
-        let file_name = entry
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_default();
-        if entry.is_dir() {
-            if file_name == ".git" {
+        let path = entry.path();
+        let file_name = entry.file_name();
+        let file_name_str = file_name.to_string_lossy();
+
+        let file_type = entry
+            .file_type()
+            .map_err(|e| MarketplaceError::InstallFailed(e.to_string()))?;
+
+        if file_type.is_dir() {
+            if file_name_str == ".git" {
                 continue;
             }
-            let mut child_entries: Vec<PathBuf> = std::fs::read_dir(entry)
-                .map_err(|e| MarketplaceError::InstallFailed(e.to_string()))?
-                .filter_map(|e| e.ok().map(|e| e.path()))
-                .collect();
-            child_entries.sort();
-            hash_entries(hasher, base, &child_entries)?;
+            hash_entries(hasher, base, &path)?;
         } else {
-            let rel = entry
+            let rel = path
                 .strip_prefix(base)
-                .unwrap_or(entry)
+                .unwrap_or(&path)
                 .to_string_lossy()
                 .to_string();
             hasher.update(rel.as_bytes());
             hasher.update(b"\0");
             let data =
-                std::fs::read(entry).map_err(|e| MarketplaceError::InstallFailed(e.to_string()))?;
+                std::fs::read(&path).map_err(|e| MarketplaceError::InstallFailed(e.to_string()))?;
             hasher.update(&data);
             hasher.update(b"\0");
         }
