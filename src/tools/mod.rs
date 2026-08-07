@@ -10,18 +10,13 @@ use crate::subagent::{SubagentConfig, SubagentManager};
 use parking_lot::Mutex;
 use std::sync::Arc;
 
-async fn execute_spawn_agent(
-    manager: Arc<Mutex<SubagentManager>>,
-    ctx: Arc<ToolContext>,
-    args: String,
-) -> ToolResult {
-    let v: serde_json::Value = match serde_json::from_str(&args) {
-        Ok(v) => v,
-        Err(e) => return ToolResult::err("spawn_agent", format!("invalid json: {e}")),
-    };
+fn parse_spawn_args(args: &str) -> Result<(SubagentConfig, String), String> {
+    let v: serde_json::Value = serde_json::from_str(args)
+        .map_err(|e| format!("invalid json: {e}"))?;
+
     let prompt = match v.get("prompt").and_then(|p| p.as_str()) {
         Some(p) if !p.is_empty() => p.to_string(),
-        _ => return ToolResult::err("spawn_agent", "prompt required"),
+        _ => return Err("prompt required".to_string()),
     };
     let name = v
         .get("name")
@@ -36,9 +31,19 @@ async fn execute_spawn_agent(
         workspace_isolation: isolate,
         ..SubagentConfig::default()
     };
+
+    Ok((config, prompt))
+}
+
+fn spawn_subagent(
+    manager: &Arc<Mutex<SubagentManager>>,
+    config: SubagentConfig,
+    prompt: &str,
+    workspace_root: &std::path::Path,
+) -> ToolResult {
     let spawn_res = manager
         .lock()
-        .spawn_background(config, &prompt, &ctx.workspace_root);
+        .spawn_background(config, prompt, workspace_root);
     match spawn_res {
         Ok(handle) => ToolResult::ok(
             "spawn_agent",
@@ -51,6 +56,19 @@ async fn execute_spawn_agent(
         ),
         Err(e) => ToolResult::err("spawn_agent", e.to_string()),
     }
+}
+
+async fn execute_spawn_agent(
+    manager: Arc<Mutex<SubagentManager>>,
+    ctx: Arc<ToolContext>,
+    args: String,
+) -> ToolResult {
+    let (config, prompt) = match parse_spawn_args(&args) {
+        Ok(res) => res,
+        Err(e) => return ToolResult::err("spawn_agent", e),
+    };
+
+    spawn_subagent(&manager, config, &prompt, &ctx.workspace_root)
 }
 
 async fn execute_list_subagents(
