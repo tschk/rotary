@@ -485,7 +485,7 @@ mod tests {
     #[test]
     fn test_profile_workspace_path_validation() {
         let root = tempdir().unwrap();
-        let root_path = root.path();
+        let root_path = root.path().canonicalize().unwrap();
         let manager = SandboxManager::new(SandboxProfile::Workspace, root_path.to_path_buf());
 
         // In workspace, allowed to read and write.
@@ -507,7 +507,7 @@ mod tests {
     #[test]
     fn test_profile_readonly_path_validation() {
         let root = tempdir().unwrap();
-        let root_path = root.path();
+        let root_path = root.path().canonicalize().unwrap();
         let manager = SandboxManager::new(SandboxProfile::ReadOnly, root_path.to_path_buf());
 
         // Read everywhere is allowed
@@ -524,7 +524,7 @@ mod tests {
     #[test]
     fn test_profile_custom_path_validation() {
         let root = tempdir().unwrap();
-        let root_path = root.path();
+        let root_path = root.path().canonicalize().unwrap();
 
         let mut config = SandboxConfig::new(SandboxProfile::Custom, root_path.to_path_buf());
         let allowed_path = root_path.join("allowed.txt");
@@ -544,7 +544,7 @@ mod tests {
     #[test]
     fn test_deny_paths_override() {
         let root = tempdir().unwrap();
-        let root_path = root.path();
+        let root_path = root.path().canonicalize().unwrap();
         let mut manager = SandboxManager::new(SandboxProfile::Workspace, root_path.to_path_buf());
 
         let denied_path = root_path.join("secret.txt");
@@ -558,7 +558,10 @@ mod tests {
     #[test]
     fn test_validate_command() {
         let root = tempdir().unwrap();
-        let manager = SandboxManager::new(SandboxProfile::Workspace, root.path().to_path_buf());
+        let manager = SandboxManager::new(
+            SandboxProfile::Workspace,
+            root.path().canonicalize().unwrap(),
+        );
 
         // Allowed commands
         assert!(manager.validate_command("ls -la").is_ok());
@@ -575,7 +578,10 @@ mod tests {
     #[test]
     fn test_validate_network() {
         let root = tempdir().unwrap();
-        let mut manager = SandboxManager::new(SandboxProfile::Workspace, root.path().to_path_buf());
+        let mut manager = SandboxManager::new(
+            SandboxProfile::Workspace,
+            root.path().canonicalize().unwrap(),
+        );
 
         // Denied by default
         assert!(manager.validate_network().is_err());
@@ -588,7 +594,10 @@ mod tests {
     #[test]
     fn test_validate_env() {
         let root = tempdir().unwrap();
-        let mut config = SandboxConfig::new(SandboxProfile::Workspace, root.path().to_path_buf());
+        let mut config = SandboxConfig::new(
+            SandboxProfile::Workspace,
+            root.path().canonicalize().unwrap(),
+        );
         config.allow_env = vec!["ALLOWED_VAR".to_string()];
 
         let manager = SandboxManager::from_config(config);
@@ -606,7 +615,10 @@ mod tests {
     #[test]
     fn test_deactivated_manager() {
         let root = tempdir().unwrap();
-        let mut manager = SandboxManager::new(SandboxProfile::Workspace, root.path().to_path_buf());
+        let mut manager = SandboxManager::new(
+            SandboxProfile::Workspace,
+            root.path().canonicalize().unwrap(),
+        );
 
         manager.deactivate();
 
@@ -624,7 +636,10 @@ mod tests {
     #[test]
     fn test_violation_logging() {
         let root = tempdir().unwrap();
-        let manager = SandboxManager::new(SandboxProfile::Workspace, root.path().to_path_buf());
+        let manager = SandboxManager::new(
+            SandboxProfile::Workspace,
+            root.path().canonicalize().unwrap(),
+        );
 
         // Trigger a violation
         let _ = manager.validate_path(&PathBuf::from("/etc/passwd"), false);
