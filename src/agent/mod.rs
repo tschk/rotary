@@ -848,11 +848,11 @@ impl Agent {
                 system
             };
 
-            #[allow(unused_mut)]
+            #[cfg_attr(not(feature = "providers"), allow(unused_mut))]
             let mut tool_calls: Vec<ToolCall> = Vec::new();
-            #[allow(unused_assignments)]
+            #[cfg_attr(not(feature = "providers"), allow(unused_assignments))]
             let mut assistant_content = String::new();
-            #[allow(unused_mut)]
+            #[cfg_attr(not(feature = "providers"), allow(unused_mut))]
             let mut provider_usage: Option<TokenUsage> = None;
 
             self.emit(Event::MessageStart {
