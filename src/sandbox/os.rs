@@ -315,7 +315,7 @@ impl OsSandboxRunner {
 
 /// Returns true if `bwrap` (Bubblewrap) is available in `PATH`.
 pub fn has_bubblewrap() -> bool {
-    find_in_path("bwrap")
+    find_in_path("bwrap", std::env::var("PATH").unwrap_or_default())
 }
 
 /// Returns true if `sandbox-exec` (seatbelt) is available. Always true on
@@ -343,15 +343,20 @@ pub fn detect_sandbox() -> OsSandbox {
     OsSandbox::UserspaceOnly
 }
 
-fn find_in_path(name: &str) -> bool {
-    let Ok(path) = std::env::var("PATH") else {
-        return false;
-    };
-    for dir in path.split([':', ';']) {
-        if dir.is_empty() {
-            continue;
-        }
-        if Path::new(dir).join(name).is_file() {
+#[cfg(unix)]
+fn is_executable(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+}
+
+#[cfg(not(unix))]
+fn is_executable(path: &Path) -> bool {
+    path.is_file()
+}
+
+fn find_in_path<P: AsRef<std::ffi::OsStr>>(name: &str, path: P) -> bool {
+    for dir in std::env::split_paths(path.as_ref()) {
+        if is_executable(&dir.join(name)) {
             return true;
         }
     }
@@ -361,35 +366,6 @@ fn find_in_path(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
-
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
-
-    struct EnvGuard {
-        _mutex_guard: std::sync::MutexGuard<'static, ()>,
-        original_path: Option<std::ffi::OsString>,
-    }
-
-    impl EnvGuard {
-        fn new() -> Self {
-            let guard = ENV_LOCK.lock().unwrap();
-            let original_path = std::env::var_os("PATH");
-            Self {
-                _mutex_guard: guard,
-                original_path,
-            }
-        }
-    }
-
-    impl Drop for EnvGuard {
-        fn drop(&mut self) {
-            if let Some(ref p) = self.original_path {
-                std::env::set_var("PATH", p);
-            } else {
-                std::env::remove_var("PATH");
-            }
-        }
-    }
 
     #[test]
     fn test_detect_sandbox_returns_valid_mode() {
@@ -427,53 +403,49 @@ mod tests {
     }
 
     #[test]
-    fn test_has_bubblewrap_found() {
-        let _guard = EnvGuard::new();
+    fn test_has_bubblewrap() {
+        has_bubblewrap();
+    }
+
+    #[test]
+    fn test_find_in_path_found() {
         let temp_dir = tempfile::tempdir().unwrap();
         let bwrap_path = temp_dir.path().join("bwrap");
         std::fs::write(&bwrap_path, "").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&bwrap_path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
 
-        let path_var = temp_dir.path();
-        std::env::set_var("PATH", path_var);
-
-        assert!(has_bubblewrap());
+        let path = temp_dir.path().to_string_lossy().into_owned();
+        assert!(find_in_path("bwrap", &path));
     }
 
     #[test]
-    fn test_has_bubblewrap_not_found() {
-        let _guard = EnvGuard::new();
+    fn test_find_in_path_not_found() {
         let temp_dir = tempfile::tempdir().unwrap();
-
-        let path_var = temp_dir.path();
-        std::env::set_var("PATH", path_var);
-
-        assert!(!has_bubblewrap());
+        let path = temp_dir.path().to_string_lossy().into_owned();
+        assert!(!find_in_path("bwrap", &path));
     }
 
     #[test]
-    fn test_has_bubblewrap_is_dir() {
-        let _guard = EnvGuard::new();
+    fn test_find_in_path_is_dir() {
         let temp_dir = tempfile::tempdir().unwrap();
         let bwrap_path = temp_dir.path().join("bwrap");
         std::fs::create_dir(&bwrap_path).unwrap();
 
-        let path_var = temp_dir.path();
-        std::env::set_var("PATH", path_var);
-
-        assert!(!has_bubblewrap());
+        let path = temp_dir.path().to_string_lossy().into_owned();
+        assert!(!find_in_path("bwrap", &path));
     }
 
     #[test]
-    fn test_has_bubblewrap_empty_path() {
-        let _guard = EnvGuard::new();
-        std::env::remove_var("PATH");
-
-        assert!(!has_bubblewrap());
+    fn test_find_in_path_empty_path() {
+        assert!(!find_in_path("bwrap", ""));
     }
 
     #[test]
-    fn test_has_bubblewrap_multiple_paths() {
-        let _guard = EnvGuard::new();
+    fn test_find_in_path_multiple_paths() {
         let temp_dir1 = tempfile::tempdir().unwrap();
         let temp_dir2 = tempfile::tempdir().unwrap();
         let temp_dir3 = tempfile::tempdir().unwrap();
@@ -481,6 +453,11 @@ mod tests {
         // Put bwrap in the second directory
         let bwrap_path = temp_dir2.path().join("bwrap");
         std::fs::write(&bwrap_path, "").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&bwrap_path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
 
         let paths = vec![
             temp_dir1.path().to_path_buf(),
@@ -489,8 +466,21 @@ mod tests {
         ];
 
         let new_path = std::env::join_paths(paths).unwrap();
-        std::env::set_var("PATH", new_path);
+        assert!(find_in_path("bwrap", &new_path));
+    }
 
-        assert!(has_bubblewrap());
+    #[test]
+    #[cfg(unix)]
+    fn test_find_in_path_not_executable() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let bwrap_path = temp_dir.path().join("bwrap");
+        std::fs::write(&bwrap_path, "").unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&bwrap_path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        }
+
+        let path = temp_dir.path().to_string_lossy().into_owned();
+        assert!(!find_in_path("bwrap", &path));
     }
 }
