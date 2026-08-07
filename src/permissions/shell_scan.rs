@@ -1391,6 +1391,16 @@ mod tests {
     use crate::permissions::is_dangerous_shell_command;
 
     #[test]
+    fn test_scannable_command() {
+        // Test basic reduction of a simple command
+        assert_eq!(scannable_command("echo hello"), "echo hello");
+        // Test reduction of quoted strings (inner is not unquoted/treated as executable)
+        assert_eq!(scannable_command("echo 'rm -rf /'"), "echo ''");
+        // Test nested executable payload extraction
+        assert!(scannable_command("bash -c 'rm -rf /'").contains("rm -rf /"));
+    }
+
+    #[test]
     fn known_bypasses_are_now_dangerous() {
         for command in [
             "rm -r -f /",
