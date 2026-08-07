@@ -16,6 +16,7 @@ pub struct IpcServer {
     pub tools: Arc<Mutex<ToolRegistry>>,
     pub plugins: Arc<Mutex<PluginRegistry>>,
     pub session: Arc<Mutex<Session>>,
+    pub token_hash: Option<Vec<u8>>,
 }
 
 impl Clone for IpcServer {
@@ -26,18 +27,29 @@ impl Clone for IpcServer {
             tools: self.tools.clone(),
             plugins: self.plugins.clone(),
             session: self.session.clone(),
+            token_hash: self.token_hash.clone(),
         }
     }
 }
 
 impl IpcServer {
     pub fn new(socket_path: impl Into<String>) -> Self {
+        let token = std::env::var("RX4_IPC_TOKEN").ok().filter(|s| !s.is_empty());
+        let token_hash = token.map(|t| {
+            use sha2::{Digest, Sha256};
+            let mut hasher = Sha256::new();
+            hasher.update(t.as_bytes());
+            std::env::remove_var("RX4_IPC_TOKEN");
+            hasher.finalize().to_vec()
+        });
+
         Self {
             socket_path: socket_path.into(),
             agent: Arc::new(AsyncMutex::new(Agent::new())),
             tools: Arc::new(Mutex::new(ToolRegistry::new())),
             plugins: Arc::new(Mutex::new(PluginRegistry::new())),
             session: Arc::new(Mutex::new(Session::new("default", "default"))),
+            token_hash,
         }
     }
 
@@ -119,14 +131,11 @@ impl IpcServer {
     }
 
     async fn handle_request(&self, line: &str) -> String {
-        let required_token = std::env::var("RX4_IPC_TOKEN")
-            .ok()
-            .filter(|s| !s.is_empty());
-        self.handle_request_with_token(line, required_token.as_deref())
+        self.handle_request_with_token(line, self.token_hash.as_deref())
             .await
     }
 
-    async fn handle_request_with_token(&self, line: &str, required_token: Option<&str>) -> String {
+    async fn handle_request_with_token(&self, line: &str, required_token_hash: Option<&[u8]>) -> String {
         let req: Value = match serde_json::from_str(line) {
             Ok(v) => v,
             Err(e) => return error_response(None, -32700, &format!("parse error: {e}")),
@@ -151,12 +160,16 @@ impl IpcServer {
                 | "session_clear"
         );
         if method != "ping" {
-            match required_token {
-                Some(token)
-                    if provided.len() != token.len()
-                        || !bool::from(provided.as_bytes().ct_eq(token.as_bytes())) =>
-                {
-                    return error_response(id, -32000, "invalid or missing token");
+            match required_token_hash {
+                Some(token_hash) => {
+                    use sha2::{Digest, Sha256};
+                    let mut hasher = Sha256::new();
+                    hasher.update(provided.as_bytes());
+                    let provided_hash = hasher.finalize();
+
+                    if !bool::from(provided_hash.as_slice().ct_eq(token_hash)) {
+                        return error_response(id, -32000, "invalid or missing token");
+                    }
                 }
                 None if mutating => {
                     return error_response(
@@ -369,11 +382,16 @@ mod tests {
 
     #[tokio::test]
     async fn configured_ipc_token_authenticates_all_non_ping_methods() {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(b"secret");
+        let secret_hash = hasher.finalize();
+
         let server = IpcServer::new("/tmp/test_ipc_auth_socket_2");
         let denied = server
             .handle_request_with_token(
                 r#"{"jsonrpc":"2.0","id":1,"method":"state","params":{}}"#,
-                Some("secret"),
+                Some(secret_hash.as_slice()),
             )
             .await;
         assert!(denied.contains("invalid or missing token"), "{denied}");
@@ -381,7 +399,7 @@ mod tests {
         let allowed = server
             .handle_request_with_token(
                 r#"{"jsonrpc":"2.0","id":2,"method":"state","params":{"token":"secret"}}"#,
-                Some("secret"),
+                Some(secret_hash.as_slice()),
             )
             .await;
         assert!(allowed.contains("policy_mode"), "{allowed}");
