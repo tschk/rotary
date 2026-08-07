@@ -217,4 +217,21 @@ mod tests {
         }
         assert!(!tool_allowed(&profile(Scope::Ask), "web_search"));
     }
+
+    #[test]
+    fn compose_prompt_formats_correctly() {
+        let p = profile(Scope::Coding);
+
+        let with_base = compose_prompt(Some("Base prompt"), &p);
+        assert_eq!(
+            with_base,
+            format!("Base prompt\n\n# Scope: coding\n\n{}", p.system_addendum)
+        );
+
+        let without_base = compose_prompt(None, &p);
+        assert_eq!(
+            without_base,
+            format!("# Scope: coding\n\n{}", p.system_addendum)
+        );
+    }
 }
