@@ -86,4 +86,21 @@ mod tests {
         assert!(instr.content.contains("agents rules"));
         assert!(instr.content.contains("claude rules"));
     }
+
+    #[test]
+    fn test_compose_system_prompt() {
+        // Test with base prompt
+        let result = compose_system_prompt(Some("You are an AI assistant."), "Do not cause harm.");
+        assert_eq!(
+            result.unwrap(),
+            "You are an AI assistant.\n\n# Project Instructions\n\nDo not cause harm."
+        );
+
+        // Test without base prompt
+        let result2 = compose_system_prompt(None, "Follow standard procedures.");
+        assert_eq!(
+            result2.unwrap(),
+            "# Project Instructions\n\nFollow standard procedures."
+        );
+    }
 }
