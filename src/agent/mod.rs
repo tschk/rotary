@@ -850,8 +850,7 @@ impl Agent {
 
             #[allow(unused_mut)]
             let mut tool_calls: Vec<ToolCall> = Vec::new();
-            #[allow(unused_assignments)]
-            let mut assistant_content = String::new();
+            let mut assistant_content;
             #[allow(unused_mut)]
             let mut provider_usage: Option<TokenUsage> = None;
 
@@ -861,6 +860,7 @@ impl Agent {
 
             #[cfg(feature = "providers")]
             {
+                assistant_content = String::new();
                 use crate::provider::StreamEvent;
                 use futures::StreamExt;
                 let mut attempts = 0;
