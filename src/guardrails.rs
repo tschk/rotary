@@ -705,18 +705,23 @@ mod tests {
         assert!(!check_repeated_failures(&empty_results, 3));
         assert!(check_repeated_failures(&empty_results, 0));
 
-        let fail1 = ToolResult::err("1", "error");
-        let fail2 = ToolResult::err("2", "error");
-        let fail3 = ToolResult::err("3", "error");
-        let fail4 = ToolResult::err("4", "error");
-        let success1 = ToolResult::ok("5", "ok");
+        let fail1 = ToolResult { id: "test".to_string(), content: "test".to_string(), is_error: true, error_kind: None };
+        let fail2 = ToolResult { id: "test".to_string(), content: "test".to_string(), is_error: true, error_kind: None };
+        let fail3 = ToolResult { id: "test".to_string(), content: "test".to_string(), is_error: true, error_kind: None };
+        let fail4 = ToolResult { id: "test".to_string(), content: "test".to_string(), is_error: true, error_kind: None };
+        let success1 = ToolResult { id: "test".to_string(), content: "test".to_string(), is_error: false, error_kind: None };
 
         // Failures below threshold
         let results_below = vec![fail1.clone(), success1.clone(), fail2.clone()];
         assert!(!check_repeated_failures(&results_below, 3));
 
         // Failures exactly at threshold
-        let results_exact = vec![fail1.clone(), fail2.clone(), success1.clone(), fail3.clone()];
+        let results_exact = vec![
+            fail1.clone(),
+            fail2.clone(),
+            success1.clone(),
+            fail3.clone(),
+        ];
         assert!(check_repeated_failures(&results_exact, 3));
 
         // Failures exceeding threshold
