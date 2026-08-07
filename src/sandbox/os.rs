@@ -361,6 +361,35 @@ fn find_in_path(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    struct EnvGuard {
+        _mutex_guard: std::sync::MutexGuard<'static, ()>,
+        original_path: Option<std::ffi::OsString>,
+    }
+
+    impl EnvGuard {
+        fn new() -> Self {
+            let guard = ENV_LOCK.lock().unwrap();
+            let original_path = std::env::var_os("PATH");
+            Self {
+                _mutex_guard: guard,
+                original_path,
+            }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            if let Some(ref p) = self.original_path {
+                std::env::set_var("PATH", p);
+            } else {
+                std::env::remove_var("PATH");
+            }
+        }
+    }
 
     #[test]
     fn test_detect_sandbox_returns_valid_mode() {
@@ -395,5 +424,73 @@ mod tests {
     #[test]
     fn test_detect_sandbox_other_platforms() {
         assert_eq!(detect_sandbox(), OsSandbox::UserspaceOnly);
+    }
+
+    #[test]
+    fn test_has_bubblewrap_found() {
+        let _guard = EnvGuard::new();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let bwrap_path = temp_dir.path().join("bwrap");
+        std::fs::write(&bwrap_path, "").unwrap();
+
+        let path_var = temp_dir.path();
+        std::env::set_var("PATH", path_var);
+
+        assert!(has_bubblewrap());
+    }
+
+    #[test]
+    fn test_has_bubblewrap_not_found() {
+        let _guard = EnvGuard::new();
+        let temp_dir = tempfile::tempdir().unwrap();
+
+        let path_var = temp_dir.path();
+        std::env::set_var("PATH", path_var);
+
+        assert!(!has_bubblewrap());
+    }
+
+    #[test]
+    fn test_has_bubblewrap_is_dir() {
+        let _guard = EnvGuard::new();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let bwrap_path = temp_dir.path().join("bwrap");
+        std::fs::create_dir(&bwrap_path).unwrap();
+
+        let path_var = temp_dir.path();
+        std::env::set_var("PATH", path_var);
+
+        assert!(!has_bubblewrap());
+    }
+
+    #[test]
+    fn test_has_bubblewrap_empty_path() {
+        let _guard = EnvGuard::new();
+        std::env::remove_var("PATH");
+
+        assert!(!has_bubblewrap());
+    }
+
+    #[test]
+    fn test_has_bubblewrap_multiple_paths() {
+        let _guard = EnvGuard::new();
+        let temp_dir1 = tempfile::tempdir().unwrap();
+        let temp_dir2 = tempfile::tempdir().unwrap();
+        let temp_dir3 = tempfile::tempdir().unwrap();
+
+        // Put bwrap in the second directory
+        let bwrap_path = temp_dir2.path().join("bwrap");
+        std::fs::write(&bwrap_path, "").unwrap();
+
+        let paths = vec![
+            temp_dir1.path().to_path_buf(),
+            temp_dir2.path().to_path_buf(),
+            temp_dir3.path().to_path_buf(),
+        ];
+
+        let new_path = std::env::join_paths(paths).unwrap();
+        std::env::set_var("PATH", new_path);
+
+        assert!(has_bubblewrap());
     }
 }
