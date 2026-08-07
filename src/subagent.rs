@@ -189,8 +189,6 @@ impl SubagentResult {
 struct SubagentState {
     #[allow(dead_code)]
     id: String,
-    #[allow(dead_code)]
-    name: String,
     status: SubagentStatus,
     result: Option<SubagentResult>,
     worktree_path: Option<PathBuf>,
@@ -660,7 +658,6 @@ impl SubagentManager {
 
         let state = Arc::new(Mutex::new(SubagentState {
             id: id.clone(),
-            name: config.name.clone(),
             status: SubagentStatus::Pending,
             result: None,
             worktree_path: worktree_path.clone(),
@@ -1067,7 +1064,6 @@ mod tests {
     fn status_transitions_cover_all_variants() {
         let state = Arc::new(Mutex::new(SubagentState {
             id: "x".to_string(),
-            name: "x".to_string(),
             status: SubagentStatus::Pending,
             result: None,
             worktree_path: None,
