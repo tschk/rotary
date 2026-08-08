@@ -315,7 +315,7 @@ impl OsSandboxRunner {
 
 /// Returns true if `bwrap` (Bubblewrap) is available in `PATH`.
 pub fn has_bubblewrap() -> bool {
-    find_in_path("bwrap")
+    find_in_path("bwrap", std::env::var("PATH").unwrap_or_default())
 }
 
 /// Returns true if `sandbox-exec` (seatbelt) is available. Always true on
@@ -343,15 +343,20 @@ pub fn detect_sandbox() -> OsSandbox {
     OsSandbox::UserspaceOnly
 }
 
-fn find_in_path(name: &str) -> bool {
-    let Ok(path) = std::env::var("PATH") else {
-        return false;
-    };
-    for dir in path.split([':', ';']) {
-        if dir.is_empty() {
-            continue;
-        }
-        if Path::new(dir).join(name).is_file() {
+#[cfg(unix)]
+fn is_executable(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+}
+
+#[cfg(not(unix))]
+fn is_executable(path: &Path) -> bool {
+    path.is_file()
+}
+
+fn find_in_path<P: AsRef<std::ffi::OsStr>>(name: &str, path: P) -> bool {
+    for dir in std::env::split_paths(path.as_ref()) {
+        if is_executable(&dir.join(name)) {
             return true;
         }
     }
@@ -395,5 +400,87 @@ mod tests {
     #[test]
     fn test_detect_sandbox_other_platforms() {
         assert_eq!(detect_sandbox(), OsSandbox::UserspaceOnly);
+    }
+
+    #[test]
+    fn test_has_bubblewrap() {
+        has_bubblewrap();
+    }
+
+    #[test]
+    fn test_find_in_path_found() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let bwrap_path = temp_dir.path().join("bwrap");
+        std::fs::write(&bwrap_path, "").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&bwrap_path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        let path = temp_dir.path().to_string_lossy().into_owned();
+        assert!(find_in_path("bwrap", &path));
+    }
+
+    #[test]
+    fn test_find_in_path_not_found() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = temp_dir.path().to_string_lossy().into_owned();
+        assert!(!find_in_path("bwrap", &path));
+    }
+
+    #[test]
+    fn test_find_in_path_is_dir() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let bwrap_path = temp_dir.path().join("bwrap");
+        std::fs::create_dir(&bwrap_path).unwrap();
+
+        let path = temp_dir.path().to_string_lossy().into_owned();
+        assert!(!find_in_path("bwrap", &path));
+    }
+
+    #[test]
+    fn test_find_in_path_empty_path() {
+        assert!(!find_in_path("bwrap", ""));
+    }
+
+    #[test]
+    fn test_find_in_path_multiple_paths() {
+        let temp_dir1 = tempfile::tempdir().unwrap();
+        let temp_dir2 = tempfile::tempdir().unwrap();
+        let temp_dir3 = tempfile::tempdir().unwrap();
+
+        // Put bwrap in the second directory
+        let bwrap_path = temp_dir2.path().join("bwrap");
+        std::fs::write(&bwrap_path, "").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&bwrap_path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        let paths = vec![
+            temp_dir1.path().to_path_buf(),
+            temp_dir2.path().to_path_buf(),
+            temp_dir3.path().to_path_buf(),
+        ];
+
+        let new_path = std::env::join_paths(paths).unwrap();
+        assert!(find_in_path("bwrap", &new_path));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_find_in_path_not_executable() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let bwrap_path = temp_dir.path().join("bwrap");
+        std::fs::write(&bwrap_path, "").unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&bwrap_path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        }
+
+        let path = temp_dir.path().to_string_lossy().into_owned();
+        assert!(!find_in_path("bwrap", &path));
     }
 }
