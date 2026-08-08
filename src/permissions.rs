@@ -1407,4 +1407,16 @@ mod tests {
             Decision::Allow
         );
     }
+
+    #[test]
+    fn test_with_os_sandbox() {
+        let p = Policy::full_access().with_os_sandbox(false);
+        assert!(!p.enable_os_sandbox);
+
+        let p = p.with_os_sandbox(true);
+        assert!(p.enable_os_sandbox);
+
+        let p = Policy::workspace_write().with_os_sandbox(false);
+        assert!(!p.enable_os_sandbox);
+    }
 }
