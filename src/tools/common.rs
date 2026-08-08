@@ -18,7 +18,7 @@ pub(crate) fn lexically_normalize(path: &Path) -> PathBuf {
     for component in path.components() {
         match component {
             std::path::Component::ParentDir => {
-                let pop_success = match normalized.components().last() {
+                let pop_success = match normalized.components().next_back() {
                     Some(std::path::Component::Normal(_)) => {
                         normalized.pop();
                         true
@@ -47,16 +47,6 @@ pub(crate) fn resolve_path(ctx: &ToolContext, path: &str, write: bool) -> Result
     } else {
         ctx.workspace_root.join(p)
     };
-
-    let lexically_requested = lexically_normalize(&requested);
-    let lexically_ws = lexically_normalize(&ctx.workspace_root);
-    if !lexically_requested.starts_with(&lexically_ws) {
-        return Err(format!(
-            "path escapes workspace: {} is outside {}",
-            lexically_requested.display(),
-            lexically_ws.display()
-        ));
-    }
 
     // Resolve existing symlinks and the nearest existing parent for create
     // operations. The returned path is the checked path, so the later open or
@@ -181,10 +171,14 @@ fn find_existing_ancestor(path: &Path) -> Result<(PathBuf, PathBuf), String> {
 /// Returns an error string if the path escapes.
 #[allow(dead_code)] // used by P1 scan/repomap fixes
 pub fn assert_within_workspace(resolved: &Path, workspace: &Path) -> Result<(), String> {
-    let lexically_resolved = lexically_normalize(resolved);
-    let lexically_ws = lexically_normalize(workspace);
+    let resolved = resolved
+        .canonicalize()
+        .unwrap_or_else(|_| lexically_normalize(resolved));
+    let workspace = workspace
+        .canonicalize()
+        .unwrap_or_else(|_| lexically_normalize(workspace));
 
-    if !lexically_resolved.starts_with(&lexically_ws) {
+    if !resolved.starts_with(&workspace) {
         return Err(format!(
             "path escapes workspace: {} is outside {}",
             resolved.display(),
