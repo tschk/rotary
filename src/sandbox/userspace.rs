@@ -476,3 +476,176 @@ fn is_blocked_command(cmd: &str) -> bool {
 // ---------------------------------------------------------------------------
 // OS-level sandbox enforcement
 // ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn test_profile_workspace_path_validation() {
+        let root = tempdir().unwrap();
+        let root_path = root.path().canonicalize().unwrap();
+        let manager = SandboxManager::new(SandboxProfile::Workspace, root_path.to_path_buf());
+
+        // In workspace, allowed to read and write.
+        let in_workspace = root_path.join("file.txt");
+        assert!(manager.validate_path(&in_workspace, false).is_ok());
+        assert!(manager.validate_path(&in_workspace, true).is_ok());
+
+        // Outside workspace, denied.
+        let out_workspace = PathBuf::from("/etc/passwd");
+        assert!(manager.validate_path(&out_workspace, false).is_err());
+        assert!(manager.validate_path(&out_workspace, true).is_err());
+
+        // Temp path, allowed.
+        let temp_path = PathBuf::from("/tmp/random_temp_file");
+        assert!(manager.validate_path(&temp_path, false).is_ok());
+        assert!(manager.validate_path(&temp_path, true).is_ok());
+    }
+
+    #[test]
+    fn test_profile_readonly_path_validation() {
+        let root = tempdir().unwrap();
+        let root_path = root.path().canonicalize().unwrap();
+        let manager = SandboxManager::new(SandboxProfile::ReadOnly, root_path.to_path_buf());
+
+        // Read everywhere is allowed
+        let in_workspace = root_path.join("file.txt");
+        let out_workspace = PathBuf::from("/etc/passwd");
+        assert!(manager.validate_path(&in_workspace, false).is_ok());
+        assert!(manager.validate_path(&out_workspace, false).is_ok());
+
+        // Write everywhere is denied
+        assert!(manager.validate_path(&in_workspace, true).is_err());
+        assert!(manager.validate_path(&out_workspace, true).is_err());
+    }
+
+    #[test]
+    fn test_profile_custom_path_validation() {
+        let root = tempdir().unwrap();
+        let root_path = root.path().canonicalize().unwrap();
+
+        let mut config = SandboxConfig::new(SandboxProfile::Custom, root_path.to_path_buf());
+        let allowed_path = root_path.join("allowed.txt");
+        config.allow_paths = vec![allowed_path.clone()];
+
+        let manager = SandboxManager::from_config(config);
+
+        // Allowed path
+        assert!(manager.validate_path(&allowed_path, false).is_ok());
+        assert!(manager.validate_path(&allowed_path, true).is_ok()); // writes are treated the same as reads in custom
+
+        // Denied path (not in allow_paths)
+        let other_path = root_path.join("other.txt");
+        assert!(manager.validate_path(&other_path, false).is_err());
+    }
+
+    #[test]
+    fn test_deny_paths_override() {
+        let root = tempdir().unwrap();
+        let root_path = root.path().canonicalize().unwrap();
+        let mut manager = SandboxManager::new(SandboxProfile::Workspace, root_path.to_path_buf());
+
+        let denied_path = root_path.join("secret.txt");
+        manager.deny_paths.push(denied_path.clone());
+
+        // Path is in workspace, but explicitly denied
+        assert!(manager.validate_path(&denied_path, false).is_err());
+        assert!(manager.validate_path(&denied_path, true).is_err());
+    }
+
+    #[test]
+    fn test_validate_command() {
+        let root = tempdir().unwrap();
+        let manager = SandboxManager::new(
+            SandboxProfile::Workspace,
+            root.path().canonicalize().unwrap(),
+        );
+
+        // Allowed commands
+        assert!(manager.validate_command("ls -la").is_ok());
+        assert!(manager.validate_command("echo hello").is_ok());
+
+        // Blocked commands
+        assert!(manager.validate_command("sudo rm -rf /").is_err());
+        assert!(manager.validate_command("chmod 777 file").is_err());
+        assert!(manager.validate_command("chmod -r 777 dir").is_err());
+        assert!(manager.validate_command("reboot").is_err());
+        assert!(manager.validate_command("kill -9 -1").is_err());
+    }
+
+    #[test]
+    fn test_validate_network() {
+        let root = tempdir().unwrap();
+        let mut manager = SandboxManager::new(
+            SandboxProfile::Workspace,
+            root.path().canonicalize().unwrap(),
+        );
+
+        // Denied by default
+        assert!(manager.validate_network().is_err());
+
+        // Allow network
+        manager.set_allow_network(true);
+        assert!(manager.validate_network().is_ok());
+    }
+
+    #[test]
+    fn test_validate_env() {
+        let root = tempdir().unwrap();
+        let mut config = SandboxConfig::new(
+            SandboxProfile::Workspace,
+            root.path().canonicalize().unwrap(),
+        );
+        config.allow_env = vec!["ALLOWED_VAR".to_string()];
+
+        let manager = SandboxManager::from_config(config);
+
+        let vars = vec![
+            ("ALLOWED_VAR".to_string(), "1".to_string()),
+            ("DENIED_VAR".to_string(), "2".to_string()),
+        ];
+
+        let filtered = manager.validate_env(&vars);
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].0, "ALLOWED_VAR");
+    }
+
+    #[test]
+    fn test_deactivated_manager() {
+        let root = tempdir().unwrap();
+        let mut manager = SandboxManager::new(
+            SandboxProfile::Workspace,
+            root.path().canonicalize().unwrap(),
+        );
+
+        manager.deactivate();
+
+        // When deactivated, everything is permitted
+        assert!(manager
+            .validate_path(&PathBuf::from("/etc/passwd"), true)
+            .is_ok());
+        assert!(manager.validate_command("sudo reboot").is_ok());
+        assert!(manager.validate_network().is_ok());
+
+        let vars = vec![("ANY_VAR".to_string(), "1".to_string())];
+        assert_eq!(manager.validate_env(&vars).len(), 1);
+    }
+
+    #[test]
+    fn test_violation_logging() {
+        let root = tempdir().unwrap();
+        let manager = SandboxManager::new(
+            SandboxProfile::Workspace,
+            root.path().canonicalize().unwrap(),
+        );
+
+        // Trigger a violation
+        let _ = manager.validate_path(&PathBuf::from("/etc/passwd"), false);
+
+        let violations = manager.violations();
+        assert_eq!(violations.len(), 1);
+        assert_eq!(violations[0].kind, ViolationKind::Path);
+    }
+}
