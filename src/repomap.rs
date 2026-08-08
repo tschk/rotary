@@ -265,7 +265,11 @@ impl RepoMap {
                     continue;
                 }
                 if words.contains(sym.name.as_str()) {
-                    *counts.entry(sym.name.clone()).or_insert(0) += 1;
+                    if let Some(c) = counts.get_mut(&sym.name) {
+                        *c += 1;
+                    } else {
+                        counts.insert(sym.name.clone(), 1);
+                    }
                 }
             }
         }
