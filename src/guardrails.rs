@@ -365,10 +365,16 @@ mod tests {
     use crate::agent::ToolEffect;
 
     #[test]
-    fn empty_detection() {
+    fn test_check_empty_turn() {
+        // Empty and whitespace only
         assert!(check_empty_turn(""));
         assert!(check_empty_turn("   "));
+        assert!(check_empty_turn("\t\n\r"));
+
+        // Valid text
         assert!(!check_empty_turn("hello"));
+        assert!(!check_empty_turn("  hello  "));
+        assert!(!check_empty_turn("\n\thello\n"));
     }
 
     #[test]
