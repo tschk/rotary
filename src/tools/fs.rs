@@ -113,6 +113,147 @@ pub(crate) fn exec_edit(ctx: Arc<ToolContext>, args: String) -> ToolFuture {
     })
 }
 
+fn resolve_working_dir(
+    ctx: &Arc<ToolContext>,
+    cwd: Option<String>,
+) -> Result<std::path::PathBuf, String> {
+    if let Some(cwd) = cwd {
+        resolve_path(ctx, &cwd, false)
+    } else if let Some(sb) = ctx.sandbox.as_ref() {
+        if let Err(e) = sb.validate_path(&ctx.workspace_root, false) {
+            return Err(e.to_string());
+        }
+        Ok(ctx.workspace_root.clone())
+    } else {
+        Ok(ctx.workspace_root.clone())
+    }
+}
+
+fn build_command(
+    ctx: &Arc<ToolContext>,
+    command: &str,
+    working_dir: &std::path::Path,
+) -> Result<Command, String> {
+    if let Some(os) = ctx.os_sandbox.as_ref() {
+        // Wrap bash -c under seatbelt/bwrap; convert std Command → tokio.
+        match os.command("bash", &["-c", command]) {
+            Ok(mut c) => {
+                c.current_dir(working_dir);
+                c.stdout(Stdio::piped()).stderr(Stdio::piped());
+                let mut tc = Command::from(c);
+                tc.kill_on_drop(true);
+                Ok(tc)
+            }
+            Err(e) => Err(e.to_string()),
+        }
+    } else if cfg!(target_os = "windows") {
+        // SECURITY: The `bash` tool is explicitly designed to execute arbitrary shell commands
+        // from the LLM. Command injection via operators is an intended feature.
+        // The LLM is instructed in the tool definition to not pass unsanitized external input.
+        let mut c = Command::new("cmd");
+        c.arg("/C").arg(command);
+        c.current_dir(working_dir);
+        c.stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
+        Ok(c)
+    } else {
+        // SECURITY: The `bash` tool is explicitly designed to execute arbitrary shell commands
+        // from the LLM. Command injection via operators (&, |, ;) is an intended feature.
+        // The LLM is instructed in the tool definition to not pass unsanitized external input.
+        let mut c = Command::new("bash");
+        c.arg("-c").arg(command);
+        c.current_dir(working_dir);
+        c.stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
+        Ok(c)
+    }
+}
+
+async fn wait_and_drain(
+    ctx: Arc<ToolContext>,
+    mut child: tokio::process::Child,
+    timeout: Duration,
+) -> Result<(Vec<u8>, Vec<u8>, i32), String> {
+    let mut stdout_pipe = child.stdout.take();
+    let mut stderr_pipe = child.stderr.take();
+
+    let drain = async {
+        let stdout_task = async {
+            let mut buf = Vec::new();
+            if let Some(mut out) = stdout_pipe.take() {
+                let _ = out.read_to_end(&mut buf).await;
+            }
+            buf
+        };
+        let stderr_task = async {
+            let mut buf = Vec::new();
+            if let Some(mut err) = stderr_pipe.take() {
+                let _ = err.read_to_end(&mut buf).await;
+            }
+            buf
+        };
+        let wait_task = async {
+            loop {
+                if ctx.cancellation.is_canceled() {
+                    let _ = child.kill().await;
+                    let _ = child.wait().await;
+                    return Err("command cancelled".to_string());
+                }
+                match child.try_wait() {
+                    Ok(Some(status)) => return Ok(status.code().unwrap_or(-1)),
+                    Ok(None) => tokio::time::sleep(Duration::from_millis(10)).await,
+                    Err(e) => return Err(format!("wait failed: {e}")),
+                }
+            }
+        };
+        // Drain pipes concurrent with wait — avoid pipe-buffer deadlock.
+        let (stdout_buf, stderr_buf, wait_res) = tokio::join!(stdout_task, stderr_task, wait_task);
+        let exit_code = wait_res?;
+        // If process still has leftover status after pipes closed:
+        let exit_code = if exit_code == -1 {
+            child.wait().await.ok().and_then(|s| s.code()).unwrap_or(-1)
+        } else {
+            exit_code
+        };
+        Ok::<_, String>((stdout_buf, stderr_buf, exit_code))
+    };
+
+    match tokio::time::timeout(timeout, drain).await {
+        Ok(Ok(v)) => Ok(v),
+        Ok(Err(msg)) => Err(msg),
+        Err(_) => {
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            Err(format!("command timed out after {}s", timeout.as_secs()))
+        }
+    }
+}
+
+fn format_output(stdout_buf: Vec<u8>, stderr_buf: Vec<u8>, exit_code: i32) -> String {
+    let stdout = String::from_utf8_lossy(&stdout_buf).to_string();
+    let stderr = String::from_utf8_lossy(&stderr_buf).to_string();
+
+    let mut result = String::new();
+    if !stdout.is_empty() {
+        result.push_str(&stdout);
+    }
+    if !stderr.is_empty() {
+        if !result.is_empty() {
+            result.push_str("\n--- stderr ---\n");
+        }
+        result.push_str(&stderr);
+    }
+    if exit_code != 0 {
+        result.push_str(&format!("\n(exit code: {exit_code})"));
+    }
+    if result.is_empty() {
+        result = "(no output)".to_string();
+    }
+    result
+}
+
 pub(crate) fn exec_bash(ctx: Arc<ToolContext>, args: String) -> ToolFuture {
     Box::pin(async move {
         let command = match parse_str_field(&args, "command") {
@@ -136,135 +277,28 @@ pub(crate) fn exec_bash(ctx: Arc<ToolContext>, args: String) -> ToolFuture {
             }
         }
 
-        let working_dir = if let Some(cwd) = cwd {
-            match resolve_path(&ctx, &cwd, false) {
-                Ok(p) => p,
-                Err(e) => return ToolResult::err("bash", e),
-            }
-        } else if let Some(sb) = ctx.sandbox.as_ref() {
-            if let Err(e) = sb.validate_path(&ctx.workspace_root, false) {
-                return ToolResult::err("bash", e.to_string());
-            }
-            ctx.workspace_root.clone()
-        } else {
-            ctx.workspace_root.clone()
+        let working_dir = match resolve_working_dir(&ctx, cwd) {
+            Ok(dir) => dir,
+            Err(e) => return ToolResult::err("bash", e),
         };
 
-        let mut cmd = if let Some(os) = ctx.os_sandbox.as_ref() {
-            // Wrap bash -c under seatbelt/bwrap; convert std Command → tokio.
-            match os.command("bash", &["-c", &command]) {
-                Ok(mut c) => {
-                    c.current_dir(&working_dir);
-                    c.stdout(Stdio::piped()).stderr(Stdio::piped());
-                    let mut tc = Command::from(c);
-                    tc.kill_on_drop(true);
-                    tc
-                }
-                Err(e) => return ToolResult::err("bash", e.to_string()),
-            }
-        } else if cfg!(target_os = "windows") {
-            // SECURITY: The `bash` tool is explicitly designed to execute arbitrary shell commands
-            // from the LLM. Command injection via operators is an intended feature.
-            // The LLM is instructed in the tool definition to not pass unsanitized external input.
-            let mut c = Command::new("cmd");
-            c.arg("/C").arg(&command);
-            c.current_dir(&working_dir);
-            c.stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .kill_on_drop(true);
-            c
-        } else {
-            // SECURITY: The `bash` tool is explicitly designed to execute arbitrary shell commands
-            // from the LLM. Command injection via operators (&, |, ;) is an intended feature.
-            // The LLM is instructed in the tool definition to not pass unsanitized external input.
-            let mut c = Command::new("bash");
-            c.arg("-c").arg(&command);
-            c.current_dir(&working_dir);
-            c.stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .kill_on_drop(true);
-            c
+        let mut cmd = match build_command(&ctx, &command, &working_dir) {
+            Ok(c) => c,
+            Err(e) => return ToolResult::err("bash", e),
         };
 
-        let mut child = match cmd.spawn() {
+        let child = match cmd.spawn() {
             Ok(c) => c,
             Err(e) => return ToolResult::err("bash", format!("failed to execute: {e}")),
         };
 
-        let mut stdout_pipe = child.stdout.take();
-        let mut stderr_pipe = child.stderr.take();
         let timeout = Duration::from_secs(timeout_secs);
-
-        let drain = async {
-            let stdout_task = async {
-                let mut buf = Vec::new();
-                if let Some(mut out) = stdout_pipe.take() {
-                    let _ = out.read_to_end(&mut buf).await;
-                }
-                buf
-            };
-            let stderr_task = async {
-                let mut buf = Vec::new();
-                if let Some(mut err) = stderr_pipe.take() {
-                    let _ = err.read_to_end(&mut buf).await;
-                }
-                buf
-            };
-            let wait_task = async {
-                loop {
-                    if ctx.cancellation.is_canceled() {
-                        let _ = child.kill().await;
-                        let _ = child.wait().await;
-                        return Err("command cancelled".to_string());
-                    }
-                    match child.try_wait() {
-                        Ok(Some(status)) => return Ok(status.code().unwrap_or(-1)),
-                        Ok(None) => tokio::time::sleep(Duration::from_millis(10)).await,
-                        Err(e) => return Err(format!("wait failed: {e}")),
-                    }
-                }
-            };
-            // Drain pipes concurrent with wait — avoid pipe-buffer deadlock.
-            let (stdout_buf, stderr_buf, wait_res) =
-                tokio::join!(stdout_task, stderr_task, wait_task);
-            let exit_code = wait_res?;
-            // If process still has leftover status after pipes closed:
-            let exit_code = if exit_code == -1 {
-                child.wait().await.ok().and_then(|s| s.code()).unwrap_or(-1)
-            } else {
-                exit_code
-            };
-            Ok::<_, String>((stdout_buf, stderr_buf, exit_code))
+        let (stdout_buf, stderr_buf, exit_code) = match wait_and_drain(ctx, child, timeout).await {
+            Ok(res) => res,
+            Err(msg) => return ToolResult::err("bash", msg),
         };
 
-        let (stdout_buf, stderr_buf, exit_code) = match tokio::time::timeout(timeout, drain).await {
-            Ok(Ok(v)) => v,
-            Ok(Err(msg)) => return ToolResult::err("bash", msg),
-            Err(_) => {
-                let _ = child.kill().await;
-                let _ = child.wait().await;
-                return ToolResult::err("bash", format!("command timed out after {timeout_secs}s"));
-            }
-        };
-        let stdout = String::from_utf8_lossy(&stdout_buf).to_string();
-        let stderr = String::from_utf8_lossy(&stderr_buf).to_string();
-
-        let mut result = String::new();
-        if !stdout.is_empty() {
-            result.push_str(&stdout);
-        }
-        if !stderr.is_empty() {
-            if !result.is_empty() {
-                result.push_str("\n--- stderr ---\n");
-            }
-            result.push_str(&stderr);
-        }
-        if exit_code != 0 {
-            result.push_str(&format!("\n(exit code: {exit_code})"));
-        }
-        if result.is_empty() {
-            result = "(no output)".to_string();
-        }
+        let result = format_output(stdout_buf, stderr_buf, exit_code);
         ToolResult::ok("bash", result)
     })
 }
