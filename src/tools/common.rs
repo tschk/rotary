@@ -107,7 +107,7 @@ pub fn validate_identifier(candidate: &str) -> Result<(), String> {
 /// Canonicalizes the nearest existing ancestor, verifies it stays within
 /// workspace, then appends remaining components. Never follows a symlink
 /// that points outside the workspace.
-#[allow(dead_code)] // used when `computer-use` feature is enabled
+#[cfg(feature = "computer-use")]
 pub fn resolve_write_path(ctx: &ToolContext, path: &str) -> Result<PathBuf, String> {
     let p = PathBuf::from(path);
     let requested = if p.is_absolute() {
@@ -140,7 +140,6 @@ pub fn resolve_write_path(ctx: &ToolContext, path: &str) -> Result<PathBuf, Stri
 
 /// Find the nearest existing ancestor of `path` and return it plus the
 /// remaining components that don't exist yet.
-#[allow(dead_code)] // used by resolve_write_path (computer-use feature)
 fn find_existing_ancestor(path: &Path) -> Result<(PathBuf, PathBuf), String> {
     if path.exists() {
         return Ok((path.to_path_buf(), PathBuf::new()));
