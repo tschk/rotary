@@ -257,7 +257,6 @@ impl OpenAIProvider {
     /// Create a session-scoped client that preserves connection state across retries.
     pub fn new_session(&self) -> ModelClientSession {
         ModelClientSession {
-            provider_id: self.provider_id.clone(),
             connection_reused: false,
         }
     }
@@ -267,8 +266,6 @@ impl OpenAIProvider {
 /// across retries within a single turn (codex-rs ModelClientSession pattern).
 #[cfg(feature = "providers")]
 pub struct ModelClientSession {
-    #[allow(dead_code)]
-    provider_id: String,
     connection_reused: bool,
 }
 
