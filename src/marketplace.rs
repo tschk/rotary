@@ -559,9 +559,10 @@ fn hash_entries(
                 .to_string();
             hasher.update(rel.as_bytes());
             hasher.update(b"\0");
-            let data =
-                std::fs::read(&path).map_err(|e| MarketplaceError::InstallFailed(e.to_string()))?;
-            hasher.update(&data);
+            let mut file = std::fs::File::open(&path)
+                .map_err(|e| MarketplaceError::InstallFailed(e.to_string()))?;
+            std::io::copy(&mut file, hasher)
+                .map_err(|e| MarketplaceError::InstallFailed(e.to_string()))?;
             hasher.update(b"\0");
         }
     }
