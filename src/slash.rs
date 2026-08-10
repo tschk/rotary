@@ -83,4 +83,18 @@ mod tests {
             Some(Command::Scope(Some("coding".into())))
         );
     }
+
+    #[test]
+    fn help_text_content() {
+        let text = help_text();
+        assert!(text.contains("/help"));
+        assert!(text.contains("/model"));
+        assert!(text.contains("/scope"));
+        assert!(text.contains("/permissions"));
+        assert!(text.contains("/clear"));
+        assert!(text.contains("/compact"));
+        assert!(text.contains("/tools"));
+        assert!(text.contains("/plugins"));
+        assert!(text.contains("/new"));
+    }
 }
