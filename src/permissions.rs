@@ -993,6 +993,18 @@ mod tests {
     use std::sync::Mutex;
 
     #[test]
+    fn full_access_builder() {
+        let p = Policy::full_access();
+        assert_eq!(p.mode, PermissionMode::FullAccess);
+        assert!(!p.enable_os_sandbox);
+        assert!(p.allowlist.is_empty());
+        assert!(p.denylist.is_empty());
+        assert!(p.shell_allow.is_empty());
+        assert!(p.shell_deny.is_empty());
+        assert!(p.enforce_dangerous_shell);
+    }
+
+    #[test]
     fn full_access_allows() {
         assert_eq!(
             authorize(&Policy::full_access(), "write", "{}", None),
