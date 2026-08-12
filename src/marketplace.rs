@@ -322,7 +322,11 @@ impl PluginInstaller {
         }
         std::fs::create_dir_all(&self.install_dir)
             .map_err(|e| MarketplaceError::InstallFailed(e.to_string()))?;
-        let target = self.install_dir.join(name);
+
+        let canonical_install_dir = std::fs::canonicalize(&self.install_dir)
+            .map_err(|e| MarketplaceError::InstallFailed(e.to_string()))?;
+
+        let target = canonical_install_dir.join(name);
         if target.exists() {
             std::fs::remove_dir_all(&target)
                 .map_err(|e| MarketplaceError::InstallFailed(e.to_string()))?;
