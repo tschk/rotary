@@ -44,8 +44,7 @@ impl TraceWriter {
 
     /// Serialize `event` to JSON, write it with a trailing newline, and flush.
     pub fn append(&mut self, event: &serde_json::Value) -> Result<()> {
-        let line = serde_json::to_string(event)?;
-        self.writer.write_all(line.as_bytes())?;
+        serde_json::to_writer(&mut self.writer, event)?;
         self.writer.write_all(b"\n")?;
         self.flush()?;
         Ok(())
