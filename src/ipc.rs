@@ -60,15 +60,16 @@ impl IpcServer {
         }
     }
 
-    pub fn attach_agent(&self, agent: Agent) {
+    pub fn attach_agent(&self, agent: Agent) -> Result<(), String> {
         // This synchronous setup method is intended to be called before the
         // server starts. `try_lock` makes that contract explicit instead of
         // silently racing a request that may observe the default agent.
         let mut guard = self
             .agent
             .try_lock()
-            .expect("attach_agent must run before IPC requests are active");
+            .map_err(|_| "attach_agent must run before IPC requests are active".to_string())?;
         *guard = agent;
+        Ok(())
     }
 
     pub async fn attach_agent_async(&self, agent: Agent) {
@@ -360,7 +361,7 @@ mod tests {
         let mut new_agent = Agent::new();
         new_agent.model = "test-model-abc".to_string();
 
-        server.attach_agent(new_agent);
+        server.attach_agent(new_agent).unwrap();
 
         // Yield to let the spawned task execute
         tokio::task::yield_now().await;
