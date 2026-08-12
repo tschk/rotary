@@ -533,6 +533,26 @@ mod tests {
     }
 
     #[test]
+    fn test_cache_stats_tracker_record_tokens() {
+        let mut tracker = CacheStatsTracker::new();
+        let usage = crate::cost::TokenUsage {
+            input_tokens: 1000,
+            output_tokens: 500,
+            cache_read_tokens: 800,
+            cache_write_tokens: 200,
+        };
+        tracker.record_tokens(usage);
+
+        let stats = tracker.stats();
+        assert_eq!(stats.cache_read_tokens, 800);
+        assert_eq!(stats.cache_write_tokens, 200);
+        assert!((stats.cache_hit_rate - 0.8).abs() < 1e-9);
+        // savings = (800 / 1000) * 0.9 = 0.72
+        assert!((stats.savings - 0.72).abs() < 1e-9);
+        assert_eq!(tracker.call_count(), 1);
+    }
+
+    #[test]
     fn test_cache_stats_tracker_anthropic_response() {
         let mut tracker = CacheStatsTracker::new();
         let usage = serde_json::json!({
