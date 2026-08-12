@@ -993,6 +993,18 @@ mod tests {
     use std::sync::Mutex;
 
     #[test]
+    fn test_is_process_tool() {
+        assert!(is_process_tool("bash"));
+        assert!(is_process_tool("run_command"));
+        assert!(is_process_tool("spawn_agent"));
+
+        assert!(!is_process_tool("write"));
+        assert!(!is_process_tool("read"));
+        assert!(!is_process_tool("unknown_tool"));
+        assert!(!is_process_tool(""));
+    }
+
+    #[test]
     fn full_access_builder() {
         let p = Policy::full_access();
         assert_eq!(p.mode, PermissionMode::FullAccess);
