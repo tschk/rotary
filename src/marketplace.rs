@@ -650,7 +650,10 @@ mod tests {
         assert_eq!(m.keywords, vec!["foo".to_string(), "bar".to_string()]);
         assert_eq!(m.mcp_servers.len(), 1);
         assert_eq!(m.mcp_servers[0].command, "node");
-        assert_eq!(m.mcp_servers[0].env.get("X").ok_or("Missing env var X")?, "1");
+        assert_eq!(
+            m.mcp_servers[0].env.get("X").ok_or("Missing env var X")?,
+            "1"
+        );
         assert_eq!(m.mcp_servers[0].transport, McpTransportKind::Stdio);
         assert!(m.mcp_servers[0].url.is_none());
         Ok(())
