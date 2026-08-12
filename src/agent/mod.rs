@@ -27,6 +27,7 @@ use crate::todo::{TodoConfig, TodoState};
 use moka::future::Cache;
 use parking_lot::RwLock;
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 use std::sync::Arc;
 use std::time::Instant;
 #[cfg(feature = "providers")]
@@ -113,11 +114,101 @@ pub enum Event {
     TurnEnd {
         turn: usize,
     },
+    /// Additive turn completion metadata for hosts that implement auto-continue policy.
+    TurnEnded {
+        /// Completed loop iteration.
+        turn: usize,
+        /// Engine-observed completion facts; hosts decide whether to poke.
+        metadata: TurnEndMetadata,
+    },
+    /// Debug report describing prompt-cache stability for one provider request.
+    CacheAudit(CacheAudit),
+    /// Result of an opt-in workspace quality gate.
+    GateResult(GateResult),
     AgentEnd,
     Error(String),
     BudgetExceeded {
         reason: String,
     },
+}
+
+/// Completion facts emitted in [`Event::TurnEnded`].
+#[derive(Debug, Clone, Serialize)]
+pub struct TurnEndMetadata {
+    /// Whether the todo state contains work that is not complete.
+    pub open_todos_remain: bool,
+    /// Provider finish reason when it was available.
+    pub finish_reason: Option<String>,
+    /// Whether the assistant requested tools at the end of its response.
+    pub trailing_tool_intent: bool,
+    /// Conservative heuristic indicating the final text appears unfinished.
+    pub final_message_mid_thought: bool,
+    /// Machine-readable completion heuristic; hosts retain policy control.
+    pub turn_complete: bool,
+}
+
+/// A cache-hostile boundary detected between two provider requests.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CacheDivergence {
+    /// The system prefix changed.
+    SystemPrompt,
+    /// The declared tool schema changed.
+    Tools,
+    /// Conversation message at this zero-based index changed or was appended.
+    Message { index: usize },
+}
+
+/// Per-request prompt-cache stability report.
+#[derive(Debug, Clone, Serialize)]
+pub struct CacheAudit {
+    /// Number of bytes in the common prefix with the previous request.
+    pub stable_prefix_bytes: usize,
+    /// Total serialized request bytes, before provider-specific decoration.
+    pub total_prompt_bytes: usize,
+    /// First structured request component that changed, if a prior request exists.
+    pub first_divergence: Option<CacheDivergence>,
+}
+
+/// Configuration for the autonomous quality gate.
+#[derive(Debug, Clone, Serialize)]
+pub struct QualityGateConfig {
+    /// Shell command that must exit successfully before the loop may finish.
+    pub command: String,
+    /// Maximum output retained and fed into the next turn. Defaults to 10 KiB.
+    pub max_output_bytes: usize,
+}
+
+impl QualityGateConfig {
+    /// Create a gate with the default 10 KiB tail-biased output cap.
+    pub fn new(command: impl Into<String>) -> Self {
+        Self {
+            command: command.into(),
+            max_output_bytes: 10 * 1024,
+        }
+    }
+}
+
+/// A quality-gate execution result emitted to hosts.
+#[derive(Debug, Clone, Serialize)]
+pub struct GateResult {
+    /// Configured command.
+    pub command: String,
+    /// Whether the command exited successfully.
+    pub success: bool,
+    /// Process exit code when available.
+    pub exit_code: Option<i32>,
+    /// Tail-biased, bounded stdout and stderr.
+    pub output: String,
+    /// True when no command was run because the workspace is unchanged.
+    pub skipped_unchanged: bool,
+}
+
+#[derive(Clone)]
+struct PromptFingerprint {
+    system: Option<String>,
+    tools: Vec<serde_json::Value>,
+    messages: Vec<Message>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -221,6 +312,8 @@ pub struct Agent {
     pub todo_config: Option<TodoConfig>,
     /// Persistable todo state for the current agent session.
     pub todo_state: Arc<RwLock<TodoState>>,
+    /// Opt-in command that must pass before a task can complete.
+    pub quality_gate: Option<QualityGateConfig>,
     pub workspace_root: std::path::PathBuf,
     /// Optional host-owned autoresearch controller. Attaching it exposes the
     /// SDK primitive without scheduling iterations or changing tool policy.
@@ -256,6 +349,9 @@ pub struct Agent {
     pub cache_stats: crate::prompt_cache::CacheStatsTracker,
     session_cost: SessionCost,
     budget_start: Option<Instant>,
+    cache_audit_enabled: bool,
+    previous_prompt_fingerprint: Option<PromptFingerprint>,
+    last_gate_workspace_hash: Option<String>,
 }
 
 impl Agent {
@@ -281,6 +377,7 @@ impl Agent {
             auto_compact_after: 0,
             todo_config: None,
             todo_state: Arc::new(RwLock::new(TodoState::default())),
+            quality_gate: None,
             workspace_root: std::env::current_dir().unwrap_or_else(|_| ".".into()),
             autoresearch_controller: None,
             sandbox: None,
@@ -313,6 +410,9 @@ impl Agent {
             cache_stats: crate::prompt_cache::CacheStatsTracker::new(),
             session_cost: SessionCost::new(),
             budget_start: None,
+            cache_audit_enabled: false,
+            previous_prompt_fingerprint: None,
+            last_gate_workspace_hash: None,
         };
         // Always attach userspace workspace sandbox (path confinement for FS tools).
         agent.ensure_userspace_sandbox();
@@ -459,6 +559,26 @@ impl Agent {
     /// Snapshot the current persisted todo state.
     pub fn todos(&self) -> TodoState {
         self.todo_state.read().clone()
+    }
+
+    /// Enable or disable per-request prompt-cache audit events.
+    pub fn enable_cache_audit(&mut self, enabled: bool) {
+        self.cache_audit_enabled = enabled;
+        if !enabled {
+            self.previous_prompt_fingerprint = None;
+        }
+    }
+
+    /// Require `config.command` to pass before a no-tool turn may finish.
+    pub fn set_quality_gate(&mut self, config: QualityGateConfig) {
+        self.quality_gate = Some(config);
+        self.last_gate_workspace_hash = None;
+    }
+
+    /// Disable the autonomous quality gate.
+    pub fn clear_quality_gate(&mut self) {
+        self.quality_gate = None;
+        self.last_gate_workspace_hash = None;
     }
 
     pub fn set_workspace_root(&mut self, path: impl Into<std::path::PathBuf>) {
@@ -842,6 +962,9 @@ impl Agent {
         let mut guardrails = self.guardrails.clone().map(ToolGuardrails::new);
         let mut self_healing = self.self_healing.clone();
         let mut plan_approved = false;
+        // Current providers expose a terminal `Done` marker but not a portable
+        // finish reason yet. Keep this optional metadata honest until they do.
+        let last_finish_reason: Option<String> = None;
 
         for iteration in 0..self.max_tool_iterations {
             if let Some(reason) = self.check_budget() {
@@ -886,6 +1009,9 @@ impl Agent {
                 system
             };
 
+            let tool_definitions = self.tools.definitions();
+            self.audit_prompt(&messages, &system, &tool_definitions);
+
             #[cfg_attr(not(feature = "providers"), allow(unused_mut))]
             let mut tool_calls: Vec<ToolCall> = Vec::new();
             let mut assistant_content;
@@ -909,7 +1035,7 @@ impl Agent {
                             &messages,
                             &system,
                             &self.model,
-                            &self.tools.definitions(),
+                            &tool_definitions,
                             self.reasoning_effort.as_deref(),
                         ))
                         .await
@@ -1033,7 +1159,23 @@ impl Agent {
             }
 
             if tool_calls.is_empty() {
-                self.emit(Event::TurnEnd { turn: iteration });
+                if let Some(result) = self.run_quality_gate().await {
+                    let failed = !result.success && !result.skipped_unchanged;
+                    let output = result.output.clone();
+                    self.emit(Event::GateResult(result));
+                    if failed {
+                        self.messages.write().push(Message::user(format!(
+                            "Quality gate failed. Fix the failure, then continue. Bounded gate output:\n{output}"
+                        )));
+                        continue;
+                    }
+                }
+                self.emit_turn_end(
+                    iteration,
+                    last_finish_reason.as_deref(),
+                    false,
+                    &assistant_content,
+                );
 
                 #[cfg(feature = "zkr-memory")]
                 if let Some(improve) = &self.self_improve {
@@ -1139,7 +1281,12 @@ impl Agent {
                             self.messages.write().push(Message::user(format!(
                                 "The plan was rejected: {reason}. Do not run it."
                             )));
-                            self.emit(Event::TurnEnd { turn: iteration });
+                            self.emit_turn_end(
+                                iteration,
+                                last_finish_reason.as_deref(),
+                                true,
+                                &assistant_content,
+                            );
                             break;
                         }
                         PlanDecision::Revise(guidance) => {
@@ -1147,7 +1294,12 @@ impl Agent {
                             self.messages.write().push(Message::user(format!(
                                 "Do not run that plan. Revise it: {guidance}"
                             )));
-                            self.emit(Event::TurnEnd { turn: iteration });
+                            self.emit_turn_end(
+                                iteration,
+                                last_finish_reason.as_deref(),
+                                true,
+                                &assistant_content,
+                            );
                             continue;
                         }
                     }
@@ -1210,7 +1362,12 @@ impl Agent {
                 self.messages
                     .write()
                     .push(Message::user(format!("Stopped by guardrail: {reason}")));
-                self.emit(Event::TurnEnd { turn: iteration });
+                self.emit_turn_end(
+                    iteration,
+                    last_finish_reason.as_deref(),
+                    true,
+                    &assistant_content,
+                );
                 break;
             }
 
@@ -1237,7 +1394,12 @@ impl Agent {
                 }
             }
 
-            self.emit(Event::TurnEnd { turn: iteration });
+            self.emit_turn_end(
+                iteration,
+                last_finish_reason.as_deref(),
+                true,
+                &assistant_content,
+            );
         }
 
         // Personality observability: analyze the conversation window after the
@@ -1625,6 +1787,141 @@ impl Agent {
         tool_ctx
     }
 
+    fn emit_turn_end(
+        &self,
+        turn: usize,
+        finish_reason: Option<&str>,
+        trailing_tool_intent: bool,
+        content: &str,
+    ) {
+        self.emit(Event::TurnEnd { turn });
+        let trimmed = content.trim_end();
+        let final_message_mid_thought = !trimmed.is_empty()
+            && !trailing_tool_intent
+            && !trimmed.ends_with(['.', '!', '?', ':', ';', '`', ')', ']', '}'])
+            && !trimmed.ends_with("…");
+        let open_todos_remain = self
+            .todo_state
+            .read()
+            .items
+            .iter()
+            .any(|todo| todo.status != crate::todo::TodoStatus::Completed);
+        self.emit(Event::TurnEnded {
+            turn,
+            metadata: TurnEndMetadata {
+                open_todos_remain,
+                finish_reason: finish_reason.map(str::to_owned),
+                trailing_tool_intent,
+                final_message_mid_thought,
+                turn_complete: !trailing_tool_intent && !final_message_mid_thought,
+            },
+        });
+    }
+
+    fn audit_prompt(
+        &mut self,
+        messages: &[Message],
+        system: &Option<String>,
+        tools: &[serde_json::Value],
+    ) {
+        if !self.cache_audit_enabled {
+            return;
+        }
+        let previous = self.previous_prompt_fingerprint.as_ref();
+        let first_divergence = previous.and_then(|previous| {
+            if previous.system != *system {
+                Some(CacheDivergence::SystemPrompt)
+            } else if previous.tools != tools {
+                Some(CacheDivergence::Tools)
+            } else {
+                let first = previous
+                    .messages
+                    .iter()
+                    .zip(messages)
+                    .position(|(before, now)| before != now);
+                first
+                    .or_else(|| {
+                        (previous.messages.len() != messages.len()).then_some(messages.len())
+                    })
+                    .map(|index| CacheDivergence::Message { index })
+            }
+        });
+        let serialized = serde_json::to_vec(&(system, tools, messages)).unwrap_or_default();
+        let previous_serialized = previous
+            .and_then(|previous| {
+                serde_json::to_vec(&(&previous.system, &previous.tools, &previous.messages)).ok()
+            })
+            .unwrap_or_default();
+        let stable_prefix_bytes = serialized
+            .iter()
+            .zip(&previous_serialized)
+            .take_while(|(left, right)| left == right)
+            .count();
+        self.emit(Event::CacheAudit(CacheAudit {
+            stable_prefix_bytes,
+            total_prompt_bytes: serialized.len(),
+            first_divergence,
+        }));
+        self.previous_prompt_fingerprint = Some(PromptFingerprint {
+            system: system.clone(),
+            tools: tools.to_vec(),
+            messages: messages.to_vec(),
+        });
+    }
+
+    async fn run_quality_gate(&mut self) -> Option<GateResult> {
+        let config = self.quality_gate.clone()?;
+        let hash = workspace_hash(&self.workspace_root);
+        if self.last_gate_workspace_hash.as_ref() == Some(&hash) {
+            return Some(GateResult {
+                command: config.command,
+                success: true,
+                exit_code: Some(0),
+                output: String::new(),
+                skipped_unchanged: true,
+            });
+        }
+        let root = self.workspace_root.clone();
+        let command = config.command.clone();
+        let command_for_error = command.clone();
+        let cap = config.max_output_bytes;
+        let result = tokio::task::spawn_blocking(move || {
+            std::process::Command::new("sh")
+                .arg("-lc")
+                .arg(&command)
+                .current_dir(root)
+                .output()
+                .map(|output| {
+                    let mut combined = output.stdout;
+                    combined.extend_from_slice(&output.stderr);
+                    GateResult {
+                        command,
+                        success: output.status.success(),
+                        exit_code: output.status.code(),
+                        output: tail_bytes(&combined, cap),
+                        skipped_unchanged: false,
+                    }
+                })
+                .unwrap_or_else(|error| GateResult {
+                    command: command_for_error,
+                    success: false,
+                    exit_code: None,
+                    output: error.to_string(),
+                    skipped_unchanged: false,
+                })
+        })
+        .await
+        .unwrap_or_else(|error| GateResult {
+            command: config.command,
+            success: false,
+            exit_code: None,
+            output: error.to_string(),
+            skipped_unchanged: false,
+        });
+        self.last_gate_workspace_hash = Some(hash);
+        Some(result)
+    }
+
     async fn compact_semantically(
         &self,
         reason: &str,
@@ -1686,6 +1983,43 @@ fn redact_tool_call(call: &ToolCall) -> ToolCall {
     }
 }
 
+fn tail_bytes(bytes: &[u8], cap: usize) -> String {
+    let start = bytes.len().saturating_sub(cap);
+    let mut text = String::from_utf8_lossy(&bytes[start..]).into_owned();
+    if start > 0 {
+        text.insert_str(0, "[output truncated; tail retained]\n");
+    }
+    text
+}
+
+fn workspace_hash(root: &std::path::Path) -> String {
+    let mut hasher = Sha256::new();
+    let output = std::process::Command::new("git")
+        .args(["diff", "--binary", "HEAD"])
+        .current_dir(root)
+        .output();
+    match output {
+        Ok(output) => {
+            hasher.update(&output.stdout);
+            hasher.update(&output.stderr);
+            if let Ok(untracked) = std::process::Command::new("git")
+                .args(["ls-files", "--others", "--exclude-standard"])
+                .current_dir(root)
+                .output()
+            {
+                for path in String::from_utf8_lossy(&untracked.stdout).lines() {
+                    hasher.update(path.as_bytes());
+                    if let Ok(bytes) = std::fs::read(root.join(path)) {
+                        hasher.update(&bytes);
+                    }
+                }
+            }
+        }
+        Err(error) => hasher.update(error.to_string().as_bytes()),
+    }
+    format!("{:x}", hasher.finalize())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1738,6 +2072,34 @@ mod tests {
         assert!(results.iter().all(|r| !r.is_error));
         assert_eq!(PARALLEL_DELAY_CALLS.load(Ordering::SeqCst), 2);
         assert!(start.elapsed() < Duration::from_millis(70));
+    }
+
+    #[test]
+    fn cache_audit_reports_structured_divergence() {
+        let mut agent = Agent::new();
+        agent.enable_cache_audit(true);
+        let seen = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let capture = Arc::clone(&seen);
+        agent.subscribe(move |event| {
+            if let Event::CacheAudit(audit) = event {
+                capture.lock().push(audit.clone());
+            }
+        });
+        agent.audit_prompt(&[Message::user("one")], &Some("system".into()), &[]);
+        agent.audit_prompt(&[Message::user("two")], &Some("system".into()), &[]);
+        let events = seen.lock();
+        assert_eq!(events.len(), 2);
+        assert!(matches!(
+            events[1].first_divergence,
+            Some(CacheDivergence::Message { index: 0 })
+        ));
+    }
+
+    #[test]
+    fn tail_biased_gate_output_is_capped() {
+        let output = tail_bytes(b"0123456789", 4);
+        assert!(output.contains("6789"));
+        assert!(output.contains("truncated"));
     }
 
     static CACHE_READ_CALLS: AtomicUsize = AtomicUsize::new(0);

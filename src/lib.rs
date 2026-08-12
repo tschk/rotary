@@ -96,9 +96,10 @@ pub mod lsp;
 pub mod marketplace;
 
 pub use agent::{
-    normalize_tool_name, Agent, AgentBudget, Event, ToolCall, ToolContext, ToolDefinition,
-    ToolEffect, ToolErrorKind, ToolExecuteBox, ToolExecuteFn, ToolExecutor, ToolFuture,
-    ToolRegistry, ToolResult,
+    normalize_tool_name, Agent, AgentBudget, CacheAudit, CacheDivergence, Event, GateResult,
+    QualityGateConfig, ToolCall, ToolContext, ToolDefinition, ToolEffect, ToolErrorKind,
+    ToolExecuteBox, ToolExecuteFn, ToolExecutor, ToolFuture, ToolRegistry, ToolResult,
+    TurnEndMetadata,
 };
 pub use autoresearch::{
     new_handle as new_autoresearch_handle, parse_metrics, AutoresearchConfig, AutoresearchError,
