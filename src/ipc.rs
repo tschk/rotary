@@ -227,7 +227,9 @@ impl IpcServer {
                     "plugins": self.plugins.lock().map_err(|e| e.to_string())?.count(),
                 }))
             }
-            "tools" => Ok(Value::Array(self.tools.lock().map_err(|e| e.to_string())?.definitions())),
+            "tools" => Ok(Value::Array(
+                self.tools.lock().map_err(|e| e.to_string())?.definitions(),
+            )),
             "plugins" => {
                 let p = self.plugins.lock().map_err(|e| e.to_string())?;
                 Ok(Value::Array(
@@ -331,7 +333,11 @@ impl IpcServer {
                 Ok(serde_json::json!({"id": s.id, "entries": s.entries.len()}))
             }
             "session_clear" => {
-                self.session.lock().map_err(|e| e.to_string())?.entries.clear();
+                self.session
+                    .lock()
+                    .map_err(|e| e.to_string())?
+                    .entries
+                    .clear();
                 self.agent.lock().await.clear_messages();
                 Ok(Value::String("cleared".into()))
             }
