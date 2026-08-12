@@ -1,0 +1,10 @@
+--- src/tools/common.rs
++++ src/tools/common.rs
+@@ -262,6 +262,7 @@
+     }
+
+     #[test]
++    #[cfg(feature = "computer-use")]
+     fn test_resolve_write_path() {
+         let dir = tempfile::tempdir().unwrap();
+         let ws = dir.path();
