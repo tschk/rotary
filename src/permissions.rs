@@ -1405,6 +1405,21 @@ mod tests {
     }
 
     #[test]
+    fn test_is_write_tool() {
+        assert!(is_write_tool("write"));
+        assert!(is_write_tool("write_file"));
+        assert!(is_write_tool("edit"));
+        assert!(is_write_tool("hashline_edit"));
+        assert!(is_write_tool("search_replace"));
+        assert!(is_write_tool("apply_patch"));
+        assert!(is_write_tool("todo"));
+
+        assert!(!is_write_tool("read"));
+        assert!(!is_write_tool("bash"));
+        assert!(!is_write_tool("web_search"));
+    }
+
+    #[test]
     fn web_search_is_read_only() {
         assert!(is_read_only_tool("web_search"));
         assert!(is_read_only_tool("darash"));
