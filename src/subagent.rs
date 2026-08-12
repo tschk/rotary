@@ -1120,27 +1120,28 @@ mod tests {
     }
 
     #[test]
-    fn workspace_isolation_creates_and_cleans_worktree() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        git_status(tmp.path(), &["init"]).expect("git init");
-        git_status(tmp.path(), &["config", "user.email", "test@example.com"]).expect("email");
-        git_status(tmp.path(), &["config", "user.name", "Test"]).expect("name");
-        std::fs::write(tmp.path().join("tracked"), "content").expect("write");
-        git_status(tmp.path(), &["add", "tracked"]).expect("add");
-        git_status(tmp.path(), &["commit", "-m", "initial"]).expect("commit");
+    fn workspace_isolation_creates_and_cleans_worktree() -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        git_status(tmp.path(), &["init"])?;
+        git_status(tmp.path(), &["config", "user.email", "test@example.com"])?;
+        git_status(tmp.path(), &["config", "user.name", "Test"])?;
+        std::fs::write(tmp.path().join("tracked"), "content")?;
+        git_status(tmp.path(), &["add", "tracked"])?;
+        git_status(tmp.path(), &["commit", "-m", "initial"])?;
         let mut mgr = SubagentManager::new();
         let cfg = SubagentConfig {
             name: "iso".to_string(),
             workspace_isolation: true,
             ..SubagentConfig::default()
         };
-        let handle = mgr.spawn(cfg, "p", tmp.path()).expect("spawn");
-        let worktree = handle.worktree_path().expect("worktree");
+        let handle = mgr.spawn(cfg, "p", tmp.path())?;
+        let worktree = handle.worktree_path().ok_or("worktree")?;
         assert!(worktree.exists());
         assert!(worktree.join(".git").exists());
-        mgr.cleanup(handle.id()).expect("cleanup");
+        mgr.cleanup(handle.id())?;
         assert!(!worktree.exists());
         assert!(handle.worktree_path().is_none());
+        Ok(())
     }
 
     #[cfg(feature = "ipc")]
