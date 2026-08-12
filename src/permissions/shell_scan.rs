@@ -1559,6 +1559,84 @@ mod tests {
         let _ = scannable_command(&command);
     }
 
+    #[test]
+    fn test_shell_pipelines() {
+        // Simple single command
+        assert_eq!(shell_pipelines("echo a"), Vec::<Vec<String>>::new());
+
+        // Simple pipeline
+        assert_eq!(
+            shell_pipelines("echo a | cat"),
+            vec![vec!["echo a", "cat"]]
+        );
+
+        // Multiple stages
+        assert_eq!(
+            shell_pipelines("echo a | cat | sort"),
+            vec![vec!["echo a", "cat", "sort"]]
+        );
+
+        // `|&` syntax
+        assert_eq!(
+            shell_pipelines("echo a |& cat"),
+            vec![vec!["echo a", "cat"]]
+        );
+
+        // Logical operators `||` and `&&` (should not form pipelines across them, but rather break them)
+        assert_eq!(
+            shell_pipelines("echo a || echo b | cat"),
+            vec![vec!["echo b", "cat"]]
+        );
+        assert_eq!(
+            shell_pipelines("echo a && echo b | cat"),
+            vec![vec!["echo b", "cat"]]
+        );
+
+        // Quotes protecting `|`
+        assert_eq!(
+            shell_pipelines("echo 'a | b' | cat"),
+            vec![vec!["echo 'a | b'", "cat"]]
+        );
+        assert_eq!(
+            shell_pipelines("echo \"a | b\" | cat"),
+            vec![vec!["echo \"a | b\"", "cat"]]
+        );
+        assert_eq!(
+            shell_pipelines("echo `a | b` | cat"),
+            vec![vec!["echo `a | b`", "cat"]]
+        );
+
+        // Escapes protecting `|`
+        assert_eq!(
+            shell_pipelines("echo a \\| b | cat"),
+            vec![vec!["echo a \\| b", "cat"]]
+        );
+
+        // Semicolons splitting commands
+        assert_eq!(
+            shell_pipelines("echo a ; echo b | cat ; echo c"),
+            vec![vec!["echo b", "cat"]]
+        );
+
+        // Newlines as command separators
+        assert_eq!(
+            shell_pipelines("echo a\necho b | cat\necho c"),
+            vec![vec!["echo b", "cat"]]
+        );
+
+        // Background `&` as command separators
+        assert_eq!(
+            shell_pipelines("echo a & echo b | cat & echo c"),
+            vec![vec!["echo b", "cat"]]
+        );
+
+        // Empty segments ignored / malformed pipeline
+        assert_eq!(
+            shell_pipelines("echo a | | cat"),
+            vec![vec!["echo a", "cat"]] // The function ignores empty segments
+        );
+    }
+
     fn shell_quote(s: &str) -> String {
         format!("'{}'", s.replace('\'', "'\\''"))
     }
