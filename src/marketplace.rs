@@ -977,8 +977,8 @@ mod tests {
     }
 
     #[test]
-    fn test_install_aborts_on_mismatch() {
-        let tmp = TempDir::new().unwrap();
+    fn test_install_aborts_on_mismatch() -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = TempDir::new()?;
         let install_dir = tmp.path().join("plugins");
         let source_dir = tmp.path().join("source");
         let mut manifest = sample_manifest();
@@ -987,16 +987,18 @@ mod tests {
         write_plugin_dir(&source_dir, &manifest);
 
         let installer = PluginInstaller::new(install_dir.clone());
-        let err = installer
-            .install(&manifest, source_dir.to_str().unwrap())
-            .unwrap_err();
-        match err {
-            MarketplaceError::IntegrityCheckFailed { expected, .. } => {
+
+        let install_result = installer.install(&manifest, source_dir.to_str().ok_or("invalid UTF-8 path")?);
+
+        match install_result {
+            Err(MarketplaceError::IntegrityCheckFailed { expected, .. }) => {
                 assert!(expected.starts_with("0000"));
             }
-            other => panic!("expected IntegrityCheckFailed, got {other:?}"),
+            Err(other) => return Err(format!("expected IntegrityCheckFailed, got {other:?}").into()),
+            Ok(_) => return Err("expected installation to fail, but it succeeded".into()),
         }
         assert!(!installer.is_installed("demo-plugin"));
+        Ok(())
     }
 
     #[test]
