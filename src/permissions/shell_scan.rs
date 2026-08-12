@@ -1565,10 +1565,7 @@ mod tests {
         assert_eq!(shell_pipelines("echo a"), Vec::<Vec<String>>::new());
 
         // Simple pipeline
-        assert_eq!(
-            shell_pipelines("echo a | cat"),
-            vec![vec!["echo a", "cat"]]
-        );
+        assert_eq!(shell_pipelines("echo a | cat"), vec![vec!["echo a", "cat"]]);
 
         // Multiple stages
         assert_eq!(
