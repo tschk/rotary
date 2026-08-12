@@ -176,8 +176,8 @@ pub fn register_builtin_tools(registry: &mut ToolRegistry) {
         ),
         (
             "todo",
-            "Manage an in-memory session todo list. Actions: list, add, update, complete, clear.",
-            r#"{"type":"object","properties":{"action":{"type":"string","enum":["list","add","update","complete","clear"]},"items":{"type":"array","items":{"type":"object","properties":{"id":{"type":"string"},"content":{"type":"string"},"status":{"type":"string"}},"required":["content"]}}},"required":["action"]}"#,
+            "Manage a todo list. When the engine todo feature is enabled, creation requires confidence (0-100), and completion requires completion_confidence (0-100). Actions: list, create/add, update, complete, clear.",
+            r#"{"type":"object","properties":{"action":{"type":"string","enum":["list","create","add","update","complete","clear"]},"items":{"type":"array","items":{"type":"object","properties":{"id":{"type":"string"},"content":{"type":"string"},"status":{"type":"string"},"confidence":{"type":"integer","minimum":0,"maximum":100},"completion_confidence":{"type":"integer","minimum":0,"maximum":100}}}}},"required":["action"]}"#,
             extended::exec_todo,
             ToolEffect::Write,
         ),

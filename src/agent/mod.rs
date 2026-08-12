@@ -23,6 +23,7 @@ use crate::permissions::{
     Policy, PolicyAuthorizer,
 };
 use crate::provider::{Message, Provider, Role};
+use crate::todo::{TodoConfig, TodoState};
 use moka::future::Cache;
 use parking_lot::RwLock;
 use serde::Serialize;
@@ -104,6 +105,11 @@ pub enum Event {
     },
     ToolExecutionStart(ToolCall),
     ToolExecutionEnd(ToolResult),
+    /// The session todo list changed through the opt-in engine todo tool.
+    TodoUpdated {
+        /// Full replacement state, suitable for hosts to render directly.
+        todos: TodoState,
+    },
     TurnEnd {
         turn: usize,
     },
@@ -211,6 +217,10 @@ pub struct Agent {
     pub provider: Option<Arc<dyn Provider>>,
     pub max_tool_iterations: usize,
     pub auto_compact_after: usize,
+    /// Opt-in session todo engine. `None` preserves the historical builtin tool.
+    pub todo_config: Option<TodoConfig>,
+    /// Persistable todo state for the current agent session.
+    pub todo_state: Arc<RwLock<TodoState>>,
     pub workspace_root: std::path::PathBuf,
     /// Optional host-owned autoresearch controller. Attaching it exposes the
     /// SDK primitive without scheduling iterations or changing tool policy.
@@ -269,6 +279,8 @@ impl Agent {
             provider: None,
             max_tool_iterations: 50,
             auto_compact_after: 0,
+            todo_config: None,
+            todo_state: Arc::new(RwLock::new(TodoState::default())),
             workspace_root: std::env::current_dir().unwrap_or_else(|_| ".".into()),
             autoresearch_controller: None,
             sandbox: None,
@@ -427,6 +439,26 @@ impl Agent {
 
     pub fn set_provider(&mut self, provider: Arc<dyn Provider>) {
         self.provider = Some(provider);
+    }
+
+    /// Enable the engine-owned todo tool and configure confidence gating.
+    pub fn set_todo_config(&mut self, config: TodoConfig) {
+        self.todo_config = Some(config);
+    }
+
+    /// Disable engine-owned todo handling and retain the legacy builtin behaviour.
+    pub fn clear_todo_config(&mut self) {
+        self.todo_config = None;
+    }
+
+    /// Replace todo state, for example after loading a persisted session.
+    pub fn set_todo_state(&mut self, state: TodoState) {
+        *self.todo_state.write() = state;
+    }
+
+    /// Snapshot the current persisted todo state.
+    pub fn todos(&self) -> TodoState {
+        self.todo_state.read().clone()
     }
 
     pub fn set_workspace_root(&mut self, path: impl Into<std::path::PathBuf>) {
@@ -792,6 +824,12 @@ impl Agent {
         tool_ctx.tools = Some(Arc::clone(&self.tools));
         let pending_scope = Arc::new(parking_lot::Mutex::new(None));
         tool_ctx.pending_scope = Some(Arc::clone(&pending_scope));
+        tool_ctx.todo_state = Some(Arc::clone(&self.todo_state));
+        tool_ctx.todo_config = self.todo_config.clone();
+        tool_ctx.todo_updates = self
+            .todo_config
+            .as_ref()
+            .map(|_| Arc::new(parking_lot::Mutex::new(Vec::new())));
         let ctx = Arc::new(tool_ctx);
 
         #[cfg(feature = "zkr-memory")]
@@ -1119,6 +1157,11 @@ impl Agent {
             }
 
             let results = self.execute_tools_parallel(&tool_calls, &ctx).await;
+            if let Some(updates) = &ctx.todo_updates {
+                for update in std::mem::take(&mut *updates.lock()) {
+                    self.emit(Event::TodoUpdated { todos: update });
+                }
+            }
             for result in &results {
                 #[cfg(feature = "zkr-memory")]
                 {

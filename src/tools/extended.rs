@@ -143,6 +143,28 @@ pub(crate) fn exec_todo(ctx: Arc<ToolContext>, args: String) -> ToolFuture {
             Ok(v) => v,
             Err(e) => return ToolResult::err("todo", format!("invalid json: {e}")),
         };
+        if let (Some(state), Some(config)) = (&ctx.todo_state, &ctx.todo_config) {
+            let mutation = match crate::todo::apply_request(&mut state.write(), config, &v) {
+                Ok(mutation) => mutation,
+                Err(error) => return ToolResult::err("todo", error),
+            };
+            if let Some(updates) = &ctx.todo_updates {
+                updates.lock().push(mutation.state.clone());
+            }
+            if mutation.verification_required {
+                return ToolResult::ok(
+                    "todo",
+                    format!(
+                        "{}\n\nRE-VERIFY this item with concrete evidence — run the code/tests, don't assert. Then call todo complete again with completion_confidence.",
+                        serde_json::to_string_pretty(&mutation.state).unwrap_or_else(|_| "{}".into())
+                    ),
+                );
+            }
+            return ToolResult::ok(
+                "todo",
+                serde_json::to_string_pretty(&mutation.state).unwrap_or_else(|_| "{}".into()),
+            );
+        }
         let action = match v.get("action").and_then(|a| a.as_str()) {
             Some(a) => a,
             None => return ToolResult::err("todo", "action required"),

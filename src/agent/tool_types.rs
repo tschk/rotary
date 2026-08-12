@@ -129,6 +129,12 @@ pub struct ToolContext {
     pub tools: Option<Arc<ToolRegistry>>,
     /// Tools may request a scope switch; Agent applies after the tool batch.
     pub pending_scope: Option<Arc<parking_lot::Mutex<Option<Scope>>>>,
+    /// Opt-in engine-owned todo state shared with the builtin todo executor.
+    pub todo_state: Option<Arc<parking_lot::RwLock<crate::todo::TodoState>>>,
+    /// Enables confidence-gated todo mutations when present.
+    pub todo_config: Option<crate::todo::TodoConfig>,
+    /// Todo snapshots accumulated during a tool batch for event emission.
+    pub todo_updates: Option<Arc<parking_lot::Mutex<Vec<crate::todo::TodoState>>>>,
     /// Optional LSP manager for diagnostics / navigation tools.
     #[cfg(feature = "ipc")]
     pub lsp: Option<Arc<crate::lsp::LspManager>>,
@@ -145,6 +151,9 @@ impl ToolContext {
             provider: None,
             tools: None,
             pending_scope: None,
+            todo_state: None,
+            todo_config: None,
+            todo_updates: None,
             #[cfg(feature = "ipc")]
             lsp: None,
         }

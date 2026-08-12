@@ -66,6 +66,7 @@ pub mod skill_engine;
 pub mod slash;
 pub mod sse;
 pub mod subagent;
+pub mod todo;
 pub mod tools;
 pub mod work_pack;
 
@@ -193,6 +194,7 @@ pub use subagent::{
     SubagentBudget, SubagentConfig, SubagentError, SubagentEvent, SubagentHandle, SubagentLimits,
     SubagentManager, SubagentResult, SubagentStatus, SubagentSubscriber,
 };
+pub use todo::{TodoConfig, TodoItem, TodoState, TodoStatus};
 pub use tools::{register_autoresearch_tools, register_builtin_tools, register_spawn_agent_tool};
 pub use work_pack::{WorkPack, WorkPackError};
 
