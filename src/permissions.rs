@@ -1431,4 +1431,24 @@ mod tests {
         let p = Policy::workspace_write().with_os_sandbox(false);
         assert!(!p.enable_os_sandbox);
     }
+
+    #[test]
+    fn test_command_from_args() {
+        assert_eq!(
+            command_from_args(r#"{"command": "ls -la"}"#),
+            Some("ls -la".to_string())
+        );
+        assert_eq!(
+            command_from_args(r#"{"cmd": "echo hello"}"#),
+            Some("echo hello".to_string())
+        );
+        assert_eq!(
+            command_from_args(r#"{"command": "first", "cmd": "second"}"#),
+            Some("first".to_string())
+        );
+        assert_eq!(command_from_args(r#"{"command": "ls -la""#), None);
+        assert_eq!(command_from_args(r#"{"other": "value"}"#), None);
+        assert_eq!(command_from_args(r#"{"command": 123}"#), None);
+        assert_eq!(command_from_args(r#"{"cmd": true}"#), None);
+    }
 }
