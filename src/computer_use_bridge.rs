@@ -125,3 +125,52 @@ fn now_ms() -> i64 {
         .map(|duration| i64::try_from(duration.as_millis()).unwrap_or(i64::MAX))
         .unwrap_or_default()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_observer() {
+        let bridge = ComputerUseBridge::new().expect("Failed to create ComputerUseBridge");
+
+        let _observer = bridge.observer();
+        // Since we can't do much with observer directly without deeper mocked interactions,
+        // we mainly check it's accessible.
+    }
+
+    #[test]
+    fn test_observation() {
+        let bridge = ComputerUseBridge::new().expect("Failed to create ComputerUseBridge");
+
+        // Initial observation should be None
+        assert!(bridge.observation().is_none());
+
+        // Create observation properly
+        let observation_id = "1".repeat(64);
+        let observation = praefectus::semantic::SemanticObservation {
+            protocol_version: praefectus::PROTOCOL_VERSION,
+            observation_id: observation_id.clone(),
+            generation: 7,
+            provenance: praefectus::semantic::SemanticProvenance {
+                backend: praefectus::semantic::SemanticBackend::Dom,
+                backend_name: "chromium-cdp".to_string(),
+                process_id: 42,
+                process_generation: "process-1".to_string(),
+                window_id: "window-1".to_string(),
+                document_id: Some("document-1".to_string()),
+                display_geometry_hash: "2".repeat(64),
+                host_opt_ins: Vec::new(),
+            },
+            observed_at_ms: 1_000,
+            expires_at_ms: 31_000,
+            truncated: false,
+            elements: vec![],
+        };
+        bridge.set_observation(observation.clone());
+
+        // Retrieve and check it
+        let retrieved = bridge.observation().expect("Observation should be set");
+        assert_eq!(retrieved.observation_id, observation.observation_id);
+    }
+}
