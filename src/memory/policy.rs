@@ -230,4 +230,43 @@ mod tests {
             Some("team".to_string())
         );
     }
+
+    #[test]
+    fn test_recall_memory_scopes() {
+        let ls = layers();
+
+        let off_policy = MemoryPolicy {
+            recall: RecallMode::Off,
+            capture: CaptureMode::Off,
+        };
+        assert!(recall_memory_scopes(off_policy, &ls, "team").is_empty());
+
+        let writable_policy = MemoryPolicy {
+            recall: RecallMode::Writable,
+            capture: CaptureMode::Writable,
+        };
+        assert_eq!(
+            recall_memory_scopes(writable_policy, &ls, "team"),
+            vec!["team".to_string()]
+        );
+
+        let visible_policy = MemoryPolicy {
+            recall: RecallMode::Visible,
+            capture: CaptureMode::Writable,
+        };
+        assert_eq!(
+            recall_memory_scopes(visible_policy, &ls, "team"),
+            vec!["team".to_string(), "org".to_string(), "shared".to_string()]
+        );
+
+        let ls_dup = vec![
+            WorkspaceLayer::new("team", LayerMode::Rw),
+            WorkspaceLayer::new("org", LayerMode::Ro),
+            WorkspaceLayer::new("team", LayerMode::Ro),
+        ];
+        assert_eq!(
+            recall_memory_scopes(visible_policy, &ls_dup, "team"),
+            vec!["team".to_string(), "org".to_string()]
+        );
+    }
 }
