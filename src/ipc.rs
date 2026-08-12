@@ -228,10 +228,16 @@ impl IpcServer {
                 }))
             }
             "tools" => Ok(Value::Array(
-                self.tools.lock().map_err(|e| format!("tools lock error: {e}"))?.definitions()
+                self.tools
+                    .lock()
+                    .map_err(|e| format!("tools lock error: {e}"))?
+                    .definitions(),
             )),
             "plugins" => {
-                let p = self.plugins.lock().map_err(|e| format!("plugins lock error: {e}"))?;
+                let p = self
+                    .plugins
+                    .lock()
+                    .map_err(|e| format!("plugins lock error: {e}"))?;
                 Ok(Value::Array(
                     p.plugins
                         .iter()
@@ -329,11 +335,18 @@ impl IpcServer {
                 Ok(Value::String("prompt completed".into()))
             }
             "session_list" => {
-                let s = self.session.lock().map_err(|e| format!("session lock error: {e}"))?;
+                let s = self
+                    .session
+                    .lock()
+                    .map_err(|e| format!("session lock error: {e}"))?;
                 Ok(serde_json::json!({"id": s.id, "entries": s.entries.len()}))
             }
             "session_clear" => {
-                self.session.lock().map_err(|e| format!("session lock error: {e}"))?.entries.clear();
+                self.session
+                    .lock()
+                    .map_err(|e| format!("session lock error: {e}"))?
+                    .entries
+                    .clear();
                 self.agent.lock().await.clear_messages();
                 Ok(Value::String("cleared".into()))
             }
