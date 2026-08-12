@@ -75,18 +75,20 @@ impl IpcServer {
         *self.agent.lock().await = agent;
     }
 
-    pub fn attach_tools(&self, tools: ToolRegistry) {
-        *self.tools.lock().unwrap() = tools;
+    pub fn attach_tools(&self, tools: ToolRegistry) -> Result<(), String> {
+        *self.tools.lock().map_err(|e| e.to_string())? = tools;
+        Ok(())
     }
 
-    pub fn attach_plugins(&self, plugins: PluginRegistry) {
-        *self.plugins.lock().unwrap() = plugins;
+    pub fn attach_plugins(&self, plugins: PluginRegistry) -> Result<(), String> {
+        *self.plugins.lock().map_err(|e| e.to_string())? = plugins;
+        Ok(())
     }
 
-    pub fn attach_session(&self, session: Session) {
-        *self.session.lock().unwrap() = session;
+    pub fn attach_session(&self, session: Session) -> Result<(), String> {
+        *self.session.lock().map_err(|e| e.to_string())? = session;
+        Ok(())
     }
-
     /// Run the IPC server on the current Tokio runtime.
     pub async fn run_async(&self) -> std::io::Result<()> {
         let path = Path::new(&self.socket_path);
