@@ -125,6 +125,10 @@ pub enum Event {
     CacheAudit(CacheAudit),
     /// Result of an opt-in workspace quality gate.
     GateResult(GateResult),
+    /// Semantic graph memories selected for this prompt.
+    MemoryRecalled {
+        recalls: Vec<MemoryRecall>,
+    },
     AgentEnd,
     Error(String),
     BudgetExceeded {
@@ -202,6 +206,35 @@ pub struct GateResult {
     pub output: String,
     /// True when no command was run because the workspace is unchanged.
     pub skipped_unchanged: bool,
+}
+
+/// Pluggable semantic embedder used by graph-memory recall. Hosts may bridge
+/// this trait to a provider embeddings endpoint; the default is no-op.
+pub trait SemanticEmbedder: Send + Sync {
+    /// Return an embedding for `text`, or `None` when embeddings are unavailable.
+    fn embed(&self, text: &str) -> Option<Vec<f32>>;
+}
+
+/// Recall configuration for graph memory.
+#[derive(Clone)]
+pub struct SemanticRecallConfig {
+    /// Embedder supplied by the host.
+    pub embedder: Arc<dyn SemanticEmbedder>,
+    /// Maximum recalled summaries per prompt.
+    pub top_k: usize,
+    /// Minimum cosine similarity.
+    pub threshold: f32,
+}
+
+/// A graph-memory recall injected at the designated cache-safe suffix.
+#[derive(Debug, Clone, Serialize)]
+pub struct MemoryRecall {
+    /// Source graph node identifier.
+    pub id: String,
+    /// Recalled turn summary.
+    pub summary: String,
+    /// Cosine similarity.
+    pub similarity: f32,
 }
 
 #[derive(Clone)]
@@ -314,6 +347,8 @@ pub struct Agent {
     pub todo_state: Arc<RwLock<TodoState>>,
     /// Opt-in command that must pass before a task can complete.
     pub quality_gate: Option<QualityGateConfig>,
+    #[cfg(feature = "graph-memory")]
+    pub semantic_recall: Option<SemanticRecallConfig>,
     pub workspace_root: std::path::PathBuf,
     /// Optional host-owned autoresearch controller. Attaching it exposes the
     /// SDK primitive without scheduling iterations or changing tool policy.
@@ -378,6 +413,8 @@ impl Agent {
             todo_config: None,
             todo_state: Arc::new(RwLock::new(TodoState::default())),
             quality_gate: None,
+            #[cfg(feature = "graph-memory")]
+            semantic_recall: None,
             workspace_root: std::env::current_dir().unwrap_or_else(|_| ".".into()),
             autoresearch_controller: None,
             sandbox: None,
@@ -579,6 +616,12 @@ impl Agent {
     pub fn clear_quality_gate(&mut self) {
         self.quality_gate = None;
         self.last_gate_workspace_hash = None;
+    }
+
+    /// Enable semantic graph-memory recall without adding a provider dependency.
+    #[cfg(feature = "graph-memory")]
+    pub fn set_semantic_recall(&mut self, config: SemanticRecallConfig) {
+        self.semantic_recall = Some(config);
     }
 
     pub fn set_workspace_root(&mut self, path: impl Into<std::path::PathBuf>) {
@@ -978,6 +1021,8 @@ impl Agent {
             let messages: Vec<Message> = self.messages.read().clone();
             let base_system =
                 append_active_skills(self.system_prompt.clone(), active_skills.as_deref());
+            #[cfg(feature = "graph-memory")]
+            let base_system = self.append_semantic_recalls(base_system, &safe_text);
             #[cfg(feature = "zkr-memory")]
             let system = if let Some(improve) = &self.self_improve {
                 let base = base_system.as_deref().unwrap_or("");
@@ -1920,6 +1965,43 @@ impl Agent {
         });
         self.last_gate_workspace_hash = Some(hash);
         Some(result)
+    }
+
+    /// Append recalls only at the explicit cache-safe suffix. The stable base
+    /// system prompt is never reordered or rewritten by recall.
+    #[cfg(feature = "graph-memory")]
+    fn append_semantic_recalls(&self, base: Option<String>, query: &str) -> Option<String> {
+        let (Some(config), Some(graph), Some(vector)) = (
+            self.semantic_recall.as_ref(),
+            self.graph_memory.as_ref(),
+            self.semantic_recall
+                .as_ref()
+                .and_then(|config| config.embedder.embed(query)),
+        ) else {
+            return base;
+        };
+        let recalls = graph.recall_by_embedding(&vector, config.top_k, config.threshold);
+        if recalls.is_empty() {
+            return base;
+        }
+        let events = recalls
+            .iter()
+            .map(|recall| MemoryRecall {
+                id: recall.id.clone(),
+                summary: recall.summary.clone(),
+                similarity: recall.similarity,
+            })
+            .collect();
+        self.emit(Event::MemoryRecalled { recalls: events });
+        let suffix = recalls
+            .iter()
+            .map(|recall| format!("- {}", recall.summary))
+            .collect::<Vec<_>>()
+            .join("\n");
+        Some(match base {
+            Some(base) => format!("{base}\n\n# Recalled Memory (cache-safe suffix)\n{suffix}"),
+            None => format!("# Recalled Memory (cache-safe suffix)\n{suffix}"),
+        })
     }
 
     async fn compact_semantically(

@@ -97,9 +97,9 @@ pub mod marketplace;
 
 pub use agent::{
     normalize_tool_name, Agent, AgentBudget, CacheAudit, CacheDivergence, Event, GateResult,
-    QualityGateConfig, ToolCall, ToolContext, ToolDefinition, ToolEffect, ToolErrorKind,
-    ToolExecuteBox, ToolExecuteFn, ToolExecutor, ToolFuture, ToolRegistry, ToolResult,
-    TurnEndMetadata,
+    MemoryRecall, QualityGateConfig, SemanticEmbedder, SemanticRecallConfig, ToolCall, ToolContext,
+    ToolDefinition, ToolEffect, ToolErrorKind, ToolExecuteBox, ToolExecuteFn, ToolExecutor,
+    ToolFuture, ToolRegistry, ToolResult, TurnEndMetadata,
 };
 pub use autoresearch::{
     new_handle as new_autoresearch_handle, parse_metrics, AutoresearchConfig, AutoresearchError,
@@ -138,6 +138,7 @@ pub use extract::{
 pub use graph_memory::{
     ConversationExtractor, EdgeRelation, ExtractionResult, GraphMemory, GraphMemoryError,
     MemoryEdge as GraphMemoryEdge, MemoryNode as GraphMemoryNode, NodeType as GraphNodeType,
+    SemanticRecall,
 };
 pub use guardrails::{
     classify_tool, GuardrailConfig, GuardrailDecision, SelfHealingRetry, ToolClass, ToolGuardrails,
