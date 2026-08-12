@@ -628,7 +628,7 @@ mod tests {
     }
 
     #[test]
-    fn deserializes_plugin_manifest_from_json() {
+    fn deserializes_plugin_manifest_from_json() -> Result<(), Box<dyn std::error::Error>> {
         let json = r#"{
             "name": "foo",
             "version": "1.2.3",
@@ -646,7 +646,7 @@ mod tests {
             "skills": ["s1"],
             "hooks": ["h1"]
         }"#;
-        let m: PluginManifest = serde_json::from_str(json).unwrap();
+        let m: PluginManifest = serde_json::from_str(json)?;
         assert_eq!(m.name, "foo");
         assert_eq!(m.version, "1.2.3");
         assert_eq!(m.author, "alice");
@@ -654,9 +654,13 @@ mod tests {
         assert_eq!(m.keywords, vec!["foo".to_string(), "bar".to_string()]);
         assert_eq!(m.mcp_servers.len(), 1);
         assert_eq!(m.mcp_servers[0].command, "node");
-        assert_eq!(m.mcp_servers[0].env.get("X").unwrap(), "1");
+        assert_eq!(
+            m.mcp_servers[0].env.get("X").ok_or("Missing env var X")?,
+            "1"
+        );
         assert_eq!(m.mcp_servers[0].transport, McpTransportKind::Stdio);
         assert!(m.mcp_servers[0].url.is_none());
+        Ok(())
     }
 
     #[test]
