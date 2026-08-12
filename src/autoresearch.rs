@@ -788,6 +788,22 @@ mod tests {
     use super::*;
 
     #[test]
+    fn tools_are_registered_correctly() {
+        let mut registry = ToolRegistry::new();
+        let handle = new_handle();
+        register_tools(&mut registry, handle);
+
+        let definitions = registry.definitions();
+        let names: Vec<&str> = definitions.iter().filter_map(|d| d["name"].as_str()).collect();
+
+        assert!(names.contains(&"init_experiment"));
+        assert!(names.contains(&"run_experiment"));
+        assert!(names.contains(&"log_experiment"));
+        assert!(names.contains(&"autoresearch_status"));
+        assert_eq!(registry.count(), 4);
+    }
+
+    #[test]
     fn parses_finite_metrics_and_last_duplicate_wins() {
         let metrics = parse_metrics(
             "noise\nMETRIC total_ms=10\nMETRIC total_ms=8.5\nMETRIC phase_a=2\nMETRIC bad=NaN\n",
