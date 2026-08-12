@@ -993,6 +993,18 @@ mod tests {
     use std::sync::Mutex;
 
     #[test]
+    fn test_shell_command_allowed() {
+        let patterns: Vec<String> = vec!["git *".into(), "echo *".into()];
+
+        assert!(shell_command_allowed("git status", &patterns));
+        assert!(shell_command_allowed("echo hi", &patterns));
+        assert!(shell_command_allowed("cat file | git status", &patterns));
+        assert!(!shell_command_allowed("cat file | rm file", &patterns));
+        assert!(shell_command_allowed("echo hi | rm file", &patterns));
+        assert!(shell_command_allowed("echo hi | git status", &patterns));
+    }
+
+    #[test]
     fn full_access_builder() {
         let p = Policy::full_access();
         assert_eq!(p.mode, PermissionMode::FullAccess);
