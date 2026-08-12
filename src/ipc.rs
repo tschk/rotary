@@ -76,15 +76,15 @@ impl IpcServer {
     }
 
     pub fn attach_tools(&self, tools: ToolRegistry) {
-        *self.tools.lock().unwrap() = tools;
+        *self.tools.lock().unwrap_or_else(|e| e.into_inner()) = tools;
     }
 
     pub fn attach_plugins(&self, plugins: PluginRegistry) {
-        *self.plugins.lock().unwrap() = plugins;
+        *self.plugins.lock().unwrap_or_else(|e| e.into_inner()) = plugins;
     }
 
     pub fn attach_session(&self, session: Session) {
-        *self.session.lock().unwrap() = session;
+        *self.session.lock().unwrap_or_else(|e| e.into_inner()) = session;
     }
 
     /// Run the IPC server on the current Tokio runtime.
@@ -223,13 +223,18 @@ impl IpcServer {
                     "shell_deny": agent.policy.shell_deny.len(),
                     "has_approver": agent.approver.is_some(),
                     "has_authorizer": agent.authorizer.is_some(),
-                    "tools": self.tools.lock().unwrap().count(),
-                    "plugins": self.plugins.lock().unwrap().count(),
+                    "tools": self.tools.lock().unwrap_or_else(|e| e.into_inner()).count(),
+                    "plugins": self.plugins.lock().unwrap_or_else(|e| e.into_inner()).count(),
                 }))
             }
-            "tools" => Ok(Value::Array(self.tools.lock().unwrap().definitions())),
+            "tools" => Ok(Value::Array(
+                self.tools
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .definitions(),
+            )),
             "plugins" => {
-                let p = self.plugins.lock().unwrap();
+                let p = self.plugins.lock().unwrap_or_else(|e| e.into_inner());
                 Ok(Value::Array(
                     p.plugins
                         .iter()
@@ -327,11 +332,15 @@ impl IpcServer {
                 Ok(Value::String("prompt completed".into()))
             }
             "session_list" => {
-                let s = self.session.lock().unwrap();
+                let s = self.session.lock().unwrap_or_else(|e| e.into_inner());
                 Ok(serde_json::json!({"id": s.id, "entries": s.entries.len()}))
             }
             "session_clear" => {
-                self.session.lock().unwrap().entries.clear();
+                self.session
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .entries
+                    .clear();
                 self.agent.lock().await.clear_messages();
                 Ok(Value::String("cleared".into()))
             }
