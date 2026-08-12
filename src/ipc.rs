@@ -354,6 +354,14 @@ mod tests {
     use super::*;
     use crate::agent::Agent;
 
+    #[test]
+    fn test_attach_tools() {
+        let server = IpcServer::new("/tmp/test_ipc_socket_tools");
+        let tools = ToolRegistry::new();
+        server.attach_tools(tools);
+        assert_eq!(server.tools.lock().unwrap().count(), 0);
+    }
+
     #[tokio::test]
     async fn test_attach_agent() {
         let server = IpcServer::new("/tmp/test_ipc_socket");
