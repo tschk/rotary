@@ -988,13 +988,16 @@ mod tests {
 
         let installer = PluginInstaller::new(install_dir.clone());
 
-        let install_result = installer.install(&manifest, source_dir.to_str().ok_or("invalid UTF-8 path")?);
+        let install_result =
+            installer.install(&manifest, source_dir.to_str().ok_or("invalid UTF-8 path")?);
 
         match install_result {
             Err(MarketplaceError::IntegrityCheckFailed { expected, .. }) => {
                 assert!(expected.starts_with("0000"));
             }
-            Err(other) => return Err(format!("expected IntegrityCheckFailed, got {other:?}").into()),
+            Err(other) => {
+                return Err(format!("expected IntegrityCheckFailed, got {other:?}").into())
+            }
             Ok(_) => return Err("expected installation to fail, but it succeeded".into()),
         }
         assert!(!installer.is_installed("demo-plugin"));
