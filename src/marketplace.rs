@@ -785,19 +785,18 @@ mod tests {
     }
 
     #[test]
-    fn install_rejects_already_installed() {
-        let tmp = TempDir::new().unwrap();
+    fn install_rejects_already_installed() -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = TempDir::new()?;
         let source_dir = tmp.path().join("source");
         write_plugin_dir(&source_dir, &sample_manifest());
         let manifest = manifest_with_hash(&source_dir);
         let installer = PluginInstaller::new(tmp.path().join("plugins"));
-        installer
-            .install(&manifest, source_dir.to_str().unwrap())
-            .unwrap();
+        installer.install(&manifest, source_dir.to_str().ok_or("invalid path")?)?;
         let err = installer
-            .install(&manifest, source_dir.to_str().unwrap())
+            .install(&manifest, source_dir.to_str().ok_or("invalid path")?)
             .unwrap_err();
         assert!(matches!(err, MarketplaceError::AlreadyInstalled(_)));
+        Ok(())
     }
 
     #[test]
