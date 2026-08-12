@@ -494,7 +494,7 @@ mod tests {
     }
 
     #[test]
-    fn test_apply_cache_control_one_hour_ttl() {
+    fn test_apply_cache_control_one_hour_ttl() -> Result<(), &'static str> {
         let mut messages = vec![system_msg("System"), user_msg("Hello")];
         let config = PromptCacheConfig {
             enabled: true,
@@ -505,10 +505,15 @@ mod tests {
             ttl: CacheTtl::OneHour,
         };
         apply_cache_control(&mut messages, &config);
-        let block = messages[0]["content"].as_array().unwrap().last().unwrap();
-        let cc = block.get("cache_control").unwrap();
+        let block = messages[0]["content"]
+            .as_array()
+            .ok_or("missing content array")?
+            .last()
+            .ok_or("empty content array")?;
+        let cc = block.get("cache_control").ok_or("missing cache_control")?;
         assert_eq!(cc["type"], "ephemeral");
         assert_eq!(cc["ttl"], "1h");
+        Ok(())
     }
 
     #[test]
@@ -520,16 +525,21 @@ mod tests {
     }
 
     #[test]
-    fn test_apply_cache_control_string_content_converted() {
+    fn test_apply_cache_control_string_content_converted() -> Result<(), &'static str> {
         let mut messages = vec![system_msg("You are helpful."), user_msg("Hello")];
         let config = PromptCacheConfig::anthropic();
         apply_cache_control(&mut messages, &config);
-        let content = messages[0].get("content").unwrap();
+        let content = messages[0].get("content").ok_or("missing content")?;
         assert!(content.is_array(), "content should be array form");
-        let block = content.as_array().unwrap().last().unwrap();
+        let block = content
+            .as_array()
+            .ok_or("missing content array")?
+            .last()
+            .ok_or("empty content array")?;
         assert_eq!(block["type"], "text");
         assert_eq!(block["text"], "You are helpful.");
         assert!(block.get("cache_control").is_some());
+        Ok(())
     }
 
     #[test]
