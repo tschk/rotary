@@ -125,3 +125,44 @@ fn now_ms() -> i64 {
         .map(|duration| i64::try_from(duration.as_millis()).unwrap_or(i64::MAX))
         .unwrap_or_default()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_set_and_get_observation() {
+        let bridge = ComputerUseBridge::new().unwrap();
+        assert!(bridge.observation().is_none());
+
+        let observation_json = serde_json::json!({
+            "protocol_version": 1,
+            "observation_id": "test_id",
+            "generation": 1,
+            "provenance": {
+                "backend": "dom",
+                "backend_name": "test_backend_name",
+                "process_id": 12345,
+                "process_generation": "1",
+                "window_id": "1",
+                "document_id": "doc1",
+                "display_geometry_hash": "hash1",
+                "host_opt_ins": []
+            },
+            "observed_at_ms": 1000,
+            "expires_at_ms": 2000,
+            "truncated": false,
+            "elements": []
+        });
+        let observation: praefectus::semantic::SemanticObservation =
+            serde_json::from_value(observation_json).unwrap();
+
+        bridge.set_observation(observation.clone());
+
+        let retrieved = bridge.observation().unwrap();
+        let retrieved_json = serde_json::to_value(retrieved).unwrap();
+        let observation_json_2 = serde_json::to_value(observation).unwrap();
+
+        assert_eq!(retrieved_json, observation_json_2);
+    }
+}
