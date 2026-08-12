@@ -60,31 +60,35 @@ impl IpcServer {
         }
     }
 
-    pub fn attach_agent(&self, agent: Agent) {
+    pub fn attach_agent(&self, agent: Agent) -> Result<(), String> {
         // This synchronous setup method is intended to be called before the
         // server starts. `try_lock` makes that contract explicit instead of
         // silently racing a request that may observe the default agent.
         let mut guard = self
             .agent
             .try_lock()
-            .expect("attach_agent must run before IPC requests are active");
+            .map_err(|e| format!("attach_agent must run before IPC requests are active: {e}"))?;
         *guard = agent;
+        Ok(())
     }
 
     pub async fn attach_agent_async(&self, agent: Agent) {
         *self.agent.lock().await = agent;
     }
 
-    pub fn attach_tools(&self, tools: ToolRegistry) {
-        *self.tools.lock().unwrap() = tools;
+    pub fn attach_tools(&self, tools: ToolRegistry) -> Result<(), String> {
+        *self.tools.lock().map_err(|e| e.to_string())? = tools;
+        Ok(())
     }
 
-    pub fn attach_plugins(&self, plugins: PluginRegistry) {
-        *self.plugins.lock().unwrap() = plugins;
+    pub fn attach_plugins(&self, plugins: PluginRegistry) -> Result<(), String> {
+        *self.plugins.lock().map_err(|e| e.to_string())? = plugins;
+        Ok(())
     }
 
-    pub fn attach_session(&self, session: Session) {
-        *self.session.lock().unwrap() = session;
+    pub fn attach_session(&self, session: Session) -> Result<(), String> {
+        *self.session.lock().map_err(|e| e.to_string())? = session;
+        Ok(())
     }
 
     /// Run the IPC server on the current Tokio runtime.
@@ -223,13 +227,15 @@ impl IpcServer {
                     "shell_deny": agent.policy.shell_deny.len(),
                     "has_approver": agent.approver.is_some(),
                     "has_authorizer": agent.authorizer.is_some(),
-                    "tools": self.tools.lock().unwrap().count(),
-                    "plugins": self.plugins.lock().unwrap().count(),
+                    "tools": self.tools.lock().map_err(|e| e.to_string())?.count(),
+                    "plugins": self.plugins.lock().map_err(|e| e.to_string())?.count(),
                 }))
             }
-            "tools" => Ok(Value::Array(self.tools.lock().unwrap().definitions())),
+            "tools" => Ok(Value::Array(
+                self.tools.lock().map_err(|e| e.to_string())?.definitions(),
+            )),
             "plugins" => {
-                let p = self.plugins.lock().unwrap();
+                let p = self.plugins.lock().map_err(|e| e.to_string())?;
                 Ok(Value::Array(
                     p.plugins
                         .iter()
@@ -327,11 +333,15 @@ impl IpcServer {
                 Ok(Value::String("prompt completed".into()))
             }
             "session_list" => {
-                let s = self.session.lock().unwrap();
+                let s = self.session.lock().map_err(|e| e.to_string())?;
                 Ok(serde_json::json!({"id": s.id, "entries": s.entries.len()}))
             }
             "session_clear" => {
-                self.session.lock().unwrap().entries.clear();
+                self.session
+                    .lock()
+                    .map_err(|e| e.to_string())?
+                    .entries
+                    .clear();
                 self.agent.lock().await.clear_messages();
                 Ok(Value::String("cleared".into()))
             }
@@ -360,7 +370,7 @@ mod tests {
         let mut new_agent = Agent::new();
         new_agent.model = "test-model-abc".to_string();
 
-        server.attach_agent(new_agent);
+        server.attach_agent(new_agent).unwrap();
 
         // Yield to let the spawned task execute
         tokio::task::yield_now().await;
