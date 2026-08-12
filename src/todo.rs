@@ -3,19 +3,14 @@
 use serde::{Deserialize, Serialize};
 
 /// Lifecycle state of a todo item.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TodoStatus {
+    #[default]
     Pending,
     InProgress,
     PendingVerification,
     Completed,
-}
-
-impl Default for TodoStatus {
-    fn default() -> Self {
-        Self::Pending
-    }
 }
 
 /// A task created by the model during an agent session.
