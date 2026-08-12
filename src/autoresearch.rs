@@ -794,7 +794,10 @@ mod tests {
         register_tools(&mut registry, handle);
 
         let definitions = registry.definitions();
-        let names: Vec<&str> = definitions.iter().filter_map(|d| d["name"].as_str()).collect();
+        let names: Vec<&str> = definitions
+            .iter()
+            .filter_map(|d| d["name"].as_str())
+            .collect();
 
         assert!(names.contains(&"init_experiment"));
         assert!(names.contains(&"run_experiment"));
