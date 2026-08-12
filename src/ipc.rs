@@ -363,6 +363,29 @@ mod tests {
     use super::*;
     use crate::agent::Agent;
 
+    #[test]
+    fn test_attach_plugins() {
+        let server = IpcServer::new("/tmp/test_ipc_socket_plugins");
+        let mut registry = crate::plugin::PluginRegistry::new();
+        let plugin = crate::plugin::Plugin {
+            id: "test-plugin".to_string(),
+            name: "Test Plugin".to_string(),
+            version: "1.0.0".to_string(),
+            path: std::path::PathBuf::from("/tmp"),
+            skills: vec![],
+            hooks: vec![],
+            mcp_servers: vec![],
+            enabled: true,
+        };
+        registry.add(plugin);
+
+        server.attach_plugins(registry);
+
+        let plugins_lock = server.plugins.lock().unwrap();
+        assert_eq!(plugins_lock.count(), 1);
+        assert_eq!(plugins_lock.plugins[0].id, "test-plugin");
+    }
+
     #[tokio::test]
     async fn test_attach_agent() {
         let server = IpcServer::new("/tmp/test_ipc_socket");

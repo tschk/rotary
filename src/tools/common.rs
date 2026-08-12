@@ -262,6 +262,7 @@ mod tests {
         assert!(result.unwrap_err().contains("escapes workspace"));
     }
 
+    #[cfg(feature = "computer-use")]
     #[test]
     #[cfg(feature = "computer-use")]
     fn test_resolve_write_path() {
