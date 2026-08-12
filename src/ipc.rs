@@ -415,4 +415,53 @@ mod tests {
             .await;
         assert!(allowed.contains("policy_mode"), "{allowed}");
     }
+
+    #[test]
+    fn test_run_blocking() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let socket_path = tempdir.path().join("test_ipc_run_blocking.sock");
+        let socket_path_str = socket_path.to_str().unwrap().to_string();
+        let server = IpcServer::new(socket_path_str.clone());
+
+        let _handle = std::thread::spawn(move || {
+            let _ = server.run();
+        });
+
+        // Wait a bit for the server to start
+        use std::io::{BufRead, BufReader, Write};
+        use std::os::unix::net::UnixStream;
+
+        let mut retries = 50;
+        let mut stream = loop {
+            match UnixStream::connect(&socket_path_str) {
+                Ok(s) => break s,
+                Err(e) => {
+                    retries -= 1;
+                    if retries == 0 {
+                        panic!("Failed to connect to blocking server: {}", e);
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+            }
+        };
+
+        stream
+            .write_all(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\",\"params\":{}}\n")
+            .unwrap();
+
+        let mut reader = BufReader::new(stream);
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+
+        assert!(line.contains("pong"));
+    }
+
+    #[test]
+    fn test_run_blocking_error() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let invalid_path = tempdir.path().join("does_not_exist").join("ipc.sock");
+        let server = IpcServer::new(invalid_path.to_str().unwrap().to_string());
+        let result = server.run();
+        assert!(result.is_err());
+    }
 }
