@@ -846,6 +846,12 @@ mod tests {
     }
 
     #[test]
+    fn test_default_install_dir() {
+        let dir = PluginInstaller::default_install_dir();
+        assert!(dir.ends_with(PathBuf::from(".agents").join("plugins")));
+    }
+
+    #[test]
     fn blocklist_blocks_added_names() {
         let mut bl = PluginBlocklist::new();
         assert!(!bl.is_blocked("evil"));
