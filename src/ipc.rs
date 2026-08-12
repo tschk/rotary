@@ -223,13 +223,15 @@ impl IpcServer {
                     "shell_deny": agent.policy.shell_deny.len(),
                     "has_approver": agent.approver.is_some(),
                     "has_authorizer": agent.authorizer.is_some(),
-                    "tools": self.tools.lock().unwrap().count(),
-                    "plugins": self.plugins.lock().unwrap().count(),
+                    "tools": self.tools.lock().map_err(|e| format!("tools lock error: {e}"))?.count(),
+                    "plugins": self.plugins.lock().map_err(|e| format!("plugins lock error: {e}"))?.count(),
                 }))
             }
-            "tools" => Ok(Value::Array(self.tools.lock().unwrap().definitions())),
+            "tools" => Ok(Value::Array(
+                self.tools.lock().map_err(|e| format!("tools lock error: {e}"))?.definitions()
+            )),
             "plugins" => {
-                let p = self.plugins.lock().unwrap();
+                let p = self.plugins.lock().map_err(|e| format!("plugins lock error: {e}"))?;
                 Ok(Value::Array(
                     p.plugins
                         .iter()
@@ -327,11 +329,11 @@ impl IpcServer {
                 Ok(Value::String("prompt completed".into()))
             }
             "session_list" => {
-                let s = self.session.lock().unwrap();
+                let s = self.session.lock().map_err(|e| format!("session lock error: {e}"))?;
                 Ok(serde_json::json!({"id": s.id, "entries": s.entries.len()}))
             }
             "session_clear" => {
-                self.session.lock().unwrap().entries.clear();
+                self.session.lock().map_err(|e| format!("session lock error: {e}"))?.entries.clear();
                 self.agent.lock().await.clear_messages();
                 Ok(Value::String("cleared".into()))
             }
