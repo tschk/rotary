@@ -23,9 +23,11 @@ use crate::permissions::{
     Policy, PolicyAuthorizer,
 };
 use crate::provider::{Message, Provider, Role};
+use crate::todo::{TodoConfig, TodoState};
 use moka::future::Cache;
 use parking_lot::RwLock;
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 use std::sync::Arc;
 use std::time::Instant;
 #[cfg(feature = "providers")]
@@ -104,14 +106,142 @@ pub enum Event {
     },
     ToolExecutionStart(ToolCall),
     ToolExecutionEnd(ToolResult),
+    /// The session todo list changed through the opt-in engine todo tool.
+    TodoUpdated {
+        /// Full replacement state, suitable for hosts to render directly.
+        todos: TodoState,
+    },
     TurnEnd {
         turn: usize,
+    },
+    /// Additive turn completion metadata for hosts that implement auto-continue policy.
+    TurnEnded {
+        /// Completed loop iteration.
+        turn: usize,
+        /// Engine-observed completion facts; hosts decide whether to poke.
+        metadata: TurnEndMetadata,
+    },
+    /// Debug report describing prompt-cache stability for one provider request.
+    CacheAudit(CacheAudit),
+    /// Result of an opt-in workspace quality gate.
+    GateResult(GateResult),
+    /// Semantic graph memories selected for this prompt.
+    MemoryRecalled {
+        recalls: Vec<MemoryRecall>,
     },
     AgentEnd,
     Error(String),
     BudgetExceeded {
         reason: String,
     },
+}
+
+/// Completion facts emitted in [`Event::TurnEnded`].
+#[derive(Debug, Clone, Serialize)]
+pub struct TurnEndMetadata {
+    /// Whether the todo state contains work that is not complete.
+    pub open_todos_remain: bool,
+    /// Provider finish reason when it was available.
+    pub finish_reason: Option<String>,
+    /// Whether the assistant requested tools at the end of its response.
+    pub trailing_tool_intent: bool,
+    /// Conservative heuristic indicating the final text appears unfinished.
+    pub final_message_mid_thought: bool,
+    /// Machine-readable completion heuristic; hosts retain policy control.
+    pub turn_complete: bool,
+}
+
+/// A cache-hostile boundary detected between two provider requests.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CacheDivergence {
+    /// The system prefix changed.
+    SystemPrompt,
+    /// The declared tool schema changed.
+    Tools,
+    /// Conversation message at this zero-based index changed or was appended.
+    Message { index: usize },
+}
+
+/// Per-request prompt-cache stability report.
+#[derive(Debug, Clone, Serialize)]
+pub struct CacheAudit {
+    /// Number of bytes in the common prefix with the previous request.
+    pub stable_prefix_bytes: usize,
+    /// Total serialized request bytes, before provider-specific decoration.
+    pub total_prompt_bytes: usize,
+    /// First structured request component that changed, if a prior request exists.
+    pub first_divergence: Option<CacheDivergence>,
+}
+
+/// Configuration for the autonomous quality gate.
+#[derive(Debug, Clone, Serialize)]
+pub struct QualityGateConfig {
+    /// Shell command that must exit successfully before the loop may finish.
+    pub command: String,
+    /// Maximum output retained and fed into the next turn. Defaults to 10 KiB.
+    pub max_output_bytes: usize,
+}
+
+impl QualityGateConfig {
+    /// Create a gate with the default 10 KiB tail-biased output cap.
+    pub fn new(command: impl Into<String>) -> Self {
+        Self {
+            command: command.into(),
+            max_output_bytes: 10 * 1024,
+        }
+    }
+}
+
+/// A quality-gate execution result emitted to hosts.
+#[derive(Debug, Clone, Serialize)]
+pub struct GateResult {
+    /// Configured command.
+    pub command: String,
+    /// Whether the command exited successfully.
+    pub success: bool,
+    /// Process exit code when available.
+    pub exit_code: Option<i32>,
+    /// Tail-biased, bounded stdout and stderr.
+    pub output: String,
+    /// True when no command was run because the workspace is unchanged.
+    pub skipped_unchanged: bool,
+}
+
+/// Pluggable semantic embedder used by graph-memory recall. Hosts may bridge
+/// this trait to a provider embeddings endpoint; the default is no-op.
+pub trait SemanticEmbedder: Send + Sync {
+    /// Return an embedding for `text`, or `None` when embeddings are unavailable.
+    fn embed(&self, text: &str) -> Option<Vec<f32>>;
+}
+
+/// Recall configuration for graph memory.
+#[derive(Clone)]
+pub struct SemanticRecallConfig {
+    /// Embedder supplied by the host.
+    pub embedder: Arc<dyn SemanticEmbedder>,
+    /// Maximum recalled summaries per prompt.
+    pub top_k: usize,
+    /// Minimum cosine similarity.
+    pub threshold: f32,
+}
+
+/// A graph-memory recall injected at the designated cache-safe suffix.
+#[derive(Debug, Clone, Serialize)]
+pub struct MemoryRecall {
+    /// Source graph node identifier.
+    pub id: String,
+    /// Recalled turn summary.
+    pub summary: String,
+    /// Cosine similarity.
+    pub similarity: f32,
+}
+
+#[derive(Clone)]
+struct PromptFingerprint {
+    system: Option<String>,
+    tools: Vec<serde_json::Value>,
+    messages: Vec<Message>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -211,6 +341,14 @@ pub struct Agent {
     pub provider: Option<Arc<dyn Provider>>,
     pub max_tool_iterations: usize,
     pub auto_compact_after: usize,
+    /// Opt-in session todo engine. `None` preserves the historical builtin tool.
+    pub todo_config: Option<TodoConfig>,
+    /// Persistable todo state for the current agent session.
+    pub todo_state: Arc<RwLock<TodoState>>,
+    /// Opt-in command that must pass before a task can complete.
+    pub quality_gate: Option<QualityGateConfig>,
+    #[cfg(feature = "graph-memory")]
+    pub semantic_recall: Option<SemanticRecallConfig>,
     pub workspace_root: std::path::PathBuf,
     /// Optional host-owned autoresearch controller. Attaching it exposes the
     /// SDK primitive without scheduling iterations or changing tool policy.
@@ -246,6 +384,9 @@ pub struct Agent {
     pub cache_stats: crate::prompt_cache::CacheStatsTracker,
     session_cost: SessionCost,
     budget_start: Option<Instant>,
+    cache_audit_enabled: bool,
+    previous_prompt_fingerprint: Option<PromptFingerprint>,
+    last_gate_workspace_hash: Option<String>,
 }
 
 impl Agent {
@@ -269,6 +410,11 @@ impl Agent {
             provider: None,
             max_tool_iterations: 50,
             auto_compact_after: 0,
+            todo_config: None,
+            todo_state: Arc::new(RwLock::new(TodoState::default())),
+            quality_gate: None,
+            #[cfg(feature = "graph-memory")]
+            semantic_recall: None,
             workspace_root: std::env::current_dir().unwrap_or_else(|_| ".".into()),
             autoresearch_controller: None,
             sandbox: None,
@@ -301,6 +447,9 @@ impl Agent {
             cache_stats: crate::prompt_cache::CacheStatsTracker::new(),
             session_cost: SessionCost::new(),
             budget_start: None,
+            cache_audit_enabled: false,
+            previous_prompt_fingerprint: None,
+            last_gate_workspace_hash: None,
         };
         // Always attach userspace workspace sandbox (path confinement for FS tools).
         agent.ensure_userspace_sandbox();
@@ -427,6 +576,52 @@ impl Agent {
 
     pub fn set_provider(&mut self, provider: Arc<dyn Provider>) {
         self.provider = Some(provider);
+    }
+
+    /// Enable the engine-owned todo tool and configure confidence gating.
+    pub fn set_todo_config(&mut self, config: TodoConfig) {
+        self.todo_config = Some(config);
+    }
+
+    /// Disable engine-owned todo handling and retain the legacy builtin behaviour.
+    pub fn clear_todo_config(&mut self) {
+        self.todo_config = None;
+    }
+
+    /// Replace todo state, for example after loading a persisted session.
+    pub fn set_todo_state(&mut self, state: TodoState) {
+        *self.todo_state.write() = state;
+    }
+
+    /// Snapshot the current persisted todo state.
+    pub fn todos(&self) -> TodoState {
+        self.todo_state.read().clone()
+    }
+
+    /// Enable or disable per-request prompt-cache audit events.
+    pub fn enable_cache_audit(&mut self, enabled: bool) {
+        self.cache_audit_enabled = enabled;
+        if !enabled {
+            self.previous_prompt_fingerprint = None;
+        }
+    }
+
+    /// Require `config.command` to pass before a no-tool turn may finish.
+    pub fn set_quality_gate(&mut self, config: QualityGateConfig) {
+        self.quality_gate = Some(config);
+        self.last_gate_workspace_hash = None;
+    }
+
+    /// Disable the autonomous quality gate.
+    pub fn clear_quality_gate(&mut self) {
+        self.quality_gate = None;
+        self.last_gate_workspace_hash = None;
+    }
+
+    /// Enable semantic graph-memory recall without adding a provider dependency.
+    #[cfg(feature = "graph-memory")]
+    pub fn set_semantic_recall(&mut self, config: SemanticRecallConfig) {
+        self.semantic_recall = Some(config);
     }
 
     pub fn set_workspace_root(&mut self, path: impl Into<std::path::PathBuf>) {
@@ -792,6 +987,12 @@ impl Agent {
         tool_ctx.tools = Some(Arc::clone(&self.tools));
         let pending_scope = Arc::new(parking_lot::Mutex::new(None));
         tool_ctx.pending_scope = Some(Arc::clone(&pending_scope));
+        tool_ctx.todo_state = Some(Arc::clone(&self.todo_state));
+        tool_ctx.todo_config = self.todo_config.clone();
+        tool_ctx.todo_updates = self
+            .todo_config
+            .as_ref()
+            .map(|_| Arc::new(parking_lot::Mutex::new(Vec::new())));
         let ctx = Arc::new(tool_ctx);
 
         #[cfg(feature = "zkr-memory")]
@@ -804,6 +1005,9 @@ impl Agent {
         let mut guardrails = self.guardrails.clone().map(ToolGuardrails::new);
         let mut self_healing = self.self_healing.clone();
         let mut plan_approved = false;
+        // Current providers expose a terminal `Done` marker but not a portable
+        // finish reason yet. Keep this optional metadata honest until they do.
+        let last_finish_reason: Option<String> = None;
 
         for iteration in 0..self.max_tool_iterations {
             if let Some(reason) = self.check_budget() {
@@ -817,6 +1021,8 @@ impl Agent {
             let messages: Vec<Message> = self.messages.read().clone();
             let base_system =
                 append_active_skills(self.system_prompt.clone(), active_skills.as_deref());
+            #[cfg(feature = "graph-memory")]
+            let base_system = self.append_semantic_recalls(base_system, &safe_text);
             #[cfg(feature = "zkr-memory")]
             let system = if let Some(improve) = &self.self_improve {
                 let base = base_system.as_deref().unwrap_or("");
@@ -848,6 +1054,9 @@ impl Agent {
                 system
             };
 
+            let tool_definitions = self.tools.definitions();
+            self.audit_prompt(&messages, &system, &tool_definitions);
+
             #[cfg_attr(not(feature = "providers"), allow(unused_mut))]
             let mut tool_calls: Vec<ToolCall> = Vec::new();
             let mut assistant_content;
@@ -871,7 +1080,7 @@ impl Agent {
                             &messages,
                             &system,
                             &self.model,
-                            &self.tools.definitions(),
+                            &tool_definitions,
                             self.reasoning_effort.as_deref(),
                         ))
                         .await
@@ -995,7 +1204,23 @@ impl Agent {
             }
 
             if tool_calls.is_empty() {
-                self.emit(Event::TurnEnd { turn: iteration });
+                if let Some(result) = self.run_quality_gate().await {
+                    let failed = !result.success && !result.skipped_unchanged;
+                    let output = result.output.clone();
+                    self.emit(Event::GateResult(result));
+                    if failed {
+                        self.messages.write().push(Message::user(format!(
+                            "Quality gate failed. Fix the failure, then continue. Bounded gate output:\n{output}"
+                        )));
+                        continue;
+                    }
+                }
+                self.emit_turn_end(
+                    iteration,
+                    last_finish_reason.as_deref(),
+                    false,
+                    &assistant_content,
+                );
 
                 #[cfg(feature = "zkr-memory")]
                 if let Some(improve) = &self.self_improve {
@@ -1101,7 +1326,12 @@ impl Agent {
                             self.messages.write().push(Message::user(format!(
                                 "The plan was rejected: {reason}. Do not run it."
                             )));
-                            self.emit(Event::TurnEnd { turn: iteration });
+                            self.emit_turn_end(
+                                iteration,
+                                last_finish_reason.as_deref(),
+                                true,
+                                &assistant_content,
+                            );
                             break;
                         }
                         PlanDecision::Revise(guidance) => {
@@ -1109,7 +1339,12 @@ impl Agent {
                             self.messages.write().push(Message::user(format!(
                                 "Do not run that plan. Revise it: {guidance}"
                             )));
-                            self.emit(Event::TurnEnd { turn: iteration });
+                            self.emit_turn_end(
+                                iteration,
+                                last_finish_reason.as_deref(),
+                                true,
+                                &assistant_content,
+                            );
                             continue;
                         }
                     }
@@ -1119,6 +1354,11 @@ impl Agent {
             }
 
             let results = self.execute_tools_parallel(&tool_calls, &ctx).await;
+            if let Some(updates) = &ctx.todo_updates {
+                for update in std::mem::take(&mut *updates.lock()) {
+                    self.emit(Event::TodoUpdated { todos: update });
+                }
+            }
             for result in &results {
                 #[cfg(feature = "zkr-memory")]
                 {
@@ -1167,7 +1407,12 @@ impl Agent {
                 self.messages
                     .write()
                     .push(Message::user(format!("Stopped by guardrail: {reason}")));
-                self.emit(Event::TurnEnd { turn: iteration });
+                self.emit_turn_end(
+                    iteration,
+                    last_finish_reason.as_deref(),
+                    true,
+                    &assistant_content,
+                );
                 break;
             }
 
@@ -1194,7 +1439,12 @@ impl Agent {
                 }
             }
 
-            self.emit(Event::TurnEnd { turn: iteration });
+            self.emit_turn_end(
+                iteration,
+                last_finish_reason.as_deref(),
+                true,
+                &assistant_content,
+            );
         }
 
         // Personality observability: analyze the conversation window after the
@@ -1582,6 +1832,178 @@ impl Agent {
         tool_ctx
     }
 
+    fn emit_turn_end(
+        &self,
+        turn: usize,
+        finish_reason: Option<&str>,
+        trailing_tool_intent: bool,
+        content: &str,
+    ) {
+        self.emit(Event::TurnEnd { turn });
+        let trimmed = content.trim_end();
+        let final_message_mid_thought = !trimmed.is_empty()
+            && !trailing_tool_intent
+            && !trimmed.ends_with(['.', '!', '?', ':', ';', '`', ')', ']', '}'])
+            && !trimmed.ends_with("…");
+        let open_todos_remain = self
+            .todo_state
+            .read()
+            .items
+            .iter()
+            .any(|todo| todo.status != crate::todo::TodoStatus::Completed);
+        self.emit(Event::TurnEnded {
+            turn,
+            metadata: TurnEndMetadata {
+                open_todos_remain,
+                finish_reason: finish_reason.map(str::to_owned),
+                trailing_tool_intent,
+                final_message_mid_thought,
+                turn_complete: !trailing_tool_intent && !final_message_mid_thought,
+            },
+        });
+    }
+
+    fn audit_prompt(
+        &mut self,
+        messages: &[Message],
+        system: &Option<String>,
+        tools: &[serde_json::Value],
+    ) {
+        if !self.cache_audit_enabled {
+            return;
+        }
+        let previous = self.previous_prompt_fingerprint.as_ref();
+        let first_divergence = previous.and_then(|previous| {
+            if previous.system != *system {
+                Some(CacheDivergence::SystemPrompt)
+            } else if previous.tools != tools {
+                Some(CacheDivergence::Tools)
+            } else {
+                let first = previous
+                    .messages
+                    .iter()
+                    .zip(messages)
+                    .position(|(before, now)| before != now);
+                first
+                    .or_else(|| {
+                        (previous.messages.len() != messages.len()).then_some(messages.len())
+                    })
+                    .map(|index| CacheDivergence::Message { index })
+            }
+        });
+        let serialized = serde_json::to_vec(&(system, tools, messages)).unwrap_or_default();
+        let previous_serialized = previous
+            .and_then(|previous| {
+                serde_json::to_vec(&(&previous.system, &previous.tools, &previous.messages)).ok()
+            })
+            .unwrap_or_default();
+        let stable_prefix_bytes = serialized
+            .iter()
+            .zip(&previous_serialized)
+            .take_while(|(left, right)| left == right)
+            .count();
+        self.emit(Event::CacheAudit(CacheAudit {
+            stable_prefix_bytes,
+            total_prompt_bytes: serialized.len(),
+            first_divergence,
+        }));
+        self.previous_prompt_fingerprint = Some(PromptFingerprint {
+            system: system.clone(),
+            tools: tools.to_vec(),
+            messages: messages.to_vec(),
+        });
+    }
+
+    async fn run_quality_gate(&mut self) -> Option<GateResult> {
+        let config = self.quality_gate.clone()?;
+        let hash = workspace_hash(&self.workspace_root);
+        if self.last_gate_workspace_hash.as_ref() == Some(&hash) {
+            return Some(GateResult {
+                command: config.command,
+                success: true,
+                exit_code: Some(0),
+                output: String::new(),
+                skipped_unchanged: true,
+            });
+        }
+        let root = self.workspace_root.clone();
+        let command = config.command.clone();
+        let command_for_error = command.clone();
+        let cap = config.max_output_bytes;
+        let result = tokio::task::spawn_blocking(move || {
+            std::process::Command::new("sh")
+                .arg("-lc")
+                .arg(&command)
+                .current_dir(root)
+                .output()
+                .map(|output| {
+                    let mut combined = output.stdout;
+                    combined.extend_from_slice(&output.stderr);
+                    GateResult {
+                        command,
+                        success: output.status.success(),
+                        exit_code: output.status.code(),
+                        output: tail_bytes(&combined, cap),
+                        skipped_unchanged: false,
+                    }
+                })
+                .unwrap_or_else(|error| GateResult {
+                    command: command_for_error,
+                    success: false,
+                    exit_code: None,
+                    output: error.to_string(),
+                    skipped_unchanged: false,
+                })
+        })
+        .await
+        .unwrap_or_else(|error| GateResult {
+            command: config.command,
+            success: false,
+            exit_code: None,
+            output: error.to_string(),
+            skipped_unchanged: false,
+        });
+        self.last_gate_workspace_hash = Some(hash);
+        Some(result)
+    }
+
+    /// Append recalls only at the explicit cache-safe suffix. The stable base
+    /// system prompt is never reordered or rewritten by recall.
+    #[cfg(feature = "graph-memory")]
+    fn append_semantic_recalls(&self, base: Option<String>, query: &str) -> Option<String> {
+        let (Some(config), Some(graph), Some(vector)) = (
+            self.semantic_recall.as_ref(),
+            self.graph_memory.as_ref(),
+            self.semantic_recall
+                .as_ref()
+                .and_then(|config| config.embedder.embed(query)),
+        ) else {
+            return base;
+        };
+        let recalls = graph.recall_by_embedding(&vector, config.top_k, config.threshold);
+        if recalls.is_empty() {
+            return base;
+        }
+        let events = recalls
+            .iter()
+            .map(|recall| MemoryRecall {
+                id: recall.id.clone(),
+                summary: recall.summary.clone(),
+                similarity: recall.similarity,
+            })
+            .collect();
+        self.emit(Event::MemoryRecalled { recalls: events });
+        let suffix = recalls
+            .iter()
+            .map(|recall| format!("- {}", recall.summary))
+            .collect::<Vec<_>>()
+            .join("\n");
+        Some(match base {
+            Some(base) => format!("{base}\n\n# Recalled Memory (cache-safe suffix)\n{suffix}"),
+            None => format!("# Recalled Memory (cache-safe suffix)\n{suffix}"),
+        })
+    }
+
     async fn compact_semantically(
         &self,
         reason: &str,
@@ -1643,6 +2065,43 @@ fn redact_tool_call(call: &ToolCall) -> ToolCall {
     }
 }
 
+fn tail_bytes(bytes: &[u8], cap: usize) -> String {
+    let start = bytes.len().saturating_sub(cap);
+    let mut text = String::from_utf8_lossy(&bytes[start..]).into_owned();
+    if start > 0 {
+        text.insert_str(0, "[output truncated; tail retained]\n");
+    }
+    text
+}
+
+fn workspace_hash(root: &std::path::Path) -> String {
+    let mut hasher = Sha256::new();
+    let output = std::process::Command::new("git")
+        .args(["diff", "--binary", "HEAD"])
+        .current_dir(root)
+        .output();
+    match output {
+        Ok(output) => {
+            hasher.update(&output.stdout);
+            hasher.update(&output.stderr);
+            if let Ok(untracked) = std::process::Command::new("git")
+                .args(["ls-files", "--others", "--exclude-standard"])
+                .current_dir(root)
+                .output()
+            {
+                for path in String::from_utf8_lossy(&untracked.stdout).lines() {
+                    hasher.update(path.as_bytes());
+                    if let Ok(bytes) = std::fs::read(root.join(path)) {
+                        hasher.update(&bytes);
+                    }
+                }
+            }
+        }
+        Err(error) => hasher.update(error.to_string().as_bytes()),
+    }
+    format!("{:x}", hasher.finalize())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1695,6 +2154,34 @@ mod tests {
         assert!(results.iter().all(|r| !r.is_error));
         assert_eq!(PARALLEL_DELAY_CALLS.load(Ordering::SeqCst), 2);
         assert!(start.elapsed() < Duration::from_millis(70));
+    }
+
+    #[test]
+    fn cache_audit_reports_structured_divergence() {
+        let mut agent = Agent::new();
+        agent.enable_cache_audit(true);
+        let seen = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let capture = Arc::clone(&seen);
+        agent.subscribe(move |event| {
+            if let Event::CacheAudit(audit) = event {
+                capture.lock().push(audit.clone());
+            }
+        });
+        agent.audit_prompt(&[Message::user("one")], &Some("system".into()), &[]);
+        agent.audit_prompt(&[Message::user("two")], &Some("system".into()), &[]);
+        let events = seen.lock();
+        assert_eq!(events.len(), 2);
+        assert!(matches!(
+            events[1].first_divergence,
+            Some(CacheDivergence::Message { index: 0 })
+        ));
+    }
+
+    #[test]
+    fn tail_biased_gate_output_is_capped() {
+        let output = tail_bytes(b"0123456789", 4);
+        assert!(output.contains("6789"));
+        assert!(output.contains("truncated"));
     }
 
     static CACHE_READ_CALLS: AtomicUsize = AtomicUsize::new(0);

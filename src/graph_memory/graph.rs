@@ -143,6 +143,10 @@ pub struct GraphMemory {
     pub(crate) adjacency: HashMap<String, Vec<String>>,
     pub(crate) reverse: HashMap<String, Vec<String>>,
     pub(crate) workspace: Option<PathBuf>,
+    /// Optional embeddings keyed by node id. Kept separate so existing node
+    /// payloads and serialized graphs remain backward compatible.
+    #[serde(default)]
+    pub(crate) embeddings: HashMap<String, Vec<f32>>,
 }
 
 impl Default for GraphMemory {
@@ -160,6 +164,7 @@ impl GraphMemory {
             adjacency: HashMap::new(),
             reverse: HashMap::new(),
             workspace: None,
+            embeddings: HashMap::new(),
         }
     }
 
@@ -211,6 +216,63 @@ impl GraphMemory {
     /// Look up a node by id.
     pub fn get_node(&self, id: &str) -> Option<&MemoryNode> {
         self.nodes.get(id)
+    }
+
+    /// Store a turn summary as a graph node and optionally associate an embedding.
+    pub fn add_turn_summary(
+        &mut self,
+        summary: impl Into<String>,
+        embedding: Option<Vec<f32>>,
+    ) -> String {
+        let summary = summary.into();
+        let id = self.add_node(MemoryNode {
+            id: String::new(),
+            label: "Turn summary".into(),
+            node_type: NodeType::Concept,
+            description: summary,
+            source_file: None,
+            source_location: None,
+            tags: vec!["turn_summary".into()],
+            created_at: Utc::now(),
+        });
+        if let Some(embedding) = embedding.filter(|embedding| !embedding.is_empty()) {
+            self.embeddings.insert(id.clone(), embedding);
+        }
+        id
+    }
+
+    /// Return top semantic recalls whose cosine similarity meets `threshold`.
+    pub fn recall_by_embedding(
+        &self,
+        query: &[f32],
+        top_k: usize,
+        threshold: f32,
+    ) -> Vec<SemanticRecall> {
+        if query.is_empty() || top_k == 0 {
+            return Vec::new();
+        }
+        let mut recalls: Vec<SemanticRecall> = self
+            .embeddings
+            .iter()
+            .filter_map(|(id, embedding)| {
+                let score = cosine_similarity(query, embedding)?;
+                (score >= threshold).then(|| {
+                    self.nodes.get(id).map(|node| SemanticRecall {
+                        id: id.clone(),
+                        summary: node.description.clone(),
+                        similarity: score,
+                    })
+                })?
+            })
+            .collect();
+        recalls.sort_by(|left, right| {
+            right
+                .similarity
+                .partial_cmp(&left.similarity)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        recalls.truncate(top_k);
+        recalls
     }
 
     /// Return the depth-1 neighbors (successors) of a node.
@@ -490,4 +552,28 @@ impl GraphMemory {
         }
         self.edges.retain(|e| e.source != id && e.target != id);
     }
+}
+
+/// A summary returned by semantic graph recall.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SemanticRecall {
+    /// Source graph node identifier.
+    pub id: String,
+    /// Stored turn summary.
+    pub summary: String,
+    /// Cosine similarity to the query vector.
+    pub similarity: f32,
+}
+
+fn cosine_similarity(left: &[f32], right: &[f32]) -> Option<f32> {
+    if left.len() != right.len() || left.is_empty() {
+        return None;
+    }
+    let (mut dot, mut left_norm, mut right_norm) = (0.0_f32, 0.0_f32, 0.0_f32);
+    for (left, right) in left.iter().zip(right) {
+        dot += left * right;
+        left_norm += left * left;
+        right_norm += right * right;
+    }
+    (left_norm > 0.0 && right_norm > 0.0).then(|| dot / (left_norm.sqrt() * right_norm.sqrt()))
 }

@@ -1,6 +1,7 @@
 //! Session: conversation tree with fork/merge/persist (JSONL).
 
 use crate::provider::{Message, Role};
+use crate::todo::TodoState;
 use serde::{Deserialize, Serialize};
 use std::io::Read;
 use std::path::PathBuf;
@@ -59,6 +60,9 @@ pub struct Session {
     pub id: String,
     pub name: String,
     pub entries: Vec<Entry>,
+    /// Host-visible todo state persisted with the session.
+    #[serde(default)]
+    pub todos: TodoState,
     next_id: u64,
 }
 
@@ -68,6 +72,7 @@ impl Session {
             id: id.into(),
             name: name.into(),
             entries: Vec::new(),
+            todos: TodoState::default(),
             next_id: 1,
         }
     }
@@ -124,6 +129,10 @@ impl Session {
             content.push_str(&serde_json::to_string(&safe_entry).unwrap());
             content.push('\n');
         }
+        content.push_str(
+            &serde_json::json!({"type": "session_todos", "todos": self.todos}).to_string(),
+        );
+        content.push('\n');
         std::fs::write(&path, content)?;
         Ok(path)
     }
@@ -136,7 +145,16 @@ impl Session {
             if line.is_empty() {
                 continue;
             }
-            if let Ok(entry) = serde_json::from_str::<Entry>(line) {
+            let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+                continue;
+            };
+            if value.get("type").and_then(|value| value.as_str()) == Some("session_todos") {
+                if let Some(todos) = value.get("todos") {
+                    if let Ok(todos) = serde_json::from_value(todos.clone()) {
+                        session.todos = todos;
+                    }
+                }
+            } else if let Ok(entry) = serde_json::from_value::<Entry>(value) {
                 if entry.id >= session.next_id {
                     session.next_id = entry.id + 1;
                 }
@@ -161,6 +179,10 @@ impl Session {
             "format": "rx4-codex-jsonl-v1",
         });
         out.push_str(&meta.to_string());
+        out.push('\n');
+        out.push_str(
+            &serde_json::json!({"type": "session_todos", "todos": self.todos}).to_string(),
+        );
         out.push('\n');
         for entry in &self.entries {
             let safe_content = redactor.redact(&entry.content);
@@ -209,6 +231,14 @@ impl Session {
                 if let Some(s) = v.get("name").and_then(|x| x.as_str()) {
                     name = s.to_string();
                     session.name = name.clone();
+                }
+                continue;
+            }
+            if ty == "session_todos" {
+                if let Some(todos) = v.get("todos") {
+                    if let Ok(todos) = serde_json::from_value(todos.clone()) {
+                        session.todos = todos;
+                    }
                 }
                 continue;
             }
@@ -400,6 +430,7 @@ mod tests {
         assert_eq!(loaded.name, "export-test");
         assert_eq!(loaded.entries.len(), 2);
         assert_eq!(loaded.entries[0].content, "ping");
+        assert!(loaded.todos.items.is_empty());
         assert_eq!(loaded.entries[1].content, "pong");
     }
 

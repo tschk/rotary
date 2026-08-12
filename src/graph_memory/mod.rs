@@ -68,6 +68,16 @@ mod tests {
     }
 
     #[test]
+    fn recalls_turn_summaries_by_cosine_similarity() {
+        let mut graph = GraphMemory::new();
+        graph.add_turn_summary("implemented semantic recall", Some(vec![1.0, 0.0]));
+        graph.add_turn_summary("unrelated UI work", Some(vec![0.0, 1.0]));
+        let recalls = graph.recall_by_embedding(&[0.9, 0.1], 1, 0.5);
+        assert_eq!(recalls.len(), 1);
+        assert!(recalls[0].summary.contains("semantic"));
+    }
+
+    #[test]
     fn test_pagerank_convergence() {
         let mut g = GraphMemory::new();
         let a = g.add_node(node("a", NodeType::Concept, "a"));
