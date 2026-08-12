@@ -775,8 +775,7 @@ mod tests {
         let manifest = manifest_with_hash(&source_dir);
 
         let installer = PluginInstaller::new(install_dir.clone());
-        let installed = installer
-            .install(&manifest, source_dir.to_str().ok_or("Invalid path")?)?;
+        let installed = installer.install(&manifest, source_dir.to_str().ok_or("Invalid path")?)?;
         assert_eq!(installed.name, "demo-plugin");
         assert_eq!(installed.version, "0.1.0");
         assert!(installed.path.join("plugin.json").exists());
