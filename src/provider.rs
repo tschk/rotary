@@ -439,9 +439,7 @@ fn openai_request(
                 .collect(),
         );
     }
-    if let Some(effort) =
-        reasoning_effort.filter(|_| crate::models::registry().supports_reasoning_effort(model))
-    {
+    if let Some(effort) = reasoning_effort {
         body["reasoning_effort"] = serde_json::json!(effort);
     }
     body
@@ -920,13 +918,13 @@ mod tests {
 
     #[cfg(feature = "providers")]
     #[test]
-    fn omits_unsupported_openai_reasoning_effort() {
+    fn omits_openai_reasoning_effort_when_host_does_not_supply_one() {
         let body = openai_request(
             &[Message::user("solve")],
             &None,
             "grok-4.20-0309-reasoning",
             &[],
-            Some("high"),
+            None,
             false,
         );
         assert!(body.get("reasoning_effort").is_none());

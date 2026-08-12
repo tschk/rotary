@@ -18,6 +18,7 @@ use crate::guardrails::{
 };
 use crate::hooks::HookRegistry;
 use crate::mode::{self, Profile, Scope};
+use crate::models::ModelRegistry;
 use crate::permissions::{
     Approver, AsyncApprover, Authorizer, Decision, PlanApprover, PlanDecision, PlanProposal,
     Policy, PolicyAuthorizer,
@@ -307,6 +308,10 @@ fn append_active_skills(base: Option<String>, active_skills: Option<&str>) -> Op
 /// The agent — owns the loop, tools, provider, policy, scope, hooks, cache.
 pub struct Agent {
     pub model: String,
+    /// Model metadata supplied by the host. Rotary never populates this with
+    /// a built-in catalog; hosts should refresh it from their provider SDK or
+    /// discovery endpoint and inject it here.
+    pub model_registry: ModelRegistry,
     pub reasoning_effort: Option<String>,
     pub system_prompt: Option<String>,
     base_system_prompt: Option<String>,
@@ -393,6 +398,7 @@ impl Agent {
     pub fn new() -> Self {
         let mut agent = Self {
             model: "gpt-4o".into(),
+            model_registry: ModelRegistry::new(),
             reasoning_effort: None,
             system_prompt: None,
             base_system_prompt: None,
@@ -467,6 +473,16 @@ impl Agent {
 
     pub fn set_model(&mut self, model: impl Into<String>) {
         self.model = model.into();
+    }
+
+    /// Replace the model metadata supplied by the host.
+    pub fn set_model_registry(&mut self, registry: ModelRegistry) {
+        self.model_registry = registry;
+    }
+
+    /// Borrow the host-supplied model metadata.
+    pub fn model_registry(&self) -> &ModelRegistry {
+        &self.model_registry
     }
 
     pub fn set_reasoning_effort(&mut self, effort: Option<String>) {
@@ -870,9 +886,17 @@ impl Agent {
     }
 
     pub fn context_window(&self) -> usize {
-        crate::models::ModelRegistry::load()
-            .get(&self.model)
+        let model = self
+            .provider
+            .as_ref()
+            .and_then(|provider| {
+                self.model_registry
+                    .get_for_provider(provider.id(), &self.model)
+            })
+            .or_else(|| self.model_registry.get(&self.model));
+        model
             .map(|model| model.context_window)
+            .filter(|window| *window > 0)
             .unwrap_or(CompactionConfig::DEFAULT_CONTEXT_WINDOW)
     }
 
@@ -1073,6 +1097,10 @@ impl Agent {
                 use crate::provider::StreamEvent;
                 use futures::StreamExt;
                 let mut attempts = 0;
+                let reasoning_effort = self.reasoning_effort.as_deref().filter(|_| {
+                    self.model_registry
+                        .supports_reasoning_effort_for(provider.id(), &self.model)
+                });
                 let stream = loop {
                     let result = ctx
                         .cancellation
@@ -1081,7 +1109,7 @@ impl Agent {
                             &system,
                             &self.model,
                             &tool_definitions,
-                            self.reasoning_effort.as_deref(),
+                            reasoning_effort,
                         ))
                         .await
                         .map_err(|_| AgentError::Cancelled)?;
@@ -2105,6 +2133,7 @@ fn workspace_hash(root: &std::path::Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::ModelInfo;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
 
@@ -2273,6 +2302,12 @@ mod tests {
     fn default_compaction_threshold_tracks_model_window() {
         let mut agent = Agent::new();
         agent.set_model("gemini-2.0-flash");
+        agent.set_model_registry(ModelRegistry::from_models([ModelInfo::new(
+            "google",
+            "gemini-2.0-flash",
+            1_048_576,
+            8_192,
+        )]));
         assert_eq!(agent.context_window(), 1_048_576);
         assert_eq!(agent.auto_compact_threshold(), 943_719);
     }

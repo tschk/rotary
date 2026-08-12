@@ -1,14 +1,20 @@
-//! Model registry: built-in model metadata, user overrides, capability detection,
-//! and per-provider compatibility configuration.
+//! Consumer-supplied model metadata and provider compatibility.
+//!
+//! Rotary owns the registry data structure and lookup rules, but it does not
+//! own a catalog of current models. Hosts should populate a [`ModelRegistry`]
+//! from their provider SDK, discovery endpoint, or configuration and pass it
+//! to [`crate::Agent::set_model_registry`].
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::OnceLock;
 
-/// Metadata describing a single model's capabilities and limits.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Metadata describing a model selected by the host.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ModelInfo {
+    /// Provider-local model identifier, for example `gpt-4o` or
+    /// `anthropic/claude-sonnet-4`.
     pub id: String,
+    /// Provider identifier used by [`crate::provider::Provider::id`].
     pub provider: String,
     pub context_window: usize,
     pub max_output_tokens: usize,
@@ -22,8 +28,29 @@ pub struct ModelInfo {
     pub supports_reasoning_effort: bool,
 }
 
+impl ModelInfo {
+    /// Construct metadata with conservative capability defaults.
+    pub fn new(
+        provider: impl Into<String>,
+        id: impl Into<String>,
+        context_window: usize,
+        max_output_tokens: usize,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            provider: provider.into(),
+            context_window,
+            max_output_tokens,
+            supports_tools: false,
+            supports_vision: false,
+            supports_reasoning: false,
+            supports_reasoning_effort: false,
+        }
+    }
+}
+
 /// Per-provider compatibility overrides for request field naming and role handling.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CompatConfig {
     /// Field name to use for the maximum output tokens parameter.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -40,97 +67,130 @@ pub struct CompatConfig {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SystemRoleHandling {
-    /// Top-level `system` role message (OpenAI-compatible).
     TopLevel,
-    /// Prepended into the first user message (Anthropic-style).
     PrependUser,
-    /// Dedicated `system` parameter outside the messages array.
     SystemParam,
 }
 
-/// Global model registry with built-in defaults merged against user overrides.
-#[derive(Debug, Clone)]
+/// Model metadata supplied by a host or consumer.
+///
+/// The registry starts empty. It never silently adds Rotary's own model list,
+/// reads a global singleton, or overrides a host's selected provider. A model
+/// is addressed by `(provider, id)` internally; [`Self::get`] is retained as a
+/// convenience for IDs that are unique across the supplied catalog.
+#[derive(Debug, Clone, Default)]
 pub struct ModelRegistry {
     models: HashMap<String, ModelInfo>,
     compat: HashMap<String, CompatConfig>,
 }
 
 impl ModelRegistry {
-    /// Build a registry from the built-in model list, optionally merged with
-    /// `~/.agents/models.json` and `./models.json` (user overrides take precedence).
-    pub fn load() -> Self {
-        let mut models = HashMap::new();
-        for model in builtin_models() {
-            models.insert(model.id.clone(), model);
-        }
-
-        let mut compat = HashMap::new();
-        for (provider, cfg) in builtin_compat() {
-            compat.insert(provider.to_string(), cfg);
-        }
-
-        if let Some(overrides) = load_user_overrides() {
-            for model in overrides.models {
-                models.insert(model.id.clone(), model);
-            }
-            for (provider, cfg) in overrides.compat {
-                compat.insert(provider, cfg);
-            }
-        }
-
-        Self { models, compat }
+    pub fn new() -> Self {
+        Self::default()
     }
 
-    /// Look up a model by id (e.g. `gpt-4o`, `claude-3-5-sonnet`).
+    /// Build a registry from host-supplied model metadata.
+    pub fn from_models<I>(models: I) -> Self
+    where
+        I: IntoIterator<Item = ModelInfo>,
+    {
+        let mut registry = Self::new();
+        registry.extend(models);
+        registry
+    }
+
+    /// Add or replace metadata for one provider/model pair.
+    pub fn register(&mut self, model: ModelInfo) -> Option<ModelInfo> {
+        self.models
+            .insert(model_key(&model.provider, &model.id), model)
+    }
+
+    pub fn extend<I>(&mut self, models: I)
+    where
+        I: IntoIterator<Item = ModelInfo>,
+    {
+        for model in models {
+            self.register(model);
+        }
+    }
+
+    pub fn register_compat(
+        &mut self,
+        provider: impl Into<String>,
+        config: CompatConfig,
+    ) -> Option<CompatConfig> {
+        self.compat.insert(provider.into(), config)
+    }
+
+    /// Parse a consumer-owned JSON registry. The file format is an object with
+    /// `models` and optional `compat` fields; file location and refresh policy
+    /// remain entirely the host's responsibility.
+    pub fn from_json(json: &str) -> Result<Self, serde_json::Error> {
+        let file = serde_json::from_str::<OverridesFile>(json)?;
+        let mut registry = ModelRegistry::from_models(file.models);
+        registry.compat = file.compat;
+        Ok(registry)
+    }
+
+    /// Look up a model by a fully qualified `provider/model` key or by a
+    /// unique provider-local model ID.
     pub fn get(&self, id: &str) -> Option<&ModelInfo> {
-        self.models.get(id)
+        if let Some(model) = self.models.get(id) {
+            return Some(model);
+        }
+
+        let mut matches = self.models.values().filter(|model| model.id == id);
+        let first = matches.next()?;
+        if matches.next().is_none() {
+            Some(first)
+        } else {
+            None
+        }
     }
 
-    /// Iterate over all registered models.
+    /// Look up a model using the provider identity selected by the host.
+    pub fn get_for_provider(&self, provider: &str, id: &str) -> Option<&ModelInfo> {
+        self.models.get(&model_key(provider, id))
+    }
+
     pub fn models(&self) -> impl Iterator<Item = &ModelInfo> {
         self.models.values()
     }
 
-    /// Look up compatibility configuration for a provider id.
+    pub fn is_empty(&self) -> bool {
+        self.models.is_empty()
+    }
+
     pub fn compat(&self, provider: &str) -> Option<&CompatConfig> {
         self.compat.get(provider)
     }
 
-    /// True for models that support high-effort reasoning (o1, o3, thinking Claude).
     pub fn supports_xhigh(&self, id: &str) -> bool {
-        match self.models.get(id) {
-            Some(m) if m.supports_reasoning => is_xhigh_model(&m.id),
-            _ => false,
-        }
+        self.get(id)
+            .is_some_and(|model| model.supports_reasoning && is_xhigh_model(&model.id))
     }
 
-    /// Predicate for any reasoning-capable model.
     pub fn is_reasoning_model(&self, id: &str) -> bool {
-        self.models
-            .get(id)
-            .map(|m| m.supports_reasoning)
-            .unwrap_or(false)
+        self.get(id).is_some_and(|model| model.supports_reasoning)
     }
 
     pub fn supports_reasoning_effort(&self, id: &str) -> bool {
-        self.models
-            .get(id)
-            .map(|m| m.supports_reasoning_effort)
-            .unwrap_or(false)
+        self.get(id)
+            .is_some_and(|model| model.supports_reasoning_effort)
     }
 
-    /// Clamp a requested thinking level to the model's supported range.
-    ///
-    /// Returns one of `"low"`, `"medium"`, `"high"`, `"xhigh"`. Non-reasoning
-    /// models clamp to `"low"`; reasoning models without xhigh support clamp to
-    /// `"high"`.
+    pub fn supports_reasoning_effort_for(&self, provider: &str, id: &str) -> bool {
+        self.get_for_provider(provider, id)
+            .or_else(|| self.get(id))
+            .is_some_and(|model| model.supports_reasoning_effort)
+    }
+
     pub fn thinking_level_clamp(&self, id: &str, requested: &str) -> String {
         if !self.is_reasoning_model(id) {
             return "low".into();
         }
-        let xhigh = self.supports_xhigh(id);
         match requested {
-            "xhigh" if xhigh => "xhigh".into(),
+            "xhigh" if self.supports_xhigh(id) => "xhigh".into(),
             "xhigh" => "high".into(),
             "high" => "high".into(),
             "medium" => "medium".into(),
@@ -139,249 +199,21 @@ impl ModelRegistry {
     }
 }
 
+fn model_key(provider: &str, id: &str) -> String {
+    format!("{provider}/{id}")
+}
+
 fn is_xhigh_model(id: &str) -> bool {
-    if id.starts_with("gpt-5.6-sol")
-        || id.starts_with("gpt-5.5")
-        || id.starts_with("gpt-5.4")
-        || id.starts_with("gpt-5.2")
-    {
-        return true;
-    }
-    if id.starts_with("o1") && !id.contains("mini") {
-        return true;
-    }
-    if id.starts_with("o3") {
-        return true;
-    }
-    id == "claude-3-5-sonnet" || id == "claude-3-7-sonnet" || id == "claude-sonnet-4"
+    id.starts_with("gpt-5")
+        || (id.starts_with("o1") && !id.contains("mini"))
+        || id.starts_with("o3")
+        || matches!(
+            id,
+            "claude-3-5-sonnet" | "claude-3-7-sonnet" | "claude-sonnet-4"
+        )
 }
 
-fn builtin_models() -> Vec<ModelInfo> {
-    [
-        (
-            "gpt-5.6-sol",
-            "openai",
-            200_000,
-            16_384,
-            true,
-            true,
-            true,
-            true,
-        ),
-        (
-            "gpt-5.6-terra",
-            "openai",
-            200_000,
-            16_384,
-            true,
-            true,
-            true,
-            true,
-        ),
-        (
-            "gpt-5.6-luna",
-            "openai",
-            200_000,
-            16_384,
-            true,
-            true,
-            false,
-            false,
-        ),
-        ("gpt-5.4", "openai", 200_000, 16_384, true, true, true, true),
-        (
-            "gpt-5.4-mini",
-            "openai",
-            200_000,
-            16_384,
-            true,
-            true,
-            false,
-            false,
-        ),
-        ("gpt-5.2", "openai", 200_000, 16_384, true, true, true, true),
-        (
-            "claude-3-5-sonnet",
-            "anthropic",
-            200_000,
-            8_192,
-            true,
-            true,
-            true,
-            true,
-        ),
-        (
-            "claude-3-5-haiku",
-            "anthropic",
-            200_000,
-            8_192,
-            true,
-            true,
-            false,
-            false,
-        ),
-        (
-            "claude-3-opus",
-            "anthropic",
-            200_000,
-            4_096,
-            true,
-            true,
-            false,
-            false,
-        ),
-        (
-            "gemini-2.0-flash",
-            "google",
-            1_048_576,
-            8_192,
-            true,
-            true,
-            false,
-            false,
-        ),
-        (
-            "gemini-1.5-pro",
-            "google",
-            2_097_152,
-            8_192,
-            true,
-            true,
-            false,
-            false,
-        ),
-        ("grok-3", "xai", 131_072, 16_384, true, false, false, false),
-        (
-            "grok-3-mini",
-            "xai",
-            131_072,
-            16_384,
-            true,
-            false,
-            true,
-            false,
-        ),
-        ("grok-4.5", "xai", 500_000, 16_384, true, true, true, true),
-        ("grok-4.3", "xai", 256_000, 16_384, true, true, true, false),
-        (
-            "grok-build-0.1",
-            "xai",
-            256_000,
-            16_384,
-            true,
-            true,
-            true,
-            false,
-        ),
-        (
-            "grok-4.20-0309-reasoning",
-            "xai",
-            2_000_000,
-            16_384,
-            true,
-            true,
-            true,
-            false,
-        ),
-        (
-            "grok-4.20-0309-non-reasoning",
-            "xai",
-            256_000,
-            16_384,
-            true,
-            true,
-            false,
-            false,
-        ),
-        (
-            "grok-4.20-multi-agent-0309",
-            "xai",
-            2_000_000,
-            16_384,
-            true,
-            true,
-            true,
-            false,
-        ),
-        (
-            "llama3.2", "ollama", 128_000, 4_096, true, false, false, false,
-        ),
-        (
-            "qwen2.5", "ollama", 131_072, 4_096, true, false, false, false,
-        ),
-        (
-            "deepseek-r1",
-            "ollama",
-            128_000,
-            8_192,
-            false,
-            false,
-            true,
-            false,
-        ),
-    ]
-    .into_iter()
-    .map(
-        |(id, provider, ctx, max_out, tools, vision, reasoning, effort)| ModelInfo {
-            id: id.into(),
-            provider: provider.into(),
-            context_window: ctx,
-            max_output_tokens: max_out,
-            supports_tools: tools,
-            supports_vision: vision,
-            supports_reasoning: reasoning,
-            supports_reasoning_effort: effort,
-        },
-    )
-    .collect()
-}
-
-fn builtin_compat() -> Vec<(&'static str, CompatConfig)> {
-    vec![
-        (
-            "openai",
-            CompatConfig {
-                max_tokens_field: Some("max_completion_tokens".into()),
-                system_role: Some(SystemRoleHandling::TopLevel),
-                tools_field: Some("tools".into()),
-            },
-        ),
-        (
-            "anthropic",
-            CompatConfig {
-                max_tokens_field: Some("max_tokens".into()),
-                system_role: Some(SystemRoleHandling::SystemParam),
-                tools_field: Some("tools".into()),
-            },
-        ),
-        (
-            "google",
-            CompatConfig {
-                max_tokens_field: Some("max_output_tokens".into()),
-                system_role: Some(SystemRoleHandling::TopLevel),
-                tools_field: Some("tools".into()),
-            },
-        ),
-        (
-            "xai",
-            CompatConfig {
-                max_tokens_field: Some("max_completion_tokens".into()),
-                system_role: Some(SystemRoleHandling::TopLevel),
-                tools_field: Some("tools".into()),
-            },
-        ),
-        (
-            "ollama",
-            CompatConfig {
-                max_tokens_field: Some("max_tokens".into()),
-                system_role: Some(SystemRoleHandling::TopLevel),
-                tools_field: Some("tools".into()),
-            },
-        ),
-    ]
-}
-
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Default)]
 struct OverridesFile {
     #[serde(default)]
     models: Vec<ModelInfo>,
@@ -389,144 +221,80 @@ struct OverridesFile {
     compat: HashMap<String, CompatConfig>,
 }
 
-fn load_user_overrides() -> Option<OverridesFile> {
-    let home = std::env::var("HOME").ok();
-    let candidates: Vec<std::path::PathBuf> =
-        std::iter::once(std::path::PathBuf::from("./models.json"))
-            .chain(home.map(|h| std::path::Path::new(&h).join(".agents").join("models.json")))
-            .collect();
-
-    for path in candidates {
-        if let Ok(content) = std::fs::read_to_string(&path) {
-            if let Ok(file) = serde_json::from_str::<OverridesFile>(&content) {
-                return Some(file);
-            }
-        }
-    }
-    None
-}
-
-static REGISTRY: OnceLock<ModelRegistry> = OnceLock::new();
-
-/// Access the process-wide registry, initializing it on first use.
-pub fn registry() -> &'static ModelRegistry {
-    REGISTRY.get_or_init(ModelRegistry::load)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn fresh() -> ModelRegistry {
-        ModelRegistry::load()
+    fn model(provider: &str, id: &str) -> ModelInfo {
+        let mut model = ModelInfo::new(provider, id, 128_000, 8_192);
+        model.supports_tools = true;
+        model.supports_reasoning = true;
+        model.supports_reasoning_effort = true;
+        model
     }
 
     #[test]
-    fn builtin_model_lookup() {
-        let reg = fresh();
-        let gpt = reg
-            .get("gpt-5.6-sol")
-            .expect("gpt-5.6-sol should be registered");
-        assert_eq!(gpt.provider, "openai");
-        assert_eq!(gpt.context_window, 200_000);
-        assert!(gpt.supports_tools);
-        assert!(gpt.supports_vision);
-        assert!(gpt.supports_reasoning);
-
-        let sonnet = reg
-            .get("claude-3-5-sonnet")
-            .expect("claude-3-5-sonnet should be registered");
-        assert_eq!(sonnet.provider, "anthropic");
-        assert!(sonnet.supports_reasoning);
+    fn registry_starts_without_rotary_owned_models() {
+        assert!(ModelRegistry::new().is_empty());
     }
 
     #[test]
-    fn unknown_model_returns_none() {
-        let reg = fresh();
-        assert!(reg.get("does-not-exist-xyz").is_none());
-    }
-
-    #[test]
-    fn reasoning_model_detection() {
-        let reg = fresh();
-        assert!(reg.is_reasoning_model("gpt-5.6-sol"));
-        assert!(reg.is_reasoning_model("gpt-5.4"));
-        assert!(reg.is_reasoning_model("claude-3-5-sonnet"));
-        assert!(!reg.is_reasoning_model("gpt-5.6-luna"));
-        assert!(!reg.is_reasoning_model("gpt-5.4-mini"));
-        assert!(!reg.is_reasoning_model("claude-3-5-haiku"));
-    }
-
-    #[test]
-    fn grok_request_capabilities() {
-        let reg = fresh();
-        let grok = reg.get("grok-4.5").expect("grok-4.5 should be registered");
-        assert_eq!(grok.context_window, 500_000);
-        assert!(grok.supports_reasoning_effort);
-
-        let reasoning = reg
-            .get("grok-4.20-0309-reasoning")
-            .expect("grok-4.20 reasoning should be registered");
-        assert_eq!(reasoning.context_window, 2_000_000);
-        assert!(!reasoning.supports_reasoning_effort);
-
-        let multi_agent = reg
-            .get("grok-4.20-multi-agent-0309")
-            .expect("grok-4.20 multi-agent should be registered");
-        assert_eq!(multi_agent.context_window, 2_000_000);
-        assert!(!multi_agent.supports_reasoning_effort);
-        assert!(!reg.supports_reasoning_effort("grok-build-0.1"));
-    }
-
-    #[test]
-    fn xhigh_support() {
-        let reg = fresh();
-        assert!(reg.supports_xhigh("gpt-5.6-sol"));
-        assert!(reg.supports_xhigh("gpt-5.4"));
-        assert!(reg.supports_xhigh("claude-3-5-sonnet"));
-        assert!(!reg.supports_xhigh("gpt-5.6-luna"));
-        assert!(!reg.supports_xhigh("gpt-5.4-mini"));
-    }
-
-    #[test]
-    fn thinking_level_clamping() {
-        let reg = fresh();
-        assert_eq!(reg.thinking_level_clamp("gpt-5.6-luna", "xhigh"), "low");
-        assert_eq!(reg.thinking_level_clamp("gpt-5.4", "xhigh"), "xhigh");
-        assert_eq!(reg.thinking_level_clamp("gpt-5.6-sol", "xhigh"), "xhigh");
-        assert_eq!(reg.thinking_level_clamp("gpt-5.6-sol", "low"), "low");
-        assert_eq!(reg.thinking_level_clamp("gpt-5.4", "medium"), "medium");
+    fn consumer_metadata_controls_lookup_and_capabilities() {
+        let registry = ModelRegistry::from_models([model("openrouter", "openai/gpt-4o")]);
         assert_eq!(
-            reg.thinking_level_clamp("claude-3-5-sonnet", "xhigh"),
-            "xhigh"
+            registry
+                .get_for_provider("openrouter", "openai/gpt-4o")
+                .unwrap()
+                .context_window,
+            128_000
+        );
+        assert!(registry.supports_reasoning_effort_for("openrouter", "openai/gpt-4o"));
+    }
+
+    #[test]
+    fn duplicate_model_ids_require_provider_qualification() {
+        let registry = ModelRegistry::from_models([
+            ModelInfo::new("openai", "shared", 1, 1),
+            ModelInfo::new("anthropic", "shared", 2, 2),
+        ]);
+        assert!(registry.get("shared").is_none());
+        assert_eq!(
+            registry
+                .get_for_provider("anthropic", "shared")
+                .unwrap()
+                .context_window,
+            2
         );
     }
 
     #[test]
-    fn compat_config_lookup() {
-        let reg = fresh();
-        let anthropic = reg
-            .compat("anthropic")
-            .expect("anthropic compat should be registered");
-        assert_eq!(anthropic.max_tokens_field.as_deref(), Some("max_tokens"));
-        assert_eq!(anthropic.system_role, Some(SystemRoleHandling::SystemParam));
-
-        let openai = reg
-            .compat("openai")
-            .expect("openai compat should be registered");
-        assert_eq!(
-            openai.max_tokens_field.as_deref(),
-            Some("max_completion_tokens")
+    fn compatibility_is_consumer_supplied() {
+        let mut registry = ModelRegistry::new();
+        registry.register_compat(
+            "custom",
+            CompatConfig {
+                max_tokens_field: Some("output_limit".into()),
+                ..Default::default()
+            },
         );
-        assert_eq!(openai.system_role, Some(SystemRoleHandling::TopLevel));
-
-        assert!(reg.compat("unknown-provider").is_none());
+        assert_eq!(
+            registry
+                .compat("custom")
+                .unwrap()
+                .max_tokens_field
+                .as_deref(),
+            Some("output_limit")
+        );
+        assert!(registry.compat("openai").is_none());
     }
 
     #[test]
-    fn registry_is_initialized_once() {
-        let a = registry();
-        let b = registry();
-        assert!(std::ptr::eq(a, b));
+    fn json_parsing_does_not_add_defaults() {
+        let registry = ModelRegistry::from_json(
+            r#"{"models":[{"id":"live-model","provider":"custom","context_window":42,"max_output_tokens":7}]}"#,
+        )
+        .unwrap();
+        assert_eq!(registry.models().count(), 1);
+        assert!(registry.get("gpt-4o").is_none());
     }
 }

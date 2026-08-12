@@ -2,7 +2,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use rx4::{print_banner, register_builtin_tools, ToolRegistry};
 
 #[cfg(feature = "providers")]
-use rx4::{Agent, Scope};
+use rx4::{Agent, ModelRegistry, Scope};
 #[cfg(feature = "providers")]
 use std::io::BufRead;
 #[cfg(feature = "providers")]
@@ -253,6 +253,9 @@ fn main() {
 #[cfg(feature = "providers")]
 fn build_agent(model: Option<&str>, scope: Option<&str>, full_access: bool) -> Agent {
     let mut agent = Agent::new();
+    // The CLI is a host/consumer: it may opt into explicit local metadata,
+    // but rx4 itself does not provide or impose a model catalog.
+    agent.set_model_registry(load_model_registry());
     let mut tools = ToolRegistry::new();
     register_builtin_tools(&mut tools);
 
@@ -848,7 +851,7 @@ fn print_status(label: &str, value: &str, ok: bool) {
 }
 
 fn run_models() {
-    let registry = rx4::ModelRegistry::load();
+    let registry = load_model_registry();
     let mut models: Vec<_> = registry.models().collect();
     models.sort_by(|a, b| a.provider.cmp(&b.provider).then(a.id.cmp(&b.id)));
     println!(
@@ -861,6 +864,26 @@ fn run_models() {
             m.id, m.context_window, m.max_output_tokens, m.provider
         );
     }
+}
+
+/// The standalone binary is a host, so it may opt into a local registry file.
+/// The rx4 library itself never reads this file or installs a global catalog.
+fn load_model_registry() -> ModelRegistry {
+    let candidates = std::iter::once(std::path::PathBuf::from("./models.json")).chain(
+        std::env::var("HOME").ok().map(|home| {
+            std::path::Path::new(&home)
+                .join(".agents")
+                .join("models.json")
+        }),
+    );
+    for path in candidates {
+        if let Ok(json) = std::fs::read_to_string(path) {
+            if let Ok(registry) = ModelRegistry::from_json(&json) {
+                return registry;
+            }
+        }
+    }
+    ModelRegistry::new()
 }
 
 fn run_tools() {
