@@ -2,7 +2,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use rx4::{print_banner, register_builtin_tools, ToolRegistry};
 
 #[cfg(feature = "providers")]
-use rx4::{Agent, ModelRegistry, Scope};
+use rx4::{Agent, Scope};
 #[cfg(feature = "providers")]
 use std::io::BufRead;
 #[cfg(feature = "providers")]
@@ -868,7 +868,7 @@ fn run_models() {
 
 /// The standalone binary is a host, so it may opt into a local registry file.
 /// The rx4 library itself never reads this file or installs a global catalog.
-fn load_model_registry() -> ModelRegistry {
+fn load_model_registry() -> rx4::ModelRegistry {
     let candidates = std::iter::once(std::path::PathBuf::from("./models.json")).chain(
         std::env::var("HOME").ok().map(|home| {
             std::path::Path::new(&home)
@@ -878,12 +878,12 @@ fn load_model_registry() -> ModelRegistry {
     );
     for path in candidates {
         if let Ok(json) = std::fs::read_to_string(path) {
-            if let Ok(registry) = ModelRegistry::from_json(&json) {
+            if let Ok(registry) = rx4::ModelRegistry::from_json(&json) {
                 return registry;
             }
         }
     }
-    ModelRegistry::new()
+    rx4::ModelRegistry::new()
 }
 
 fn run_tools() {
