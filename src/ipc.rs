@@ -355,6 +355,18 @@ mod tests {
     use crate::agent::Agent;
 
     #[tokio::test]
+    async fn test_attach_session() {
+        let server = IpcServer::new("/tmp/test_ipc_socket_session");
+        let session = Session::new("test-session-id", "Test Session");
+
+        server.attach_session(session);
+
+        let session_lock = server.session.lock().unwrap();
+        assert_eq!(session_lock.id, "test-session-id");
+        assert_eq!(session_lock.name, "Test Session");
+    }
+
+    #[tokio::test]
     async fn test_attach_agent() {
         let server = IpcServer::new("/tmp/test_ipc_socket");
         let mut new_agent = Agent::new();
