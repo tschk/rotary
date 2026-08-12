@@ -770,4 +770,12 @@ mod tests {
         let results_exceed = vec![fail1.clone(), fail2.clone(), fail3.clone(), fail4.clone()];
         assert!(check_repeated_failures(&results_exceed, 3));
     }
+
+    #[test]
+    fn test_should_stop() {
+        assert!(!should_stop(0, 1, 0, 1));
+        assert!(should_stop(1, 1, 0, 1));
+        assert!(should_stop(0, 1, 1, 1));
+        assert!(should_stop(1, 1, 1, 1));
+    }
 }
