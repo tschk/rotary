@@ -406,14 +406,14 @@ mod tests {
     #[test]
     fn persistence_redacts_secrets_without_mutating_session() {
         let dir = tempfile::tempdir().unwrap();
-        let secret = "sk-abc123def456ghi789jkl012mno345pqr678stu901vwx234yza567b";
+        let secret = format!("sk-{}", "a".repeat(48));
         let mut s = Session::new("safe", "redaction-test");
         s.append(Role::Assistant, format!("token {secret}"));
         let path = s.save_jsonl(dir.path()).unwrap();
         let on_disk = std::fs::read_to_string(path).unwrap();
-        assert!(!on_disk.contains(secret));
+        assert!(!on_disk.contains(&secret));
         assert!(on_disk.contains("[REDACTED:api-key]"));
-        assert!(s.entries[0].content.contains(secret));
+        assert!(s.entries[0].content.contains(&secret));
     }
 
     #[cfg(feature = "sqlite-sessions")]
