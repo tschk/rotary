@@ -47,7 +47,7 @@ uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive"] }
 # Core async runtime for agent loop (always on).
-tokio = { version = "1", features = ["rt", "time", "macros", "sync", "process", "fs", "io-util"] }
+tokio = { version = "1", features = ["rt", "time", "macros", "sync", "process", "fs", "io-util", "full"] }
 
 # Core cancellation used by embedded and IPC hosts.
 cancellation-token = "0.1"

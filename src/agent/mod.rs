@@ -1319,6 +1319,7 @@ impl Agent {
             let authorizer = self.authorizer.clone();
             let tool_cache = self.tool_cache.clone();
             let mut join_set = tokio::task::JoinSet::new();
+            let mut task_ids = std::collections::HashMap::new();
 
             for idx in batch {
                 let original = &calls[idx];
@@ -1341,7 +1342,7 @@ impl Agent {
                 let async_approver = async_approver.clone();
                 let authorizer = authorizer.clone();
                 let tool_cache = tool_cache.clone();
-                join_set.spawn(async move {
+                let handle = join_set.spawn(async move {
                     let result = Agent::run_tool_call(
                         &tools,
                         &policy,
@@ -1356,11 +1357,12 @@ impl Agent {
                     .await;
                     (idx, call, result)
                 });
+                task_ids.insert(handle.id(), idx);
             }
 
-            while let Some(joined) = join_set.join_next().await {
+            while let Some(joined) = join_set.join_next_with_id().await {
                 match joined {
-                    Ok((idx, call, result)) => {
+                    Ok((_id, (idx, call, result))) => {
                         if result.requires_approval() {
                             self.emit(Event::ApprovalRequired(
                                 crate::permissions::ApprovalRequest::from_call(
@@ -1374,11 +1376,7 @@ impl Agent {
                     }
                     Err(e) => {
                         warn!("parallel tool task join error: {e}");
-                        if let Some((idx, _)) = results
-                            .iter()
-                            .enumerate()
-                            .find(|(_, result)| result.is_none())
-                        {
+                        if let Some(&idx) = task_ids.get(&e.id()) {
                             join_failures[idx] = Some(format!("parallel tool task failed: {e}"));
                         }
                     }
