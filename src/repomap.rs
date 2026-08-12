@@ -713,13 +713,11 @@ type Server struct {}
         write(dir.path(), "c.rs", "fn c() {}\n");
         let map = RepoMap::new(dir.path());
         let ranking = map.rank_files();
-        let score = |name: &str| -> f64 {
-            ranking
-                .iter()
-                .find(|(p, _)| p.file_name().unwrap().to_string_lossy() == name)
-                .map(|(_, s)| *s)
-                .unwrap_or(0.0)
-        };
+        let ranking_map: std::collections::HashMap<String, f64> = ranking
+            .into_iter()
+            .map(|(p, s)| (p.file_name().unwrap().to_string_lossy().into_owned(), s))
+            .collect();
+        let score = |name: &str| -> f64 { *ranking_map.get(name).unwrap_or(&0.0) };
         let core = score("core.rs");
         let c = score("c.rs");
         assert!(core > c, "core.rs ({core}) should outrank c.rs ({c})");
