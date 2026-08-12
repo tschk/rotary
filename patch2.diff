@@ -1,0 +1,13 @@
+--- src/computer_use_bridge.rs
++++ src/computer_use_bridge.rs
+@@ -112,9 +112,7 @@
+             Terminal::Succeeded { .. } => {
+                 serde_json::to_value(terminal).map_err(|error| error.to_string())
+             }
+-            _ => Err(serde_json::to_string(terminal).unwrap_or_else(|err| {
+-                format!("computer-use action failed, and result could not be serialized: {}", err)
+-            })),
++            _ => Err(serde_json::to_string(terminal).map_err(|error| error.to_string())?),
+         }
+     }
+ }

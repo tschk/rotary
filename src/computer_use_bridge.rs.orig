@@ -112,7 +112,9 @@ impl ComputerUseBridge {
             Terminal::Succeeded { .. } => {
                 serde_json::to_value(terminal).map_err(|error| error.to_string())
             }
-            _ => Err(serde_json::to_string(terminal).map_err(|error| error.to_string())?),
+            _ => Err(serde_json::to_string(terminal).unwrap_or_else(|_| {
+                "computer-use action failed without a serializable result".to_string()
+            })),
         }
     }
 }
