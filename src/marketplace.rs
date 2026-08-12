@@ -767,8 +767,8 @@ mod tests {
     }
 
     #[test]
-    fn installs_plugin_from_local_path() {
-        let tmp = TempDir::new().unwrap();
+    fn installs_plugin_from_local_path() -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = TempDir::new()?;
         let install_dir = tmp.path().join("plugins");
         let source_dir = tmp.path().join("source");
         write_plugin_dir(&source_dir, &sample_manifest());
@@ -776,12 +776,12 @@ mod tests {
 
         let installer = PluginInstaller::new(install_dir.clone());
         let installed = installer
-            .install(&manifest, source_dir.to_str().unwrap())
-            .unwrap();
+            .install(&manifest, source_dir.to_str().ok_or("Invalid path")?)?;
         assert_eq!(installed.name, "demo-plugin");
         assert_eq!(installed.version, "0.1.0");
         assert!(installed.path.join("plugin.json").exists());
         assert!(installer.is_installed("demo-plugin"));
+        Ok(())
     }
 
     #[test]
