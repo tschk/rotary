@@ -54,10 +54,13 @@ mod tests {
         let mgr = SandboxManager::new(SandboxProfile::Workspace, workspace());
         let path = Path::new("/etc/hosts");
         let err = mgr.validate_path(path, true).unwrap_err();
-        assert!(matches!(
-            err,
-            SandboxError::PathDenied(_) | SandboxError::WriteDenied(_)
-        ));
+        match err {
+            SandboxError::WriteDenied(p) => assert!(p.ends_with("/etc/hosts"), "{p}"),
+            other => panic!("expected WriteDenied, got {other:?}"),
+        }
+        let violations = mgr.violations();
+        assert_eq!(violations.len(), 1);
+        assert_eq!(violations[0].kind, ViolationKind::Write);
     }
 
     #[test]
@@ -263,6 +266,40 @@ mod tests {
         assert!(!mgr.is_active());
         assert!(mgr.validate_path(Path::new("/etc/passwd"), true).is_ok());
         assert!(mgr.validate_command("rm -rf /").is_ok());
+    }
+
+    #[test]
+    fn activate_re_enables_enforcement() {
+        let mut mgr = SandboxManager::new(SandboxProfile::Workspace, workspace());
+        mgr.deactivate();
+        assert!(mgr.validate_path(Path::new("/etc/passwd"), true).is_ok());
+        mgr.activate();
+        assert!(mgr.is_active());
+        let err = mgr
+            .validate_path(Path::new("/etc/passwd"), true)
+            .unwrap_err();
+        assert!(matches!(err, SandboxError::WriteDenied(_)));
+    }
+
+    #[test]
+    fn config_roundtrip_preserves_lists() {
+        let config = SandboxConfig {
+            profile: SandboxProfile::Custom,
+            workspace_root: workspace(),
+            allow_paths: vec![PathBuf::from("/data/cache")],
+            deny_paths: vec![PathBuf::from("/data/secret")],
+            allow_network: true,
+            allow_env: vec!["PATH".to_string()],
+        };
+        let mgr = SandboxManager::from_config(config);
+        let dumped = mgr.config();
+        assert_eq!(dumped.profile, SandboxProfile::Custom);
+        assert_eq!(dumped.workspace_root, workspace());
+        assert_eq!(dumped.allow_paths, vec![PathBuf::from("/data/cache")]);
+        assert_eq!(dumped.deny_paths, vec![PathBuf::from("/data/secret")]);
+        assert!(dumped.allow_network);
+        assert_eq!(dumped.allow_env, vec!["PATH".to_string()]);
+        assert_eq!(mgr.workspace_root(), Path::new("/workspace/project"));
     }
 
     #[test]

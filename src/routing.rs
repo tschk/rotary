@@ -293,6 +293,37 @@ mod tests {
     }
 
     #[test]
+    fn router_counts_escalation_from_simple_model() {
+        let config = RoutingConfig {
+            enabled: true,
+            simple_model: Some("gpt-4o-mini".to_string()),
+            strong_model: Some("gpt-4o".to_string()),
+            ..Default::default()
+        };
+        let router = SmartRouter::new(config);
+        router.route("analyze the architecture", "gpt-4o-mini");
+        router.route("hello", "gpt-4o-mini");
+        router.route("analyze the architecture", "gpt-4o");
+        let stats = router.stats();
+        assert_eq!(stats.escalations, 1);
+        assert_eq!(stats.strong_turns, 2);
+        assert_eq!(stats.simple_turns, 1);
+    }
+
+    #[test]
+    fn router_does_not_count_escalation_when_disabled() {
+        let config = RoutingConfig {
+            enabled: false,
+            simple_model: Some("gpt-4o-mini".to_string()),
+            strong_model: Some("gpt-4o".to_string()),
+            ..Default::default()
+        };
+        let router = SmartRouter::new(config);
+        router.route("analyze the architecture", "gpt-4o-mini");
+        assert_eq!(router.stats().escalations, 0);
+    }
+
+    #[test]
     fn router_route_batch() {
         let config = RoutingConfig {
             enabled: true,
