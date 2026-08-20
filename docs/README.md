@@ -13,29 +13,18 @@ flowchart LR
 
 ## Guides
 
+- [Install](INSTALL.md) — `cargo add` / `cargo install`, CLI commands, Homebrew.
+- [Features and flags](FEATURES.md) — capabilities, scopes, Cargo feature table.
+- [Providers](PROVIDERS.md) — OpenAI / Anthropic / Ollama / custom endpoints.
+- [Computer-use](COMPUTER-USE.md) — Praefectus `cu_*` tools.
+- [Events](EVENTS.md) — agent loop and streaming event types.
 - [Architecture](ARCHITECTURE.md) — module and agent-loop contracts.
-- [Hosts](HOSTS.md) — embedding and compatibility-adapter boundaries.
+- [Hosts](HOSTS.md) — embedding, IPC adapter, telekinesis / apollo.
+- [Autoresearch](AUTORESEARCH.md) — host-driven optimization controller.
 - [Boundary ADR](https://github.com/semitechnological/telekinesis/blob/main/docs/ADR-001-rotary-engine-telekinesis-host.md) — rotary engine and telekinesis host ownership.
 - [Comparison](COMPARISON.md) — scope relative to other harnesses.
 - [Roadmap](ROADMAP.md) — completed capabilities and near-term work.
 
 ## Command contract
 
-Install the CLI with the `cli` feature (required; a bare `cargo install rx4`
-skips the binary). Homebrew `undivisible/homebrew-tap` `Formula/rx4.rb` must
-add `cli` to its feature list or the bottle ships no binary.
-
-```bash
-cargo install rx4 --features cli,ipc,providers,builtin-tools,mcp
-```
-
-```bash
-rx4 chat
-rx4 exec "fix the failing test"
-rx4 serve /tmp/rx4.sock
-rx4 doctor
-rx4 models
-rx4 tools
-```
-
-Product hosts own scheduling and user experience. telekinesis owns pi protocol compatibility; Omi Desktop owns its desktop UI, local data policy, and provider-specific OAuth path.
+See [INSTALL.md](INSTALL.md). Product hosts own scheduling and user experience. telekinesis owns pi protocol compatibility; Omi Desktop owns its desktop UI, local data policy, and provider-specific OAuth path.
