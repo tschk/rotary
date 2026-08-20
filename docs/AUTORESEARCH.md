@@ -147,3 +147,25 @@ does not expand the normal `Agent` tool registry or bypass host `Policy`,
 should run the experiment under the same OS sandbox policy they use for other
 process tools; the detached worktree is the Git isolation and rollback layer,
 not a kernel sandbox.
+
+## Legacy session tools
+
+Autoresearch is off unless the `autoresearch` feature is enabled. A host that
+has a measurable optimization task can enable the older session tools
+explicitly:
+
+```rust
+let handle = rx4::new_autoresearch_handle();
+rx4::register_autoresearch_tools(&mut tools, handle);
+```
+
+Then initialize a session with `init_experiment`, let the benchmark emit
+`METRIC total_ms=123` from `.auto/measure.sh`, and call `run_experiment` after
+each candidate change. The session persists results in `.auto/log.jsonl` and
+returns `keep`, `discard`, `crash`, or `checks_failed`. Hosts decide when to
+loop and whether to commit or revert a candidate.
+
+These tools do not provide isolation or rollback. Prefer
+`AutoresearchController` for detached worktrees, checkpoint rollback, budgets,
+and explicit final-patch acceptance. Attaching the controller to an `Agent`
+does not schedule it or mutate the user's checkout.

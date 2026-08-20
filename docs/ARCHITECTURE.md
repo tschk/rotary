@@ -70,7 +70,8 @@ lists + host approver.
 
 Tagged union pushed to subscribers. A temporary IPC adapter may mirror events
 as (`method: "event"`), but hosts must treat the typed event stream as the UI
-boundary (t3code pattern).
+boundary (t3code pattern). See [EVENTS.md](EVENTS.md) for the loop diagram and
+event tables.
 
 ### Capability vs policy
 

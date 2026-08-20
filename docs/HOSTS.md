@@ -52,9 +52,7 @@ boundary migration. New host surfaces should use telekinesis `HostRuntime`.
 ## Computer-use
 
 Do **not** shell out to Praefectus. Embed it through rx4's `computer-use`
-feature:
-
-Enable the `computer-use` feature when adding rx4.
+feature. See [COMPUTER-USE.md](COMPUTER-USE.md) for the tool table.
 
 ```rust
 rx4::computer_use::register_tools(&mut tools);
@@ -62,3 +60,26 @@ rx4::computer_use::register_tools(&mut tools);
 
 This registers the 13 `cu_*` tools with no FFI through the native Rust
 Praefectus crate from crates.io.
+
+## Compatibility IPC adapter
+
+```bash
+rx4 serve /tmp/rx4.sock
+```
+
+JSON-RPC methods: `ping`, `state`, `prompt`, `set_model`, `tools`,
+`plugins`, `messages`, `session_list`, `session_clear`.
+
+Socket mode is `0o600`. This adapter remains for compatibility while
+telekinesis owns the product host boundary. Optional auth: set
+`RX4_IPC_TOKEN` and pass
+`"token"` in each JSON-RPC `params` object (fail-open when unset — local
+socket only).
+
+> `rx4 serve` starts the Unix socket JSON-RPC server. Hosts connect to
+> the socket and drive the agent loop remotely — the host never owns agent
+> logic.
+
+## apollo
+
+[apollo](https://github.com/tschk/apollo) is an AI agent host along the likes of Hermes. omi PR + beta versions also embed rotary.
