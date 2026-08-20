@@ -233,6 +233,7 @@ pub fn register_builtin_tools(registry: &mut ToolRegistry) {
 
 /// Register the opt-in autoresearch tools. They are kept separate from the
 /// default coding loadout so ordinary prompts retain a small, stable prefix.
+#[cfg(feature = "autoresearch")]
 pub fn register_autoresearch_tools(
     registry: &mut ToolRegistry,
     handle: crate::autoresearch::AutoresearchHandle,
@@ -349,6 +350,26 @@ mod tests {
         let read_result = fs::exec_read(ctx, r#"{"path":"test.txt"}"#.to_string()).await;
         assert!(!read_result.is_error);
         assert!(read_result.content.contains("hello world"));
+    }
+
+    #[cfg(feature = "builtin-tools")]
+    #[tokio::test]
+    async fn test_grep_and_find_stdlib_or_fff() {
+        let tmp = TempDir::new().unwrap();
+        let ctx = Arc::new(ToolContext::new(tmp.path()));
+        fs::exec_write(
+            ctx.clone(),
+            r#"{"path":"needle.rs","content":"fn find_me() {}\nfn other() {}\n"}"#.to_string(),
+        )
+        .await;
+
+        let grep = fs::exec_grep(ctx.clone(), r#"{"pattern":"find_me"}"#.to_string()).await;
+        assert!(!grep.is_error, "{}", grep.content);
+        assert!(grep.content.contains("find_me"), "{}", grep.content);
+
+        let find = fs::exec_find(ctx, r#"{"pattern":"needle.rs"}"#.to_string()).await;
+        assert!(!find.is_error, "{}", find.content);
+        assert!(find.content.contains("needle.rs"), "{}", find.content);
     }
 
     #[tokio::test]

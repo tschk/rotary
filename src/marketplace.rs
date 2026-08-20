@@ -9,9 +9,11 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
+
+pub use crate::mcp::{McpServerConfig, McpTransportKind};
 
 /// Errors raised by marketplace operations.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
@@ -30,34 +32,6 @@ pub enum MarketplaceError {
     AlreadyInstalled(String),
     #[error("integrity check failed: expected {expected}, got {actual}")]
     IntegrityCheckFailed { expected: String, actual: String },
-}
-
-/// MCP server transport kind for plugin manifests.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum McpTransportKind {
-    #[default]
-    Stdio,
-    Http,
-    Sse,
-}
-
-/// Configuration for a single MCP server declared by a plugin manifest.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct McpServerConfig {
-    pub name: String,
-    #[serde(default)]
-    pub command: String,
-    #[serde(default)]
-    pub args: Vec<String>,
-    #[serde(default)]
-    pub env: HashMap<String, String>,
-    #[serde(default)]
-    pub transport: McpTransportKind,
-    #[serde(default)]
-    pub url: Option<String>,
-    #[serde(default)]
-    pub headers: HashMap<String, String>,
 }
 
 /// Describes a marketplace plugin.

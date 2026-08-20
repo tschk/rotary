@@ -1,5 +1,5 @@
 use clap::{Parser, Subcommand, ValueEnum};
-use rx4::{print_banner, register_builtin_tools, ToolRegistry};
+use rx4::{register_builtin_tools, ToolRegistry};
 
 #[cfg(feature = "providers")]
 use rx4::{Agent, Scope};
@@ -337,7 +337,7 @@ fn setup_provider() -> Option<Arc<dyn rx4::Provider>> {
 }
 
 fn run_chat(model: Option<String>, scope: Option<String>, full_access: bool) {
-    print_banner();
+    eprintln!("rx4 {} — agent harness engine", rx4::VERSION);
 
     #[cfg(not(feature = "providers"))]
     {
@@ -735,7 +735,9 @@ fn run_version() {
     println!("  memory:       {}", cfg_feature("memory"));
     println!("  mcp:          {}", cfg_feature("mcp"));
     println!("  sqlite-sessions: {}", cfg_feature("sqlite-sessions"));
-    println!("modules: agent, autoresearch, compaction, config, context, cost, extract, guardrails, hooks, mode, permissions, plugin, prompt_cache, provider, ranking, repomap, rollout, routing, sandbox, secrets, session, slash, sse, tools, models, acp, marketplace");
+    println!("  marketplace:  {}", cfg_feature("marketplace"));
+    println!("  autoresearch: {}", cfg_feature("autoresearch"));
+    println!("modules: agent, compaction, config, context, cost, guardrails, hooks, mode, permissions, prompt_cache, provider, repomap, rollout, sandbox, secrets, session, slash, tools, models");
 }
 
 fn cfg_feature(name: &str) -> &'static str {
@@ -784,6 +786,20 @@ fn cfg_feature(name: &str) -> &'static str {
         }
         "sqlite-sessions" => {
             if cfg!(feature = "sqlite-sessions") {
+                "enabled"
+            } else {
+                "disabled"
+            }
+        }
+        "marketplace" => {
+            if cfg!(feature = "marketplace") {
+                "enabled"
+            } else {
+                "disabled"
+            }
+        }
+        "autoresearch" => {
+            if cfg!(feature = "autoresearch") {
                 "enabled"
             } else {
                 "disabled"
@@ -914,6 +930,7 @@ fn run_tools() {
     println!("\n{} tools registered", tools.count());
 }
 
+#[cfg(feature = "marketplace")]
 fn run_install(name: &str, source: &str, verify: Option<&str>) {
     use rx4::marketplace::{PluginInstaller, PluginManifest};
 
@@ -949,4 +966,10 @@ fn run_install(name: &str, source: &str, verify: Option<&str>) {
             std::process::exit(1);
         }
     }
+}
+
+#[cfg(not(feature = "marketplace"))]
+fn run_install(_name: &str, _source: &str, _verify: Option<&str>) {
+    eprintln!("install requires the `marketplace` feature");
+    std::process::exit(1);
 }

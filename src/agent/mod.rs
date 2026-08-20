@@ -6,6 +6,7 @@
 //! (stable event ordering, bounded tool recursion).
 
 mod tool_types;
+mod turn;
 pub use tool_types::*;
 
 use crate::compaction::{
@@ -112,10 +113,11 @@ pub enum Event {
         /// Full replacement state, suitable for hosts to render directly.
         todos: TodoState,
     },
+    /// Retained so existing host matches still compile. The loop emits only [`Event::TurnEnded`].
     TurnEnd {
         turn: usize,
     },
-    /// Additive turn completion metadata for hosts that implement auto-continue policy.
+    /// The one turn-complete event. Hosts that implement auto-continue policy read `metadata`.
     TurnEnded {
         /// Completed loop iteration.
         turn: usize,
@@ -295,16 +297,6 @@ impl AgentBudget {
     }
 }
 
-fn append_active_skills(base: Option<String>, active_skills: Option<&str>) -> Option<String> {
-    let Some(active_skills) = active_skills else {
-        return base;
-    };
-    Some(match base {
-        Some(base) => format!("{base}\n\n# Active Skills\n\n{active_skills}"),
-        None => format!("# Active Skills\n\n{active_skills}"),
-    })
-}
-
 /// The agent — owns the loop, tools, provider, policy, scope, hooks, cache.
 pub struct Agent {
     pub model: String,
@@ -357,8 +349,11 @@ pub struct Agent {
     pub workspace_root: std::path::PathBuf,
     /// Optional host-owned autoresearch controller. Attaching it exposes the
     /// SDK primitive without scheduling iterations or changing tool policy.
+    #[cfg(feature = "autoresearch")]
     pub autoresearch_controller:
         Option<crate::autoresearch_controller::AutoresearchControllerHandle>,
+    /// Extra tool names the host added after scope selection (MCP, plugins).
+    extra_allowed_tools: Vec<String>,
     pub sandbox: Option<Arc<crate::sandbox::SandboxManager>>,
     pub os_sandbox: Option<Arc<crate::sandbox::OsSandboxRunner>>,
     #[cfg(feature = "ipc")]
@@ -422,7 +417,9 @@ impl Agent {
             #[cfg(feature = "graph-memory")]
             semantic_recall: None,
             workspace_root: std::env::current_dir().unwrap_or_else(|_| ".".into()),
+            #[cfg(feature = "autoresearch")]
             autoresearch_controller: None,
+            extra_allowed_tools: Vec::new(),
             sandbox: None,
             os_sandbox: None,
             #[cfg(feature = "ipc")]
@@ -686,6 +683,7 @@ impl Agent {
     /// Attach an explicitly created autoresearch controller. The controller is
     /// host-driven; the agent loop never starts, schedules, accepts, or
     /// applies an experiment because of this attachment.
+    #[cfg(feature = "autoresearch")]
     pub fn set_autoresearch_controller(
         &mut self,
         controller: crate::autoresearch_controller::AutoresearchControllerHandle,
@@ -693,14 +691,39 @@ impl Agent {
         self.autoresearch_controller = Some(controller);
     }
 
+    #[cfg(feature = "autoresearch")]
     pub fn autoresearch_controller(
         &self,
     ) -> Option<crate::autoresearch_controller::AutoresearchControllerHandle> {
         self.autoresearch_controller.clone()
     }
 
+    #[cfg(feature = "autoresearch")]
     pub fn clear_autoresearch_controller(&mut self) {
         self.autoresearch_controller = None;
+    }
+
+    /// Allow extra tool names after scope selection (discovered MCP tools, plugins).
+    pub fn allow_extra_tools<I, S>(&mut self, names: I)
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.extra_allowed_tools
+            .extend(names.into_iter().map(Into::into));
+    }
+
+    /// Replace the extra-tool allowlist.
+    pub fn set_extra_allowed_tools<I, S>(&mut self, names: I)
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.extra_allowed_tools = names.into_iter().map(Into::into).collect();
+    }
+
+    pub fn extra_allowed_tools(&self) -> &[String] {
+        &self.extra_allowed_tools
     }
 
     /// Attach a `zkr`-backed self-improvement loop.
@@ -953,58 +976,12 @@ impl Agent {
         let redactor = crate::secrets::Redactor::new();
         let safe_text = redactor.redact(text);
 
-        // Inject activated skill instructions into system prompt for this turn.
-        #[cfg(feature = "skills")]
-        let active_skills = if let Some(reg) = &self.skill_registry {
-            let matched = reg.match_prompt(&safe_text);
-            for skill in &matched {
-                self.emit(Event::SkillActivated {
-                    id: skill.id.clone(),
-                    name: skill.name.clone(),
-                });
-            }
-            let activated: Vec<String> = matched
-                .into_iter()
-                .map(|skill| skill.instructions.clone())
-                .collect();
-            (!activated.is_empty()).then(|| activated.join("\n\n---\n\n"))
-        } else {
-            None
-        };
-        #[cfg(not(feature = "skills"))]
-        let active_skills: Option<String> = None;
+        let active_skills = self.activate_skills_for_prompt(&safe_text);
 
         self.messages.write().push(Message::user(safe_text.clone()));
         self.emit(Event::AgentStart);
         self.budget_start = Some(Instant::now());
-
-        // Route the incoming user event through the personality turn router.
-        // This evaluates hard rules (mentions, commands, rate limits, consecutive
-        // turns) + learned policy, records the decision, and derives social
-        // signals — all automatically before the first turn.
-        #[cfg(feature = "personality")]
-        if let Some(pers) = &self.personality {
-            let event = crate::personality::ConversationEvent {
-                epoch: 0,
-                participant: "user".to_string(),
-                event_kind: "message".to_string(),
-                content: safe_text.chars().take(500).collect(),
-            };
-            match pers.route_event(&event).await {
-                Ok(result) => {
-                    debug!(
-                        "personality router: {:?} via {} (confidence {}bps) — {}",
-                        result.decision.action,
-                        result.decision.strategy,
-                        result.decision.confidence_basis_points,
-                        result.decision.rationale
-                    );
-                }
-                Err(error) => {
-                    warn!("personality routing failed: {error}");
-                }
-            }
-        }
+        self.before_prompt_hooks(&safe_text).await;
 
         let mut tool_ctx = self.tool_context();
         tool_ctx.provider = Some(provider.clone());
@@ -1044,7 +1021,7 @@ impl Agent {
 
             let messages: Vec<Message> = self.messages.read().clone();
             let base_system =
-                append_active_skills(self.system_prompt.clone(), active_skills.as_deref());
+                turn::append_active_skills(self.system_prompt.clone(), active_skills.as_deref());
             #[cfg(feature = "graph-memory")]
             let base_system = self.append_semantic_recalls(base_system, &safe_text);
             #[cfg(feature = "zkr-memory")]
@@ -1475,80 +1452,7 @@ impl Agent {
             );
         }
 
-        // Personality observability: analyze the conversation window after the
-        // prompt completes. Computes participation balance, error rate, and
-        // generates evidence-cited findings with recommendations.
-        #[cfg(feature = "personality")]
-        if let Some(pers) = &self.personality {
-            let scope = format!(
-                "prompt-{}",
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_nanos()
-            );
-            match pers.analyze_conversation(&scope).await {
-                Ok(health) => {
-                    if !health.findings.is_empty() {
-                        info!(
-                            "personality observability: {} findings for {} (balance={:.2}, error_rate={:.2})",
-                            health.findings.len(),
-                            health.scope,
-                            health.participation_balance,
-                            health.error_rate
-                        );
-                    }
-                }
-                Err(error) => {
-                    warn!("personality observability analysis failed: {error}");
-                }
-            }
-        }
-
-        #[cfg(feature = "graph-memory")]
-        if let Some(graph) = self.graph_memory.as_mut() {
-            let turns: Vec<crate::graph_memory::ConversationTurn> = self
-                .messages
-                .read()
-                .iter()
-                .map(|m| crate::graph_memory::ConversationTurn {
-                    role: m.role.to_string(),
-                    content: m.content.clone(),
-                })
-                .collect();
-            let extracted = crate::graph_memory::ConversationExtractor::new().extract(&turns);
-            for node in extracted.nodes {
-                graph.add_node(node);
-            }
-            for edge in extracted.edges {
-                let _ = graph.add_edge(edge);
-            }
-            if self.auto_dream {
-                let _ = crate::dream_scheduler::DreamScheduler::new().run_cycle(graph);
-            }
-        }
-
-        // Background skill review when a SkillEngine is attached (host opt-in).
-        #[cfg(feature = "skills")]
-        if let Some(engine) = self.skill_engine.as_mut() {
-            let turns: Vec<crate::skill_engine::ConversationTurn> = self
-                .messages
-                .read()
-                .iter()
-                .map(|m| crate::skill_engine::ConversationTurn {
-                    role: m.role.to_string(),
-                    content: m.content.clone(),
-                    tool_calls: Vec::new(),
-                })
-                .collect();
-            let mut reviewer = crate::background_review::BackgroundReviewer::new(engine);
-            if let Ok(reviews) =
-                reviewer.review_conversation(&turns, crate::skill_engine::SkillOutcome::Success)
-            {
-                let _ = reviewer.apply_review(&reviews);
-            }
-        }
-
+        self.after_prompt_hooks().await;
         self.emit(Event::AgentEnd);
         Ok(())
     }
@@ -1596,6 +1500,7 @@ impl Agent {
             let async_approver = self.async_approver.clone();
             let authorizer = self.authorizer.clone();
             let tool_cache = self.tool_cache.clone();
+            let extra_allowed_tools = self.extra_allowed_tools.clone();
             let mut join_set = tokio::task::JoinSet::new();
 
             for idx in batch {
@@ -1619,6 +1524,7 @@ impl Agent {
                 let async_approver = async_approver.clone();
                 let authorizer = authorizer.clone();
                 let tool_cache = tool_cache.clone();
+                let extra_allowed_tools = extra_allowed_tools.clone();
                 join_set.spawn(async move {
                     let result = Agent::run_tool_call(
                         &tools,
@@ -1630,6 +1536,7 @@ impl Agent {
                         &tool_cache,
                         &call,
                         &ctx,
+                        &extra_allowed_tools,
                     )
                     .await;
                     (idx, call, result)
@@ -1709,6 +1616,7 @@ impl Agent {
             &self.tool_cache,
             &call,
             ctx,
+            &self.extra_allowed_tools,
         )
         .await;
         (call, result)
@@ -1725,12 +1633,13 @@ impl Agent {
         tool_cache: &Cache<String, ToolResult>,
         call: &ToolCall,
         ctx: &Arc<ToolContext>,
+        extra_allowed_tools: &[String],
     ) -> ToolResult {
         let resolved_name = normalize_tool_name(&call.name).to_string();
 
         if let Some(profile) = scope_profile {
-            if !mode::tool_allowed(profile, &call.name)
-                && !mode::tool_allowed(profile, &resolved_name)
+            if !mode::tool_allowed_with_extra(profile, extra_allowed_tools, &call.name)
+                && !mode::tool_allowed_with_extra(profile, extra_allowed_tools, &resolved_name)
             {
                 let msg = format!("tool not in scope {}: {}", profile.scope.name(), call.name);
                 return ToolResult::err(&call.id, msg);
@@ -1867,7 +1776,6 @@ impl Agent {
         trailing_tool_intent: bool,
         content: &str,
     ) {
-        self.emit(Event::TurnEnd { turn });
         let trimmed = content.trim_end();
         let final_message_mid_thought = !trimmed.is_empty()
             && !trailing_tool_intent
@@ -2438,7 +2346,7 @@ mod tests {
     #[test]
     fn active_skills_are_added_to_a_turn_prompt_without_mutating_the_base() {
         let base = Some("host instructions".to_string());
-        let prompt = append_active_skills(base.clone(), Some("skill instructions"));
+        let prompt = turn::append_active_skills(base.clone(), Some("skill instructions"));
         assert!(prompt
             .as_deref()
             .is_some_and(|value| value.contains("# Active Skills")));

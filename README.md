@@ -28,9 +28,23 @@ graph TD
 
 ## Install
 
+Library hosts should disable crate defaults and name only the features they
+need:
+
 ```bash
-cargo add rx4 --features builtin-tools,providers,computer-use
+cargo add rx4 --no-default-features --features builtin-tools,providers
 ```
+
+The `rx4` binary is gated on the `cli` feature (`required-features = ["cli"]`).
+A bare `cargo install rx4` does **not** produce the binary. Include `cli`:
+
+```bash
+cargo install rx4 --features cli,ipc,providers,builtin-tools,mcp
+```
+
+Homebrew `undivisible/homebrew-tap` `Formula/rx4.rb` currently runs
+`cargo install --locked --path . --features providers,ipc,builtin-tools,mcp`
+and will ship no binary until that formula adds `cli`.
 
 ## Quick start
 
@@ -51,8 +65,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ### Opt-in autoresearch
 
-Autoresearch stays out of the default tool loadout. A host that has a
-measurable optimization task can enable it explicitly:
+Autoresearch is off unless the `autoresearch` feature is enabled. A host that
+has a measurable optimization task can enable it explicitly:
 
 ```rust
 let handle = rx4::new_autoresearch_handle();
@@ -120,7 +134,7 @@ flowchart TD
   `ToolExecutionStart`, `ToolExecutionEnd`, `TurnEnd`, `AgentEnd`, `Error`).
 - **5 scopes** — `coding`, `research`, `plan`, `ask`, `computer_use`.
 - **7 builtin tools** — `read`, `write`, `edit`, `bash`, `grep`, `find`, `ls`
-  (fff indexed search).
+  (stdlib walk + regex; opt-in `fff` for indexed search).
 - **13 computer-use tools** (`cu_*`) via
   [Praefectus](https://crates.io/crates/praefectus) — native Rust, no FFI.
 - **MCP client** — JSON-RPC 2.0 over stdio; tools prefixed
@@ -128,7 +142,7 @@ flowchart TD
 - **Session tree** — fork/merge with JSONL persistence; optional SQLite via
   `sqlite-sessions` (`save_sqlite` / `load_sqlite`); Codex-friendly
   `export_codex_jsonl` / `import_codex_jsonl`.
-- **Work packs** — specialist agent profiles as markdown data (`WorkPack`).
+- **Work packs** (`work-pack`) — specialist agent profiles as markdown data (`WorkPack`).
 - **Stream-JSON CLI** — `rx4 exec --stream-json` emits NDJSON agent events.
 - **Permission system** — `Policy` + `Approver`; `Policy::default()` and
   `Agent::new` use `workspace_write` (process tools require approval).
@@ -191,15 +205,24 @@ flowchart TD
 
 | Feature | Default | Enables |
 |---|---|---|
-| `ipc` | yes | tokio runtime, Unix socket JSON-RPC server, LSP client |
-| `builtin-tools` | yes | read/write/edit/bash/grep/find/ls with fff indexed search |
+| `builtin-tools` | yes | read/write/edit/bash/grep/find/ls (stdlib + regex) |
+| `fff` | no | fff-search indexed grep/find |
+| `cli` | no | clap + `rx4` binary |
+| `ipc` | no | Unix socket JSON-RPC, ACP, LSP (cancellation is always on) |
 | `computer-use` | no | Praefectus `cu_*` tools (13 tools) |
 | `providers` | no | reqwest SSE streaming for OpenAI/Anthropic/Ollama/custom |
 | `memory` | no | SQLite-backed memory store |
-| `mcp` | no | MCP client (JSON-RPC 2.0 over stdio / HTTP / SSE) |
+| `mcp` | no | MCP client + `McpServerConfig` |
+| `marketplace` | no | plugin installer (implies `mcp`) |
 | `sqlite-sessions` | no | SQLite session save/load on `Session` |
 | `skills` | no | skill engine, curator, background review, embeddings |
 | `graph-memory` | no | graph memory, dream scheduler |
+| `autoresearch` | no | AutoresearchSession + AutoresearchController |
+| `routing` | no | ModelRouter + SmartRouter |
+| `extract` | no | extract + ranking |
+| `work-pack` | no | WorkPack markdown profiles |
+| `sse` | no | hand-rolled SseParser |
+| `multiagent` | no | MultiAgentCoordinator |
 
 > `pi-compat` and `pi-extensions` have been **removed** — pi protocol
 > compatibility now lives in the host (telekinesis).
@@ -226,7 +249,7 @@ graph TD
   Ollama --> SSE
   Custom --> SSE
   SSE --> Events["AgentEvent stream"]
-  Router["model_router.rs"] --> Reg
+  Router["model_router.rs (routing)"] --> Reg
   Models["models.rs compat"] --> Reg
 ```
 

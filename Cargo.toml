@@ -1,6 +1,6 @@
 [package]
 name = "rx4"
-version = "0.6.4"
+version = "0.6.5"
 edition = "2021"
 rust-version = "1.88"
 license = "MPL-2.0"
@@ -13,18 +13,22 @@ categories = ["development-tools", "api-bindings", "asynchronous", "command-line
 [[bin]]
 name = "rx4"
 path = "src/bin/rotary.rs"
+required-features = ["cli"]
 
 [lib]
 name = "rx4"
 path = "src/lib.rs"
 
 [features]
-default = ["ipc", "builtin-tools"]
+default = ["builtin-tools"]
+# Product CLI (`rx4` binary). Slim library hosts should leave this off.
+cli = ["dep:clap"]
 computer-use = ["dep:ed25519-dalek", "dep:hex", "dep:rand_core", "dep:praefectus"]
 # Agent loop always needs tokio (JoinSet / sleep). IPC adds net/process extras.
-ipc = ["tokio/net", "tokio/io-util", "tokio/sync", "tokio/process", "tokio/rt-multi-thread"]
+# Cancellation is always on; this flag is ACP/LSP/Unix-socket only.
+ipc = ["tokio/net", "tokio/io-util", "tokio/sync", "tokio/process", "tokio/rt-multi-thread", "dep:subtle"]
 providers = ["dep:reqwest", "dep:eventsource-stream", "dep:futures"]
-builtin-tools = [ "dep:regex", "fff"]
+builtin-tools = ["dep:regex", "tokio/process"]
 memory = ["dep:rusqlite"]
 mcp = ["tokio/process", "tokio/io-util", "tokio/sync", "dep:reqwest", "reqwest/json", "reqwest/rustls-tls", "dep:futures"]
 sqlite-sessions = ["dep:rusqlite"]
@@ -32,7 +36,16 @@ graph-memory = []
 zkr-memory = ["dep:zkr"]
 personality = ["zkr-memory"]
 skills = ["dep:serde_yaml", "dep:dirs"]
+# Indexed grep/find via fff-search (git2/notify). Slim hosts use stdlib walk.
 fff = ["dep:fff-search"]
+# Host-API islands — off unless a host names them.
+autoresearch = ["tokio/process"]
+marketplace = ["mcp"]
+routing = []
+extract = []
+work-pack = []
+sse = []
+multiagent = []
 
 [dependencies]
 serde = { version = "1", features = ["derive", "rc"] }
@@ -45,9 +58,10 @@ dashmap = "6"
 moka = { version = "0.12", features = ["future"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
-clap = { version = "4", features = ["derive"] }
-# Core async runtime for agent loop (always on).
-tokio = { version = "1", features = ["rt", "time", "macros", "sync", "process", "fs", "io-util"] }
+clap = { version = "4", features = ["derive"], optional = true }
+# Core async runtime for agent loop (always on). process is feature-gated
+# (builtin-tools bash, mcp, ipc, autoresearch) — do not gate cancellation.
+tokio = { version = "1", features = ["rt", "time", "macros", "sync", "fs", "io-util"] }
 
 # Core cancellation used by embedded and IPC hosts.
 cancellation-token = "0.1"
@@ -73,9 +87,10 @@ zkr = { version = "0.4.1", optional = true }
 serde_yaml = { version = "0.9", optional = true }
 dirs = { version = "6", optional = true }
 
-# Plugin integrity verification (marketplace).
+# Agent cache / tool-loadout fingerprints (always on — public hex API).
 sha2 = "0.10"
-subtle = "2.6.1"
+# IPC token compare. Marketplace does not use this crate.
+subtle = { version = "2.6.1", optional = true }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }
@@ -86,6 +101,11 @@ criterion = { version = "0.5", features = ["html_reports"] }
 [[bench]]
 name = "core"
 harness = false
+required-features = ["sse"]
+
+[[test]]
+name = "autoresearch_controller"
+required-features = ["autoresearch"]
 
 [profile.release]
 opt-level = 3

@@ -184,11 +184,19 @@ pub fn compose_prompt(base: Option<&str>, p: &Profile) -> String {
     }
 }
 
+pub fn mcp_tool_allowed(scope: Scope, tool_name: &str) -> bool {
+    matches!(scope, Scope::Coding | Scope::Research) && tool_name.starts_with("mcp__")
+}
+
 pub fn tool_allowed(p: &Profile, tool_name: &str) -> bool {
     match p.allowed_tools {
         None => true,
-        Some(list) => list.contains(&tool_name),
+        Some(list) => list.contains(&tool_name) || mcp_tool_allowed(p.scope, tool_name),
     }
+}
+
+pub fn tool_allowed_with_extra(p: &Profile, extra: &[String], tool_name: &str) -> bool {
+    tool_allowed(p, tool_name) || extra.iter().any(|name| name == tool_name)
 }
 
 #[cfg(test)]
@@ -216,6 +224,32 @@ mod tests {
             assert!(tool_allowed(&profile(scope), "darash_search"));
         }
         assert!(!tool_allowed(&profile(Scope::Ask), "web_search"));
+    }
+
+    #[test]
+    fn coding_and_research_allow_discovered_mcp_tools() {
+        for scope in [Scope::Coding, Scope::Research] {
+            let p = profile(scope);
+            assert!(tool_allowed(&p, "mcp__fs__read_file"), "{scope}");
+            assert!(tool_allowed(&p, "mcp__github__list_issues"), "{scope}");
+        }
+        assert!(!tool_allowed(&profile(Scope::Plan), "mcp__fs__read_file"));
+        assert!(!tool_allowed(&profile(Scope::Ask), "mcp__fs__read_file"));
+        assert!(!tool_allowed(
+            &profile(Scope::ComputerUse),
+            "mcp__fs__read_file"
+        ));
+    }
+
+    #[test]
+    fn extra_tools_extend_the_scope_allowlist() {
+        let p = profile(Scope::Ask);
+        assert!(!tool_allowed(&p, "custom_host_tool"));
+        assert!(tool_allowed_with_extra(
+            &p,
+            &["custom_host_tool".into()],
+            "custom_host_tool"
+        ));
     }
 
     #[test]

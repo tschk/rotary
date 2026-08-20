@@ -13,6 +13,37 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::Mutex;
 
+/// MCP server transport kind for host and plugin config.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum McpTransportKind {
+    #[default]
+    Stdio,
+    Http,
+    Sse,
+}
+
+/// Configuration for a single MCP server (`stdio` | `http` | `sse`).
+///
+/// This is the one MCP config type. Hosts (telekinesis) and marketplace
+/// manifests share it so slim builds with `mcp` do not compile the plugin installer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct McpServerConfig {
+    pub name: String,
+    #[serde(default)]
+    pub command: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default)]
+    pub env: HashMap<String, String>,
+    #[serde(default)]
+    pub transport: McpTransportKind,
+    #[serde(default)]
+    pub url: Option<String>,
+    #[serde(default)]
+    pub headers: HashMap<String, String>,
+}
+
 /// Errors produced by MCP client and registry operations.
 #[derive(Debug, thiserror::Error)]
 pub enum McpError {
@@ -748,11 +779,8 @@ impl McpClient {
         }
     }
 
-    /// Connect from marketplace/host config (`stdio` | `http` | `sse`).
-    pub async fn connect_config(
-        cfg: &crate::marketplace::McpServerConfig,
-    ) -> Result<Self, McpError> {
-        use crate::marketplace::McpTransportKind;
+    /// Connect from host / plugin config (`stdio` | `http` | `sse`).
+    pub async fn connect_config(cfg: &McpServerConfig) -> Result<Self, McpError> {
         match cfg.transport {
             McpTransportKind::Stdio => {
                 if cfg.command.is_empty() {
@@ -932,6 +960,36 @@ mod tests {
                     .insert(full, (name.to_string(), tool.to_string()));
             }
         }
+    }
+
+    #[test]
+    fn deserializes_stdio_mcp_server_config() {
+        let json = r#"{
+            "name": "fs",
+            "command": "npx",
+            "args": ["-y", "@modelcontextprotocol/server-filesystem"]
+        }"#;
+        let cfg: McpServerConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(cfg.name, "fs");
+        assert_eq!(cfg.command, "npx");
+        assert_eq!(cfg.transport, McpTransportKind::Stdio);
+        assert!(cfg.url.is_none());
+    }
+
+    #[test]
+    fn deserializes_remote_mcp_server_config() {
+        let json = r#"{
+            "name": "remote",
+            "transport": "http",
+            "url": "https://example.com/mcp",
+            "headers": {"Authorization": "Bearer t"}
+        }"#;
+        let cfg: McpServerConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(cfg.name, "remote");
+        assert_eq!(cfg.command, "");
+        assert_eq!(cfg.transport, McpTransportKind::Http);
+        assert_eq!(cfg.url.as_deref(), Some("https://example.com/mcp"));
+        assert_eq!(cfg.headers.get("Authorization").unwrap(), "Bearer t");
     }
 
     #[test]
