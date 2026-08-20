@@ -601,14 +601,6 @@ pub fn command_from_args(arguments: &str) -> Option<String> {
 /// cannot conservatively understand: command substitution, backtick expansion,
 /// redirections, or newline-separated commands.  When this returns true,
 /// automatic allow matching must yield Ask/Deny — never Allow.
-/// Returns true when `command` contains shell syntax that auto-allow rules
-/// cannot conservatively understand: command substitution, backtick expansion,
-/// redirections, or newline-separated commands.  When this returns true,
-/// automatic allow matching must yield Ask/Deny -- never Allow.
-/// Returns true when `command` contains shell syntax that auto-allow rules
-/// cannot conservatively understand: command substitution, backtick expansion,
-/// redirections, or newline-separated commands.  When this returns true,
-/// automatic allow matching must yield Ask/Deny -- never Allow.
 pub fn has_unsupported_shell_syntax(command: &str) -> bool {
     let bytes = command.as_bytes();
     let len = bytes.len();
@@ -1457,6 +1449,86 @@ mod tests {
 
         let p = Policy::workspace_write().with_os_sandbox(false);
         assert!(!p.enable_os_sandbox);
+    }
+
+    #[test]
+    fn plan_proposal_render_includes_plan_and_calls() {
+        let proposal = PlanProposal {
+            prompt: "ship it".into(),
+            plan: "  Edit the file, then run tests.  ".into(),
+            calls: vec![
+                ToolCall {
+                    id: "1".into(),
+                    name: "edit".into(),
+                    arguments: r#"{"path":"src/lib.rs"}"#.into(),
+                },
+                ToolCall {
+                    id: "2".into(),
+                    name: "bash".into(),
+                    arguments: r#"{"command":"cargo test"}"#.into(),
+                },
+            ],
+            turn: 0,
+        };
+        let rendered = proposal.render();
+        assert!(rendered.starts_with("Edit the file, then run tests.\n\nPlanned steps:\n"));
+        assert!(rendered.contains("  1. edit({\"path\":\"src/lib.rs\"})\n"));
+        assert!(rendered.contains("  2. bash({\"command\":\"cargo test\"})\n"));
+    }
+
+    #[test]
+    fn plan_proposal_render_omits_empty_plan() {
+        let proposal = PlanProposal {
+            prompt: "hi".into(),
+            plan: "   \n".into(),
+            calls: vec![ToolCall {
+                id: "1".into(),
+                name: "read".into(),
+                arguments: r#"{"path":"README.md"}"#.into(),
+            }],
+            turn: 1,
+        };
+        assert_eq!(
+            proposal.render(),
+            "Planned steps:\n  1. read({\"path\":\"README.md\"})\n"
+        );
+    }
+
+    #[test]
+    fn with_scope_preserves_host_shell_lists() {
+        let p = Policy::workspace_write()
+            .with_shell_allow(["git *"])
+            .with_shell_deny(["sudo *"])
+            .with_scope(&Policy::read_only());
+        assert_eq!(p.mode, PermissionMode::ReadOnly);
+        assert_eq!(p.shell_allow, vec!["git *".to_string()]);
+        assert_eq!(p.shell_deny, vec!["sudo *".to_string()]);
+        assert!(!p.enable_os_sandbox);
+    }
+
+    #[test]
+    fn approval_request_from_call_flags_process_and_write() {
+        let policy = Policy::workspace_write();
+        let bash = ToolCall {
+            id: "c1".into(),
+            name: "bash".into(),
+            arguments: r#"{"command":"ls"}"#.into(),
+        };
+        let req = ApprovalRequest::from_call(&bash, &policy);
+        assert_eq!(req.call_id, "c1");
+        assert_eq!(req.tool_name, "bash");
+        assert!(req.is_process_tool);
+        assert!(!req.is_write_tool);
+        assert!(req.reason.contains("bash"));
+
+        let write = ToolCall {
+            id: "c2".into(),
+            name: "write".into(),
+            arguments: r#"{"path":"x"}"#.into(),
+        };
+        let req = ApprovalRequest::from_call(&write, &policy);
+        assert!(req.is_write_tool);
+        assert!(!req.is_process_tool);
     }
 
     #[test]

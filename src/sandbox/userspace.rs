@@ -215,6 +215,16 @@ impl SandboxManager {
                 let in_temp = is_temp_path(&canonical);
                 let in_allow = self.matches_allow(&canonical);
                 if !in_workspace && !in_temp && !in_allow {
+                    if write {
+                        let reason = "write outside workspace, temp, and allow list";
+                        self.log_violation(&SandboxViolation {
+                            timestamp: Utc::now(),
+                            kind: ViolationKind::Write,
+                            path_or_command: canonical.display().to_string(),
+                            reason: reason.to_string(),
+                        });
+                        return Err(SandboxError::WriteDenied(canonical.display().to_string()));
+                    }
                     let reason = "path outside workspace, temp, and allow list";
                     self.log_violation(&SandboxViolation {
                         timestamp: Utc::now(),
@@ -223,16 +233,6 @@ impl SandboxManager {
                         reason: reason.to_string(),
                     });
                     return Err(SandboxError::PathDenied(canonical.display().to_string()));
-                }
-                if write && !in_workspace && !in_temp && !in_allow {
-                    let reason = "write outside workspace, temp, and allow list";
-                    self.log_violation(&SandboxViolation {
-                        timestamp: Utc::now(),
-                        kind: ViolationKind::Write,
-                        path_or_command: canonical.display().to_string(),
-                        reason: reason.to_string(),
-                    });
-                    return Err(SandboxError::WriteDenied(canonical.display().to_string()));
                 }
                 Ok(())
             }

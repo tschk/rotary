@@ -257,6 +257,47 @@ mod tests {
     }
 
     #[test]
+    fn estimate_cost_detailed_includes_cache_write() {
+        let registry = PricingRegistry::new();
+        let usage = TokenUsage {
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_read_tokens: 0,
+            cache_write_tokens: 1_000_000,
+        };
+        let cost = registry.estimate_cost_detailed("claude-3.5-sonnet", &usage);
+        assert!((cost - 3.75).abs() < 1e-9);
+    }
+
+    #[test]
+    fn estimate_cost_detailed_ignores_cache_when_unpriced() {
+        let registry = PricingRegistry::new();
+        let usage = TokenUsage {
+            input_tokens: 1_000_000,
+            output_tokens: 0,
+            cache_read_tokens: 1_000_000,
+            cache_write_tokens: 1_000_000,
+        };
+        let cost = registry.estimate_cost_detailed("gpt-4o", &usage);
+        assert!((cost - 2.50).abs() < 1e-9);
+    }
+
+    #[test]
+    fn estimate_cost_detailed_unknown_model_returns_zero() {
+        let registry = PricingRegistry::new();
+        let usage = TokenUsage {
+            input_tokens: 1_000_000,
+            output_tokens: 1_000_000,
+            cache_read_tokens: 1_000_000,
+            cache_write_tokens: 1_000_000,
+        };
+        assert_eq!(
+            registry.estimate_cost_detailed("unknown-model", &usage),
+            0.0
+        );
+    }
+
+    #[test]
     fn session_cost_tracks_total() {
         let registry = PricingRegistry::new();
         let mut session = SessionCost::new();
