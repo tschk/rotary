@@ -26,9 +26,9 @@ cli = ["dep:clap"]
 computer-use = ["dep:ed25519-dalek", "dep:hex", "dep:rand_core", "dep:praefectus"]
 # Agent loop always needs tokio (JoinSet / sleep). IPC adds net/process extras.
 # Cancellation is always on; this flag is ACP/LSP/Unix-socket only.
-ipc = ["tokio/net", "tokio/io-util", "tokio/sync", "tokio/process", "tokio/rt-multi-thread"]
+ipc = ["tokio/net", "tokio/io-util", "tokio/sync", "tokio/process", "tokio/rt-multi-thread", "dep:subtle"]
 providers = ["dep:reqwest", "dep:eventsource-stream", "dep:futures"]
-builtin-tools = [ "dep:regex", "fff"]
+builtin-tools = ["dep:regex", "tokio/process"]
 memory = ["dep:rusqlite"]
 mcp = ["tokio/process", "tokio/io-util", "tokio/sync", "dep:reqwest", "reqwest/json", "reqwest/rustls-tls", "dep:futures"]
 sqlite-sessions = ["dep:rusqlite"]
@@ -36,9 +36,10 @@ graph-memory = []
 zkr-memory = ["dep:zkr"]
 personality = ["zkr-memory"]
 skills = ["dep:serde_yaml", "dep:dirs"]
+# Indexed grep/find via fff-search (git2/notify). Slim hosts use stdlib walk.
 fff = ["dep:fff-search"]
 # Host-API islands — off unless a host names them.
-autoresearch = []
+autoresearch = ["tokio/process"]
 marketplace = ["mcp"]
 routing = []
 extract = []
@@ -58,8 +59,9 @@ moka = { version = "0.12", features = ["future"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive"], optional = true }
-# Core async runtime for agent loop (always on).
-tokio = { version = "1", features = ["rt", "time", "macros", "sync", "process", "fs", "io-util"] }
+# Core async runtime for agent loop (always on). process is feature-gated
+# (builtin-tools bash, mcp, ipc, autoresearch) — do not gate cancellation.
+tokio = { version = "1", features = ["rt", "time", "macros", "sync", "fs", "io-util"] }
 
 # Core cancellation used by embedded and IPC hosts.
 cancellation-token = "0.1"
@@ -85,9 +87,10 @@ zkr = { version = "0.4.1", optional = true }
 serde_yaml = { version = "0.9", optional = true }
 dirs = { version = "6", optional = true }
 
-# Plugin integrity verification (marketplace).
+# Agent cache / tool-loadout fingerprints (always on — public hex API).
 sha2 = "0.10"
-subtle = "2.6.1"
+# IPC token compare. Marketplace does not use this crate.
+subtle = { version = "2.6.1", optional = true }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }

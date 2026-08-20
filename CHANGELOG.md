@@ -28,6 +28,15 @@
 - SkillCurator stays under `skills`.
 - `cancellation-token` kept: it is the public `ToolContext.cancellation` type.
   `tokio::sync::CancellationToken` is unused.
+- `builtin-tools` no longer enables `fff`. grep/find use a stdlib walk + regex
+  unless the host opts into `fff` (fff-search / git2 / notify).
+- `subtle` is optional and enabled by `ipc` (token compare). Marketplace does
+  not use it. `sha2` stays always-on: `ToolRegistry::definitions_fingerprint`
+  and Agent cache hashes are a public hex API.
+- `tokio/process` is no longer an always-on tokio feature. It is enabled by
+  `builtin-tools` (bash), `mcp`, `ipc`, and `autoresearch`. Cancellation is
+  unchanged. `dashmap` and `moka` stay: ToolRegistry / ProviderRegistry /
+  Agent tool cache are host-facing always-on types.
 
 ## Unreleased
 

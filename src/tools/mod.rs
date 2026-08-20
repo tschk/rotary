@@ -352,6 +352,26 @@ mod tests {
         assert!(read_result.content.contains("hello world"));
     }
 
+    #[cfg(feature = "builtin-tools")]
+    #[tokio::test]
+    async fn test_grep_and_find_stdlib_or_fff() {
+        let tmp = TempDir::new().unwrap();
+        let ctx = Arc::new(ToolContext::new(tmp.path()));
+        fs::exec_write(
+            ctx.clone(),
+            r#"{"path":"needle.rs","content":"fn find_me() {}\nfn other() {}\n"}"#.to_string(),
+        )
+        .await;
+
+        let grep = fs::exec_grep(ctx.clone(), r#"{"pattern":"find_me"}"#.to_string()).await;
+        assert!(!grep.is_error, "{}", grep.content);
+        assert!(grep.content.contains("find_me"), "{}", grep.content);
+
+        let find = fs::exec_find(ctx, r#"{"pattern":"needle.rs"}"#.to_string()).await;
+        assert!(!find.is_error, "{}", find.content);
+        assert!(find.content.contains("needle.rs"), "{}", find.content);
+    }
+
     #[tokio::test]
     async fn test_edit() {
         let tmp = TempDir::new().unwrap();

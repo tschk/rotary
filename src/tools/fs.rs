@@ -1,11 +1,17 @@
 use super::common::{parse_num_field, parse_str_field, resolve_path};
 use crate::agent::{ToolContext, ToolFuture, ToolResult};
-use std::process::Stdio;
 use std::sync::Arc;
-use std::time::Duration;
-use tokio::io::AsyncReadExt;
-use tokio::process::Command;
 use tracing::debug;
+
+#[cfg(feature = "builtin-tools")]
+use std::time::Duration;
+
+#[cfg(feature = "builtin-tools")]
+use std::process::Stdio;
+#[cfg(feature = "builtin-tools")]
+use tokio::io::AsyncReadExt;
+#[cfg(feature = "builtin-tools")]
+use tokio::process::Command;
 
 pub(crate) fn exec_read(ctx: Arc<ToolContext>, args: String) -> ToolFuture {
     Box::pin(async move {
@@ -113,6 +119,7 @@ pub(crate) fn exec_edit(ctx: Arc<ToolContext>, args: String) -> ToolFuture {
     })
 }
 
+#[cfg(feature = "builtin-tools")]
 fn resolve_working_dir(
     ctx: &Arc<ToolContext>,
     cwd: Option<String>,
@@ -129,6 +136,7 @@ fn resolve_working_dir(
     }
 }
 
+#[cfg(feature = "builtin-tools")]
 fn build_command(
     ctx: &Arc<ToolContext>,
     command: &str,
@@ -171,6 +179,7 @@ fn build_command(
     }
 }
 
+#[cfg(feature = "builtin-tools")]
 async fn wait_and_drain(
     ctx: Arc<ToolContext>,
     mut child: tokio::process::Child,
@@ -231,6 +240,7 @@ async fn wait_and_drain(
     }
 }
 
+#[cfg(feature = "builtin-tools")]
 fn format_output(stdout_buf: Vec<u8>, stderr_buf: Vec<u8>, exit_code: i32) -> String {
     let stdout = String::from_utf8_lossy(&stdout_buf).to_string();
     let stderr = String::from_utf8_lossy(&stderr_buf).to_string();
@@ -254,6 +264,12 @@ fn format_output(stdout_buf: Vec<u8>, stderr_buf: Vec<u8>, exit_code: i32) -> St
     result
 }
 
+#[cfg(not(feature = "builtin-tools"))]
+pub(crate) fn exec_bash(_ctx: Arc<ToolContext>, _args: String) -> ToolFuture {
+    Box::pin(async move { ToolResult::err("bash", "builtin-tools feature not enabled") })
+}
+
+#[cfg(feature = "builtin-tools")]
 pub(crate) fn exec_bash(ctx: Arc<ToolContext>, args: String) -> ToolFuture {
     Box::pin(async move {
         let command = match parse_str_field(&args, "command") {
@@ -317,7 +333,7 @@ pub(crate) fn exec_grep(ctx: Arc<ToolContext>, args: String) -> ToolFuture {
             Err(e) => return ToolResult::err("grep", e),
         };
 
-        #[cfg(feature = "builtin-tools")]
+        #[cfg(all(feature = "builtin-tools", feature = "fff"))]
         {
             let workspace_root = ctx.workspace_root.clone();
             let result = tokio::task::spawn_blocking(move || {
@@ -375,6 +391,26 @@ pub(crate) fn exec_grep(ctx: Arc<ToolContext>, args: String) -> ToolFuture {
             }
         }
 
+        #[cfg(all(feature = "builtin-tools", not(feature = "fff")))]
+        {
+            let workspace_root = ctx.workspace_root.clone();
+            let result = tokio::task::spawn_blocking(move || {
+                let root = if full.is_file() {
+                    full.parent().unwrap_or(&workspace_root).to_path_buf()
+                } else {
+                    full
+                };
+                stdlib_grep(&root, &pattern, context)
+            })
+            .await
+            .unwrap_or_else(|e| Err(format!("search task failed: {e}")));
+
+            match result {
+                Ok(content) => ToolResult::ok("grep", content),
+                Err(e) => ToolResult::err("grep", e),
+            }
+        }
+
         #[cfg(not(feature = "builtin-tools"))]
         {
             let _ = (pattern, context, full);
@@ -395,7 +431,7 @@ pub(crate) fn exec_find(ctx: Arc<ToolContext>, args: String) -> ToolFuture {
             Err(e) => return ToolResult::err("find", e),
         };
 
-        #[cfg(feature = "builtin-tools")]
+        #[cfg(all(feature = "builtin-tools", feature = "fff"))]
         {
             let result = tokio::task::spawn_blocking(move || {
                 let shared = crate::search::picker_for(full)?;
@@ -426,6 +462,18 @@ pub(crate) fn exec_find(ctx: Arc<ToolContext>, args: String) -> ToolFuture {
             })
             .await
             .unwrap_or_else(|e| Err(format!("search task failed: {e}")));
+
+            match result {
+                Ok(content) => ToolResult::ok("find", content),
+                Err(e) => ToolResult::err("find", e),
+            }
+        }
+
+        #[cfg(all(feature = "builtin-tools", not(feature = "fff")))]
+        {
+            let result = tokio::task::spawn_blocking(move || stdlib_find(&full, &pattern))
+                .await
+                .unwrap_or_else(|e| Err(format!("search task failed: {e}")));
 
             match result {
                 Ok(content) => ToolResult::ok("find", content),
@@ -485,5 +533,153 @@ pub(crate) fn exec_ls(ctx: Arc<ToolContext>, args: String) -> ToolFuture {
             }
             Err(e) => ToolResult::err("ls", format!("{e}")),
         }
+    })
+}
+
+#[cfg(all(feature = "builtin-tools", not(feature = "fff")))]
+fn skip_dir_name(name: &str) -> bool {
+    matches!(
+        name,
+        ".git" | "target" | "node_modules" | ".hg" | ".svn" | "dist" | "build" | ".venv"
+    )
+}
+
+#[cfg(all(feature = "builtin-tools", not(feature = "fff")))]
+fn walk_files(root: &std::path::Path, out: &mut Vec<std::path::PathBuf>, max: usize) {
+    if out.len() >= max {
+        return;
+    }
+    let entries = match std::fs::read_dir(root) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    for entry in entries.flatten() {
+        if out.len() >= max {
+            return;
+        }
+        let path = entry.path();
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        let Ok(ft) = entry.file_type() else {
+            continue;
+        };
+        if ft.is_dir() {
+            if skip_dir_name(&name) {
+                continue;
+            }
+            walk_files(&path, out, max);
+        } else if ft.is_file() {
+            out.push(path);
+        }
+    }
+}
+
+#[cfg(all(feature = "builtin-tools", not(feature = "fff")))]
+fn stdlib_grep(root: &std::path::Path, pattern: &str, context: usize) -> Result<String, String> {
+    let re = regex::Regex::new(pattern).map_err(|e| format!("invalid pattern: {e}"))?;
+    let mut files = Vec::new();
+    if root.is_file() {
+        files.push(root.to_path_buf());
+    } else {
+        walk_files(root, &mut files, 2_000);
+    }
+    let mut out = String::new();
+    let mut matches = 0usize;
+    for path in files {
+        if matches >= 100 {
+            break;
+        }
+        let meta = match std::fs::metadata(&path) {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        if meta.len() > 1_048_576 {
+            continue;
+        }
+        let bytes = match std::fs::read(&path) {
+            Ok(b) => b,
+            Err(_) => continue,
+        };
+        if bytes.contains(&0) {
+            continue;
+        }
+        let Ok(text) = String::from_utf8(bytes) else {
+            continue;
+        };
+        let lines: Vec<&str> = text.lines().collect();
+        let path_str = path.to_string_lossy();
+        for (idx, line) in lines.iter().enumerate() {
+            if matches >= 100 {
+                break;
+            }
+            if !re.is_match(line) {
+                continue;
+            }
+            let line_number = idx + 1;
+            if context > 0 {
+                let start = idx.saturating_sub(context);
+                for (i, ctx_line) in lines[start..idx].iter().enumerate() {
+                    let num = start + i + 1;
+                    out.push_str(&format!("  {num:>6}\t{path_str}\t{ctx_line}\n"));
+                }
+            }
+            out.push_str(&format!("> {line_number:>6}\t{path_str}\t{line}\n"));
+            if context > 0 {
+                let end = (idx + 1 + context).min(lines.len());
+                for (i, ctx_line) in lines[idx + 1..end].iter().enumerate() {
+                    let num = line_number + 1 + i;
+                    out.push_str(&format!("  {num:>6}\t{path_str}\t{ctx_line}\n"));
+                }
+                if end > idx + 1 {
+                    out.push_str("  ---\n");
+                }
+            }
+            matches += 1;
+        }
+    }
+    Ok(if out.is_empty() {
+        "(no matches)".to_string()
+    } else {
+        out
+    })
+}
+
+#[cfg(all(feature = "builtin-tools", not(feature = "fff")))]
+fn glob_to_regex(pattern: &str) -> Result<regex::Regex, String> {
+    let mut escaped = String::from("(?i)");
+    for ch in pattern.chars() {
+        match ch {
+            '*' => escaped.push_str(".*"),
+            '?' => escaped.push('.'),
+            other => escaped.push_str(&regex::escape(&other.to_string())),
+        }
+    }
+    regex::Regex::new(&escaped).map_err(|e| format!("invalid pattern: {e}"))
+}
+
+#[cfg(all(feature = "builtin-tools", not(feature = "fff")))]
+fn stdlib_find(root: &std::path::Path, pattern: &str) -> Result<String, String> {
+    let re = glob_to_regex(pattern)?;
+    let mut files = Vec::new();
+    if root.is_file() {
+        files.push(root.to_path_buf());
+    } else {
+        walk_files(root, &mut files, 2_000);
+    }
+    let mut out = Vec::new();
+    for path in files {
+        let path_str = path.to_string_lossy();
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if re.is_match(&path_str) || re.is_match(name) {
+            out.push(path_str.into_owned());
+            if out.len() >= 100 {
+                break;
+            }
+        }
+    }
+    Ok(if out.is_empty() {
+        "(no files found)".to_string()
+    } else {
+        out.join("\n")
     })
 }

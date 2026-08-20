@@ -31,6 +31,10 @@ jobs:
             echo "slim feature set must not pull praefectus" >&2
             exit 1
           fi
+          if cargo tree --no-default-features --features providers,builtin-tools,mcp -i fff-search; then
+            echo "slim feature set must not pull fff-search" >&2
+            exit 1
+          fi
 
   msrv:
     runs-on: ubuntu-latest

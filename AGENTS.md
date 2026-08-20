@@ -225,7 +225,8 @@ graph TD
 
 | Feature | Default | Enables |
 |---|---|---|
-| `builtin-tools` | yes | read/write/edit/bash/grep/find/ls with fff indexed search |
+| `builtin-tools` | yes | read/write/edit/bash/grep/find/ls (stdlib grep/find; regex) |
+| `fff` | no | fff-search indexed grep/find (git2/notify; not in builtin-tools) |
 | `cli` | no | clap + `rx4` binary (`required-features`) |
 | `ipc` | no | Unix socket JSON-RPC server, ACP host, LSP client (not cancellation) |
 | `computer-use` | no | Praefectus `cu_*` tools (13 tools) |

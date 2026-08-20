@@ -121,7 +121,7 @@ flowchart TD
   `ToolExecutionStart`, `ToolExecutionEnd`, `TurnEnd`, `AgentEnd`, `Error`).
 - **5 scopes** — `coding`, `research`, `plan`, `ask`, `computer_use`.
 - **7 builtin tools** — `read`, `write`, `edit`, `bash`, `grep`, `find`, `ls`
-  (fff indexed search).
+  (stdlib walk + regex; opt-in `fff` for indexed search).
 - **13 computer-use tools** (`cu_*`) via
   [Praefectus](https://crates.io/crates/praefectus) — native Rust, no FFI.
 - **MCP client** — JSON-RPC 2.0 over stdio; tools prefixed
@@ -192,7 +192,8 @@ flowchart TD
 
 | Feature | Default | Enables |
 |---|---|---|
-| `builtin-tools` | yes | read/write/edit/bash/grep/find/ls with fff indexed search |
+| `builtin-tools` | yes | read/write/edit/bash/grep/find/ls (stdlib + regex) |
+| `fff` | no | fff-search indexed grep/find |
 | `cli` | no | clap + `rx4` binary |
 | `ipc` | no | Unix socket JSON-RPC, ACP, LSP (cancellation is always on) |
 | `computer-use` | no | Praefectus `cu_*` tools (13 tools) |
