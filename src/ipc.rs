@@ -1,6 +1,7 @@
 //! JSON-RPC IPC server over Unix socket.
 
 use crate::agent::{Agent, ToolRegistry};
+#[cfg(feature = "marketplace")]
 use crate::plugin::PluginRegistry;
 use crate::session::Session;
 use serde_json::Value;
@@ -14,6 +15,7 @@ pub struct IpcServer {
     pub socket_path: String,
     pub agent: Arc<AsyncMutex<Agent>>,
     pub tools: Arc<Mutex<ToolRegistry>>,
+    #[cfg(feature = "marketplace")]
     pub plugins: Arc<Mutex<PluginRegistry>>,
     pub session: Arc<Mutex<Session>>,
     pub token_hash: Option<Vec<u8>>,
@@ -25,6 +27,7 @@ impl Clone for IpcServer {
             socket_path: self.socket_path.clone(),
             agent: self.agent.clone(),
             tools: self.tools.clone(),
+            #[cfg(feature = "marketplace")]
             plugins: self.plugins.clone(),
             session: self.session.clone(),
             token_hash: self.token_hash.clone(),
@@ -54,6 +57,7 @@ impl IpcServer {
             socket_path: socket_path.into(),
             agent: Arc::new(AsyncMutex::new(Agent::new())),
             tools: Arc::new(Mutex::new(ToolRegistry::new())),
+            #[cfg(feature = "marketplace")]
             plugins: Arc::new(Mutex::new(PluginRegistry::new())),
             session: Arc::new(Mutex::new(Session::new("default", "default"))),
             token_hash: token_hash_from_env(),
@@ -79,6 +83,7 @@ impl IpcServer {
         *self.tools.lock().unwrap_or_else(|e| e.into_inner()) = tools;
     }
 
+    #[cfg(feature = "marketplace")]
     pub fn attach_plugins(&self, plugins: PluginRegistry) {
         *self.plugins.lock().unwrap_or_else(|e| e.into_inner()) = plugins;
     }
@@ -215,6 +220,14 @@ impl IpcServer {
             "ping" => Ok(Value::String("pong".into())),
             "state" => {
                 let agent = self.agent.lock().await;
+                #[cfg(feature = "marketplace")]
+                let plugin_count = self
+                    .plugins
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .count();
+                #[cfg(not(feature = "marketplace"))]
+                let plugin_count = 0;
                 Ok(serde_json::json!({
                     "model": agent.model,
                     "scope": agent.scope.name(),
@@ -224,7 +237,7 @@ impl IpcServer {
                     "has_approver": agent.approver.is_some(),
                     "has_authorizer": agent.authorizer.is_some(),
                     "tools": self.tools.lock().unwrap_or_else(|e| e.into_inner()).count(),
-                    "plugins": self.plugins.lock().unwrap_or_else(|e| e.into_inner()).count(),
+                    "plugins": plugin_count,
                 }))
             }
             "tools" => Ok(Value::Array(
@@ -234,13 +247,20 @@ impl IpcServer {
                     .definitions(),
             )),
             "plugins" => {
-                let p = self.plugins.lock().unwrap_or_else(|e| e.into_inner());
-                Ok(Value::Array(
-                    p.plugins
-                        .iter()
-                        .map(|pl| serde_json::json!({"id": pl.id, "name": pl.name}))
-                        .collect::<Vec<_>>(),
-                ))
+                #[cfg(feature = "marketplace")]
+                {
+                    let p = self.plugins.lock().unwrap_or_else(|e| e.into_inner());
+                    Ok(Value::Array(
+                        p.plugins
+                            .iter()
+                            .map(|pl| serde_json::json!({"id": pl.id, "name": pl.name}))
+                            .collect::<Vec<_>>(),
+                    ))
+                }
+                #[cfg(not(feature = "marketplace"))]
+                {
+                    Ok(Value::Array(Vec::new()))
+                }
             }
             "messages" => {
                 let agent = self.agent.lock().await;
@@ -363,6 +383,7 @@ mod tests {
     use super::*;
     use crate::agent::Agent;
 
+    #[cfg(feature = "marketplace")]
     #[test]
     fn test_attach_plugins() {
         let server = IpcServer::new("/tmp/test_ipc_socket_plugins");

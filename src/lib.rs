@@ -22,7 +22,9 @@
 //! ```
 
 pub mod agent;
+#[cfg(feature = "autoresearch")]
 pub mod autoresearch;
+#[cfg(feature = "autoresearch")]
 pub mod autoresearch_controller;
 #[cfg(feature = "skills")]
 pub mod background_review;
@@ -34,23 +36,29 @@ pub mod cost;
 pub mod dream_scheduler;
 #[cfg(feature = "skills")]
 pub mod embeddings;
+#[cfg(feature = "extract")]
 pub mod extract;
 #[cfg(feature = "graph-memory")]
 pub mod graph_memory;
 pub mod guardrails;
 pub mod hooks;
 pub mod mode;
+#[cfg(feature = "routing")]
 pub mod model_router;
+#[cfg(feature = "multiagent")]
 pub mod multiagent;
 pub mod permissions;
 #[cfg(feature = "personality")]
 pub mod personality;
+#[cfg(feature = "marketplace")]
 pub mod plugin;
 pub mod prompt_cache;
 pub mod provider;
+#[cfg(feature = "extract")]
 pub mod ranking;
 pub mod repomap;
 pub mod rollout;
+#[cfg(feature = "routing")]
 pub mod routing;
 pub mod sandbox;
 #[cfg(feature = "fff")]
@@ -64,10 +72,12 @@ pub mod skill_curator;
 #[cfg(feature = "skills")]
 pub mod skill_engine;
 pub mod slash;
+#[cfg(feature = "sse")]
 pub mod sse;
 pub mod subagent;
 pub mod todo;
 pub mod tools;
+#[cfg(feature = "work-pack")]
 pub mod work_pack;
 
 #[cfg(feature = "providers")]
@@ -93,6 +103,7 @@ pub mod mcp;
 pub mod acp;
 #[cfg(feature = "ipc")]
 pub mod lsp;
+#[cfg(feature = "marketplace")]
 pub mod marketplace;
 
 pub use agent::{
@@ -101,11 +112,13 @@ pub use agent::{
     ToolDefinition, ToolEffect, ToolErrorKind, ToolExecuteBox, ToolExecuteFn, ToolExecutor,
     ToolFuture, ToolRegistry, ToolResult, TurnEndMetadata,
 };
+#[cfg(feature = "autoresearch")]
 pub use autoresearch::{
     new_handle as new_autoresearch_handle, parse_metrics, AutoresearchConfig, AutoresearchError,
     AutoresearchHandle, AutoresearchSession, ExperimentMeasurement, ExperimentRun,
     ExperimentStatus, MetricDirection,
 };
+#[cfg(feature = "autoresearch")]
 pub use autoresearch_controller::{
     new_controller_handle, AggregatedMeasurement, AutoresearchBudget, AutoresearchCancellation,
     AutoresearchCompletion, AutoresearchController, AutoresearchControllerConfig,
@@ -130,6 +143,7 @@ pub use embeddings::{
     cosine_similarity, EmbedError, EmbeddingClient, EmbeddingConfig, EmbeddingProvider,
     SemanticSearch,
 };
+#[cfg(feature = "extract")]
 pub use extract::{
     extract_knowledge_loose, extract_proactive_loose, parse_knowledge, parse_proactive,
     ExtractedKnowledge, ProactiveItem,
@@ -145,13 +159,15 @@ pub use guardrails::{
 };
 pub use hooks::{HookDecision, HookEvent, HookFn, HookRegistry};
 pub use mode::{Profile, Scope};
+#[cfg(feature = "routing")]
 pub use model_router::{
     ModelRouter, ModelRouterError, ModelTier, ProactiveMonitor, RouterConfig, SkillSuggestion,
     SubagentModelSelector, TaskTier, TaskType,
 };
 pub use models::{CompatConfig, ModelInfo, ModelRegistry};
-#[cfg(feature = "ipc")]
+#[cfg(all(feature = "ipc", feature = "multiagent"))]
 pub use multiagent::CoordinatorEvent;
+#[cfg(feature = "multiagent")]
 pub use multiagent::{
     AgentProfile, AgentRole, MultiAgentCoordinator, MultiAgentError, TeamResult, TeamTask,
 };
@@ -169,9 +185,11 @@ pub use prompt_cache::{
     CacheTtl, PromptCacheConfig,
 };
 pub use provider::{Message, Provider, ProviderRegistry, Role, StreamEvent};
+#[cfg(feature = "extract")]
 pub use ranking::{rank, rank_with_query, top_n};
 pub use repomap::{RepoMap, RepoMapError};
 pub use rollout::{RolloutEntry, RolloutManager, TraceWriter};
+#[cfg(feature = "routing")]
 pub use routing::{
     AgentRoute, AgentRouter, RoutingConfig, RoutingStats, SmartRouter, TurnComplexity,
 };
@@ -191,13 +209,17 @@ pub use skill_engine::{
     SkillState,
 };
 pub use slash::{help_text as slash_help_text, parse as parse_slash, Command as SlashCommand};
+#[cfg(feature = "sse")]
 pub use sse::{SseError, SseEvent, SseParser};
 pub use subagent::{
     SubagentBudget, SubagentConfig, SubagentError, SubagentEvent, SubagentHandle, SubagentLimits,
     SubagentManager, SubagentResult, SubagentStatus, SubagentSubscriber,
 };
 pub use todo::{TodoConfig, TodoItem, TodoState, TodoStatus};
-pub use tools::{register_autoresearch_tools, register_builtin_tools, register_spawn_agent_tool};
+#[cfg(feature = "autoresearch")]
+pub use tools::register_autoresearch_tools;
+pub use tools::{register_builtin_tools, register_spawn_agent_tool};
+#[cfg(feature = "work-pack")]
 pub use work_pack::{WorkPack, WorkPackError};
 
 #[cfg(feature = "personality")]
@@ -209,14 +231,18 @@ pub use personality::{
 };
 
 #[cfg(feature = "mcp")]
-pub use mcp::{McpClient, McpError, McpRegistry, McpResourceInfo, McpToolInfo};
+pub use mcp::{
+    McpClient, McpError, McpRegistry, McpResourceInfo, McpServerConfig, McpToolInfo,
+    McpTransportKind,
+};
 
 #[cfg(feature = "ipc")]
 pub use acp::{AcpHost, AcpSession};
 
+#[cfg(feature = "marketplace")]
 pub use marketplace::{
-    verify_plugin_integrity, InstalledPlugin, MarketplaceError, MarketplaceIndex, McpServerConfig,
-    McpTransportKind, PluginBlocklist, PluginInstaller, PluginManifest,
+    verify_plugin_integrity, InstalledPlugin, MarketplaceError, MarketplaceIndex, PluginBlocklist,
+    PluginInstaller, PluginManifest,
 };
 
 #[cfg(feature = "providers")]
@@ -227,24 +253,12 @@ pub use lsp::{Diagnostic, DiagnosticSeverity, Location, LspManager, LspServer};
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-pub fn print_banner() {
-    eprintln!("rx4 {VERSION} — agent harness engine");
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn test_print_banner() {
-        // print_banner just prints to stderr.
-        // We call it to ensure it doesn't panic.
-        print_banner();
-    }
-
-    #[test]
     fn test_version() {
-        // Ensure VERSION is properly populated from the crate version.
         assert!(!VERSION.is_empty(), "VERSION should not be empty");
     }
 }

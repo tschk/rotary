@@ -233,6 +233,7 @@ pub fn register_builtin_tools(registry: &mut ToolRegistry) {
 
 /// Register the opt-in autoresearch tools. They are kept separate from the
 /// default coding loadout so ordinary prompts retain a small, stable prefix.
+#[cfg(feature = "autoresearch")]
 pub fn register_autoresearch_tools(
     registry: &mut ToolRegistry,
     handle: crate::autoresearch::AutoresearchHandle,

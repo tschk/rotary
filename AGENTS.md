@@ -225,15 +225,23 @@ graph TD
 
 | Feature | Default | Enables |
 |---|---|---|
-| `ipc` | yes | tokio runtime, Unix socket JSON-RPC server, LSP client |
 | `builtin-tools` | yes | read/write/edit/bash/grep/find/ls with fff indexed search |
+| `cli` | no | clap + `rx4` binary (`required-features`) |
+| `ipc` | no | Unix socket JSON-RPC server, ACP host, LSP client (not cancellation) |
 | `computer-use` | no | Praefectus `cu_*` tools (13 tools) |
 | `providers` | no | reqwest SSE streaming for OpenAI/Anthropic/Ollama/custom |
 | `memory` | no | SQLite-backed memory store |
-| `mcp` | no | MCP client (JSON-RPC 2.0 over stdio / HTTP / SSE) |
+| `mcp` | no | MCP client (JSON-RPC 2.0 over stdio / HTTP / SSE) + `McpServerConfig` |
+| `marketplace` | no | plugin installer (`marketplace` implies `mcp`) |
 | `sqlite-sessions` | no | SQLite session persistence |
 | `skills` | no | skill engine, skill curator, background review, embeddings (serde_yaml + dirs) |
 | `graph-memory` | no | graph memory (pagerank, community detection), dream scheduler |
+| `autoresearch` | no | AutoresearchSession + AutoresearchController |
+| `routing` | no | ModelRouter + SmartRouter |
+| `extract` | no | extract + ranking |
+| `work-pack` | no | WorkPack markdown profiles |
+| `sse` | no | hand-rolled SseParser (benches; providers use eventsource-stream) |
+| `multiagent` | no | MultiAgentCoordinator (hosts use SubagentManager) |
 
 > `pi-compat` and `pi-extensions` have been **removed** — pi protocol
 > compatibility (JSONL v3 sessions, RPC, extensions, QuickJS) now lives in
@@ -257,6 +265,7 @@ graph TD
 ```bash
 cargo build
 cargo build --all-features
+cargo test --no-default-features --features providers,builtin-tools,mcp
 cargo test --all-features
 cargo clippy --all-features
 cargo fmt --check

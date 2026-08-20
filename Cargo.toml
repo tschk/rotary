@@ -1,6 +1,6 @@
 [package]
 name = "rx4"
-version = "0.6.4"
+version = "0.6.5"
 edition = "2021"
 rust-version = "1.88"
 license = "MPL-2.0"
@@ -13,15 +13,19 @@ categories = ["development-tools", "api-bindings", "asynchronous", "command-line
 [[bin]]
 name = "rx4"
 path = "src/bin/rotary.rs"
+required-features = ["cli"]
 
 [lib]
 name = "rx4"
 path = "src/lib.rs"
 
 [features]
-default = ["ipc", "builtin-tools"]
+default = ["builtin-tools"]
+# Product CLI (`rx4` binary). Slim library hosts should leave this off.
+cli = ["dep:clap"]
 computer-use = ["dep:ed25519-dalek", "dep:hex", "dep:rand_core", "dep:praefectus"]
 # Agent loop always needs tokio (JoinSet / sleep). IPC adds net/process extras.
+# Cancellation is always on; this flag is ACP/LSP/Unix-socket only.
 ipc = ["tokio/net", "tokio/io-util", "tokio/sync", "tokio/process", "tokio/rt-multi-thread"]
 providers = ["dep:reqwest", "dep:eventsource-stream", "dep:futures"]
 builtin-tools = [ "dep:regex", "fff"]
@@ -33,6 +37,14 @@ zkr-memory = ["dep:zkr"]
 personality = ["zkr-memory"]
 skills = ["dep:serde_yaml", "dep:dirs"]
 fff = ["dep:fff-search"]
+# Host-API islands — off unless a host names them.
+autoresearch = []
+marketplace = ["mcp"]
+routing = []
+extract = []
+work-pack = []
+sse = []
+multiagent = []
 
 [dependencies]
 serde = { version = "1", features = ["derive", "rc"] }
@@ -45,7 +57,7 @@ dashmap = "6"
 moka = { version = "0.12", features = ["future"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive"], optional = true }
 # Core async runtime for agent loop (always on).
 tokio = { version = "1", features = ["rt", "time", "macros", "sync", "process", "fs", "io-util"] }
 
@@ -86,6 +98,11 @@ criterion = { version = "0.5", features = ["html_reports"] }
 [[bench]]
 name = "core"
 harness = false
+required-features = ["sse"]
+
+[[test]]
+name = "autoresearch_controller"
+required-features = ["autoresearch"]
 
 [profile.release]
 opt-level = 3

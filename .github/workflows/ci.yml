@@ -22,8 +22,15 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo fmt --check
       - run: cargo clippy --all-targets --all-features -- -D warnings
+      - run: cargo test
+      - run: cargo test --no-default-features --features providers,builtin-tools,mcp
       - run: cargo test --all-features
       - run: cargo build --all-features --release
+      - run: |
+          if cargo tree --no-default-features --features providers,builtin-tools,mcp -i praefectus; then
+            echo "slim feature set must not pull praefectus" >&2
+            exit 1
+          fi
 
   msrv:
     runs-on: ubuntu-latest

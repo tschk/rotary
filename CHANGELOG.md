@@ -1,5 +1,34 @@
 # Changelog
 
+## [0.6.5] — 2026-08-20
+
+### Breaking
+- Default features are now `builtin-tools` only. `ipc` (ACP/LSP/Unix socket)
+  is opt-in. Mid-turn cancellation is always compiled and does not require
+  `ipc`.
+- `clap` is a `cli` feature / bin-only dependency. `cargo install rx4` needs
+  `--features cli`.
+- Host-API islands are feature-gated: `autoresearch`, `marketplace` (implies
+  `mcp`), `routing`, `extract`, `work-pack`, `sse`, `multiagent`.
+- `McpServerConfig` / `McpTransportKind` live in `mcp` and are re-exported
+  from `marketplace` when that feature is on.
+- `print_banner()` was removed. `Event::TurnEnd` is kept for host matches but
+  the loop emits only `Event::TurnEnded`.
+
+### Added
+- `Scope::Coding` allows discovered `mcp__*` tools. Hosts can also call
+  `Agent::allow_extra_tools` / `set_extra_allowed_tools`.
+- `agent/turn.rs` holds before/after prompt hooks so `Agent::prompt` is the
+  loop, not a 600-line cfg nest.
+
+### Changed
+- Personality / SelfImprove stay as `spawn_blocking` zkr wrappers (already
+  feature-gated; they are the host API).
+- HookRegistry / `Agent::set_hooks` kept (used for BeforeTool).
+- SkillCurator stays under `skills`.
+- `cancellation-token` kept: it is the public `ToolContext.cancellation` type.
+  `tokio::sync::CancellationToken` is unused.
+
 ## Unreleased
 
 ### Added
