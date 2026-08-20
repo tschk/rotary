@@ -1,9 +1,10 @@
 # Autoresearch controller
 
 `rx4::AutoresearchController` is the engine capability for a host-driven
-optimization loop. It is deliberately separate from the older opt-in
-`.auto/` session tools, which remain available for compatibility but do not
-provide isolation or rollback.
+optimization loop. Enable the `autoresearch` Cargo feature to compile it.
+It is deliberately separate from the older opt-in `.auto/` session tools,
+which remain available behind the same feature but do not provide isolation
+or rollback.
 
 The controller follows the useful part of the Pi autoresearch pattern: keep
 the harness small, make one focused hypothesis, measure it, and retain only a
