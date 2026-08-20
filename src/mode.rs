@@ -185,7 +185,7 @@ pub fn compose_prompt(base: Option<&str>, p: &Profile) -> String {
 }
 
 pub fn mcp_tool_allowed(scope: Scope, tool_name: &str) -> bool {
-    scope == Scope::Coding && tool_name.starts_with("mcp__")
+    matches!(scope, Scope::Coding | Scope::Research) && tool_name.starts_with("mcp__")
 }
 
 pub fn tool_allowed(p: &Profile, tool_name: &str) -> bool {
@@ -227,10 +227,13 @@ mod tests {
     }
 
     #[test]
-    fn coding_allows_discovered_mcp_tools() {
-        let p = profile(Scope::Coding);
-        assert!(tool_allowed(&p, "mcp__fs__read_file"));
-        assert!(tool_allowed(&p, "mcp__github__list_issues"));
+    fn coding_and_research_allow_discovered_mcp_tools() {
+        for scope in [Scope::Coding, Scope::Research] {
+            let p = profile(scope);
+            assert!(tool_allowed(&p, "mcp__fs__read_file"), "{scope}");
+            assert!(tool_allowed(&p, "mcp__github__list_issues"), "{scope}");
+        }
+        assert!(!tool_allowed(&profile(Scope::Plan), "mcp__fs__read_file"));
         assert!(!tool_allowed(&profile(Scope::Ask), "mcp__fs__read_file"));
         assert!(!tool_allowed(
             &profile(Scope::ComputerUse),

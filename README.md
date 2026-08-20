@@ -28,10 +28,23 @@ graph TD
 
 ## Install
 
+Library hosts should disable crate defaults and name only the features they
+need:
+
 ```bash
-cargo add rx4 --features builtin-tools,providers,computer-use
-cargo install rx4 --features cli,ipc,providers,builtin-tools
+cargo add rx4 --no-default-features --features builtin-tools,providers
 ```
+
+The `rx4` binary is gated on the `cli` feature (`required-features = ["cli"]`).
+A bare `cargo install rx4` does **not** produce the binary. Include `cli`:
+
+```bash
+cargo install rx4 --features cli,ipc,providers,builtin-tools,mcp
+```
+
+Homebrew `undivisible/homebrew-tap` `Formula/rx4.rb` currently runs
+`cargo install --locked --path . --features providers,ipc,builtin-tools,mcp`
+and will ship no binary until that formula adds `cli`.
 
 ## Quick start
 

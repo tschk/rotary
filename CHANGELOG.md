@@ -7,7 +7,8 @@
   is opt-in. Mid-turn cancellation is always compiled and does not require
   `ipc`.
 - `clap` is a `cli` feature / bin-only dependency. `cargo install rx4` needs
-  `--features cli`.
+  `--features cli` (the Homebrew formula in `undivisible/homebrew-tap` must
+  add `cli` to its `--features` list or the bottle ships no binary).
 - Host-API islands are feature-gated: `autoresearch`, `marketplace` (implies
   `mcp`), `routing`, `extract`, `work-pack`, `sse`, `multiagent`.
 - `McpServerConfig` / `McpTransportKind` live in `mcp` and are re-exported
@@ -16,8 +17,8 @@
   the loop emits only `Event::TurnEnded`.
 
 ### Added
-- `Scope::Coding` allows discovered `mcp__*` tools. Hosts can also call
-  `Agent::allow_extra_tools` / `set_extra_allowed_tools`.
+- `Scope::Coding` and `Scope::Research` allow discovered `mcp__*` tools.
+  Hosts can also call `Agent::allow_extra_tools` / `set_extra_allowed_tools`.
 - `agent/turn.rs` holds before/after prompt hooks so `Agent::prompt` is the
   loop, not a 600-line cfg nest.
 
