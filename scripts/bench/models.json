@@ -1,0 +1,48 @@
+{
+  "dataset": "princeton-nlp/SWE-bench_Verified",
+  "metric": "resolve_rate",
+  "default_n": 10,
+  "default_sample_seed": 0,
+  "full_n": 500,
+  "harnesses": ["codex", "pi", "tk"],
+  "notes": {
+    "source": "Detected ~/.codex/config.toml model=gpt-5.6-sol effort=low; second slot gpt-5.6-terra from ~/.codex/models_cache.json (priority 2). Same model+effort on every harness.",
+    "tk_effort": "tk exec --effort is passed through when present; current telekinesis-rx4-consume tk exec only documents --model (no --effort yet)."
+  },
+  "models": [
+    {
+      "id": "gpt-5.6-sol",
+      "effort": "low",
+      "codex": {
+        "model": "gpt-5.6-sol",
+        "config": "model_reasoning_effort=low"
+      },
+      "pi": {
+        "provider": "openai-codex",
+        "model": "gpt-5.6-sol",
+        "thinking": "low"
+      },
+      "tk": {
+        "model": "gpt-5.6-sol",
+        "effort": "low"
+      }
+    },
+    {
+      "id": "gpt-5.6-terra",
+      "effort": "low",
+      "codex": {
+        "model": "gpt-5.6-terra",
+        "config": "model_reasoning_effort=low"
+      },
+      "pi": {
+        "provider": "openai-codex",
+        "model": "gpt-5.6-terra",
+        "thinking": "low"
+      },
+      "tk": {
+        "model": "gpt-5.6-terra",
+        "effort": "low"
+      }
+    }
+  ]
+}
