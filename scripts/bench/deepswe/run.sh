@@ -243,7 +243,7 @@ for harness in $HARNESSES; do
     elif [ "$thin_rc" -ne 0 ]; then
       adapter_exit=$thin_rc
     fi
-    resolved="null"
+    resolved_py="None"
     reward_path=""
     verifier=""
     if [ "$SKIP_EVAL" -eq 0 ]; then
@@ -254,9 +254,9 @@ for harness in $HARNESSES; do
         reward_path=$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('path',''))" "$reward_json")
         rew=$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('reward'))" "$reward_json")
         if [ "$rew" = "1" ] || [ "$rew" = "1.0" ]; then
-          resolved=true
+          resolved_py="True"
         else
-          resolved=false
+          resolved_py="False"
         fi
       fi
     fi
@@ -268,7 +268,7 @@ cell = {
   'harness': '''$harness''',
   'model': '''$MID''',
   'instance_id': '''$iid''',
-  'resolved': $resolved,
+  'resolved': $resolved_py,
   'seconds': $seconds,
   'adapter_exit': $adapter_exit,
   'patch': r'''$patch''',
