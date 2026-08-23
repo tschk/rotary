@@ -27,7 +27,8 @@ def main() -> int:
         "The repository is already checked out at the issue base commit.\n"
         "Implement a correct fix for the GitHub issue below.\n"
         "Do not expand scope. Leave the repo fixed (dirty tree or committed patch is fine).\n"
-        "Do not rewrite git history. Do not push.\n\n"
+        "Do not rewrite git history. Do not push.\n"
+        "Do not ask clarifying questions; pick the conservative correct fix and implement it.\n\n"
         f"ISSUE:\n{body}\n"
     )
     Path(args.out).write_text(text)

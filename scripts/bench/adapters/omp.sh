@@ -14,7 +14,7 @@ Usage:
 Reads the issue prompt from PROMPT_FILE or $TASK_DIR/.bench_prompt.md.
 Writes a git patch or leaves the repo fixed. stdin is /dev/null.
 
-Non-interactive: omp -p --print --cwd TASK --no-session --model openai-codex/<id>
+Non-interactive: omp -p --print --cwd TASK --no-session --provider openai-codex --model openai-codex/<id>
 Thinking/effort: --thinking (off, minimal, low, medium, high, xhigh, max, auto).
 
 Env:
@@ -70,7 +70,7 @@ help_text=$("$OMP" --help 2>&1 || true)
 
 cd "$TASK_DIR"
 # -p is --print; keep both as documented for non-interactive runs.
-cmd=("$OMP" -p --print --cwd "$TASK_DIR" --no-session --model "$MODEL_SPEC")
+cmd=("$OMP" -p --print --cwd "$TASK_DIR" --no-session --provider "$PROVIDER" --model "$MODEL_SPEC")
 if grep -q -- '--thinking' <<<"$help_text"; then
   cmd+=(--thinking "$EFFORT")
 fi
