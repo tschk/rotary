@@ -198,15 +198,12 @@ checkout_instance() {
   dest=$2
   repo=$(instance_field "$iid" repo)
   commit=$(instance_field "$iid" base_commit)
-  mirror="$CACHE_DIR/repos/$repo"
-  mkdir -p "$(dirname "$mirror")"
-  if [ ! -d "$mirror/.git" ]; then
-    git clone --filter=blob:none "https://github.com/${repo}.git" "$mirror"
-  fi
-  git -C "$mirror" fetch --filter=blob:none origin "$commit"
   rm -rf "$dest"
-  git clone --no-checkout "$mirror" "$dest"
-  git -C "$dest" checkout --force "$commit"
+  mkdir -p "$dest"
+  git -C "$dest" init >/dev/null
+  git -C "$dest" remote add origin "https://github.com/${repo}.git"
+  git -C "$dest" fetch --depth 1 origin "$commit"
+  git -C "$dest" -c advice.detachedHead=false checkout --force FETCH_HEAD
 }
 
 write_prompt() {
@@ -292,7 +289,13 @@ run_thin_cell() {
   log="$OUT/logs/${harness}__${mid}__${iid}.log"
   patch="$OUT/patches/${harness}__${mid}__${iid}.patch"
   t0=$(date +%s)
-  checkout_instance "$iid" "$dest"
+  if ! checkout_instance "$iid" "$dest"; then
+    echo "checkout failed: $iid" >&2
+    t1=$(date +%s)
+    seconds=$((t1 - t0))
+    python3 "$ROOT/lib/cell.py" --cells "$CELLS" --harness "$harness" --model "$mid" --instance "$iid" --seconds "$seconds" --exit 2 --error checkout_failed
+    return 0
+  fi
   write_prompt "$iid" "$dest"
   base=$(git -C "$dest" rev-parse HEAD)
   effort=$(json_get "$mid" "['effort']")
