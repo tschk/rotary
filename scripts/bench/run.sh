@@ -30,6 +30,8 @@ Options:
   --dry-check        print --help for runner + adapters and exit 0
   --out DIR          output directory (default: scripts/bench/out/<date>)
   --jobs-dir DIR     Harbor/Pier jobs dir (default: under --out)
+  --resume           keep existing cells/patches in --out and skip completed
+  --no-resume        truncate cells.jsonl even if --out already has work
   -h, --help         this help
 
 Matrix: every selected model x every selected harness (same model+effort).
@@ -45,6 +47,7 @@ OUT=""
 JOBS_DIR=""
 MODELS=""
 HARNESSES=""
+RESUME=auto
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -59,6 +62,8 @@ while [ $# -gt 0 ]; do
     --dry-check) DRY=1; shift ;;
     --out) OUT=$2; shift 2 ;;
     --jobs-dir) JOBS_DIR=$2; shift 2 ;;
+    --resume) RESUME=1; shift ;;
+    --no-resume) RESUME=0; shift ;;
     *) echo "unknown arg: $1" >&2; usage >&2; exit 2 ;;
   esac
 done
@@ -90,9 +95,22 @@ OUT=${OUT:-"$ROOT/out/$DATE"}
 mkdir -p "$OUT" "$CACHE_DIR"
 JOBS_DIR=${JOBS_DIR:-"$OUT/jobs"}
 CELLS="$OUT/cells.jsonl"
-: > "$CELLS"
 SAMPLE_JSONL="$OUT/sample.jsonl"
 IDS_FILE="$OUT/instance_ids.txt"
+
+if [ "$RESUME" = auto ]; then
+  if [ -s "$CELLS" ] || [ -n "$(ls -A "$OUT/patches" 2>/dev/null)" ]; then
+    RESUME=1
+  else
+    RESUME=0
+  fi
+fi
+if [ "$RESUME" = 1 ]; then
+  echo "resume: keeping $CELLS and existing patches" >&2
+  touch "$CELLS"
+else
+  : > "$CELLS"
+fi
 
 if docker info >/dev/null 2>&1; then
   DOCKER=up
@@ -131,6 +149,9 @@ else
   echo "note: Harbor dataset download skipped or unavailable" >&2
 fi
 
+if [ "$RESUME" = 1 ] && [ -s "$SAMPLE_JSONL" ] && [ -s "$IDS_FILE" ]; then
+  echo "resume: reusing existing sample $SAMPLE_JSONL" >&2
+else
 set +e
 python3 "$ROOT/lib/dataset.py" --cache "$CACHE_DIR/swebench-verified.jsonl" --n "$N" --sample-seed "$SEED" --out "$SAMPLE_JSONL"
 ds_rc=$?
@@ -155,6 +176,7 @@ for line in Path(r'''$SAMPLE_JSONL''').read_text().splitlines():
 Path(r'''$IDS_FILE''').write_text('\n'.join(ids)+'\n')
 print('sampled', len(ids), 'instances', file=__import__('sys').stderr)
 "
+fi
 
 if [ -z "$HARNESSES" ]; then
   HARNESSES=$(python3 -c "import json; print(' '.join(json.load(open(r'''$MODELS_JSON'''))['harnesses']))")
@@ -455,8 +477,59 @@ for mid in $MODEL_IDS; do
       fi
       echo "$DRIVER could not drive $harness; falling back to thin loop" >&2
     fi
+    python3 - "$CELLS" "$OUT" "$harness" "$mid" <<'PY'
+import json, sys
+from pathlib import Path
+cells_path, out, harness, mid = sys.argv[1:]
+prefix = "%s__%s__" % (harness, mid)
+seen = set()
+if Path(cells_path).exists():
+    for line in Path(cells_path).read_text().splitlines():
+        if not line.strip():
+            continue
+        c = json.loads(line)
+        if c.get("harness")==harness and c.get("model")==mid:
+            seen.add(c["instance_id"])
+patches = Path(out) / "patches"
+if patches.is_dir():
+    for patch in sorted(patches.glob(prefix + "*.patch")):
+        iid = patch.name[len(prefix):-len(".patch")]
+        if iid in seen:
+            continue
+        cell = {
+            "harness": harness,
+            "model": mid,
+            "instance_id": iid,
+            "resolved": None,
+            "seconds": 0,
+            "adapter_exit": 0,
+            "patch": str(patch),
+            "driver": "thin",
+            "resumed_from_patch": True,
+        }
+        with Path(cells_path).open("a") as fh:
+            fh.write(json.dumps(cell) + "\n")
+        seen.add(iid)
+        print("resume: recorded existing patch", patch.name, file=sys.stderr)
+PY
     while IFS= read -r iid; do
       [ -n "$iid" ] || continue
+      if python3 -c "
+import json,sys
+from pathlib import Path
+h,m,iid,cells=sys.argv[1:5]
+if Path(cells).exists():
+    for line in Path(cells).read_text().splitlines():
+        if not line.strip():
+            continue
+        c=json.loads(line)
+        if c.get('harness')==h and c.get('model')==m and c.get('instance_id')==iid:
+            raise SystemExit(0)
+raise SystemExit(1)
+" "$harness" "$mid" "$iid" "$CELLS"; then
+        echo "resume skip $harness $mid $iid" >&2
+        continue
+      fi
       echo "-- $harness $mid $iid --" >&2
       run_thin_cell "$harness" "$mid" "$iid"
     done < "$IDS_FILE"

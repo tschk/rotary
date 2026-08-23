@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Cheap structural check for the SWE-bench Verified bench.
+# Cheap structural check for the SWE-bench Verified + DeepSWE benches.
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")" && pwd)
 fail=0
@@ -33,6 +33,14 @@ PY
 echo "ok run.sh --help"
 "$ROOT/run.sh" --dry-check >/dev/null
 echo "ok run.sh --dry-check"
+
+"$ROOT/deepswe/run.sh" --help >/dev/null
+echo "ok deepswe/run.sh --help"
+if [[ -x "$ROOT/deepswe/thin_task.sh" && -f "$ROOT/deepswe/apply_host_patch.py" && -f "$ROOT/deepswe/sample.py" && -f "$ROOT/deepswe/report.py" ]]; then
+  echo "ok deepswe runner files"
+else
+  echo "missing deepswe runner files"; fail=1
+fi
 
 if [[ "$fail" -ne 0 ]]; then
   exit 1

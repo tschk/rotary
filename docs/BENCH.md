@@ -79,3 +79,27 @@ A mid-run adapter add does not attach to an already-started serial job
 `scripts/bench/run.sh --harness fx --n 10 --model gpt-5.6-sol --out scripts/bench/out/2026-08-23-fx`.
 Skip official eval if Docker is busy with that full500 eval. A full 500 fx
 pass waits until the current serial run finishes.
+
+## Resume
+
+`run.sh` keeps `--out` cells and patches when that directory already has work
+(`--resume`, also the default in that case). Use `--no-resume` to truncate
+`cells.jsonl`. Existing `patches/<harness>__<model>__<instance>.patch` files are
+recorded as cells and skipped.
+
+## DeepSWE (faster live score)
+
+DeepSWE is the live pass@1 while Verified 500 is still running.
+
+    scripts/bench/deepswe/run.sh --n 20 --sample-seed 0 --model gpt-5.6-sol \
+      --harness tk --harness codex --harness pi --harness omp --harness fx \
+      --out scripts/bench/out/2026-08-23-deepswe20
+
+Agents run host-side (same adapters as Verified). Pier in-container Codex
+loops on DeepSWE no-network tasks. After each host patch, Pier applies it
+(`apply_host_patch.py`) and runs the official task verifier. `resolved` is
+true only when `verifier/reward.json` has `reward == 1`. No score is invented
+if Docker/Pier is down.
+
+Sample matches Pier: filesystem iterdir order, then Random(seed).shuffle,
+then first n. Seed 0 / n=20 starts with meriyah-explicit-resource-declarations.
