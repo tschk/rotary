@@ -24,7 +24,7 @@ Needs Docker (OrbStack is fine) for Harbor, Pier, and
 
 ## Harnesses
 
-Only these four, same model + effort on each:
+These harnesses, same model + effort on each:
 
 | harness | binary | flags |
 |---|---|---|
@@ -32,8 +32,9 @@ Only these four, same model + effort on each:
 | Pi | `$HOME/.bun/bin/pi` | `--provider openai-codex --model <model> --thinking <effort>` |
 | tk | prefer `~/projects/worktrees/telekinesis-rx4-consume/ui/tui/target/release/tk`, else PATH `tk` | `exec --model <model> --effort <effort>` when that flag exists; otherwise `--effort` is passed through only if `tk exec --help` lists it |
 | OMP | `/opt/homebrew/bin/omp` (v18) or PATH `omp` | `-p --print --cwd TASK --no-session --model <model> --thinking <effort>`; stdin `/dev/null` |
+| fx | prefer `$HOME/.local/bin/fx` (vercel-labs/fx; **not** antonmedv/fx), else PATH `fx` | `fx ask --yolo --no-save`; `--cwd`/`--model`/`--effort` when advertised, else `FX_MODEL`; stdin `/dev/null`. Unauthenticated fail closed. |
 
-Adapters: `scripts/bench/adapters/{codex,pi,tk,omp}.sh`. They take `TASK_DIR` plus
+Adapters: `scripts/bench/adapters/{codex,pi,tk,omp,fx}.sh`. They take `TASK_DIR` plus
 the issue prompt and write a git patch or leave the repo fixed. stdin is
 `/dev/null`.
 
@@ -70,3 +71,11 @@ scripts/bench/check.sh
 ```
 
 Confirms adapters exist, `models.json` parses, and `run.sh --help` works.
+
+## fx n=10 / full 500
+
+A mid-run adapter add does not attach to an already-started serial job
+(`com.rotary.swebench.full500` tk×500). Smoke fx with
+`scripts/bench/run.sh --harness fx --n 10 --model gpt-5.6-sol --out scripts/bench/out/2026-08-23-fx`.
+Skip official eval if Docker is busy with that full500 eval. A full 500 fx
+pass waits until the current serial run finishes.

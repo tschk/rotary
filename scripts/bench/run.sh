@@ -24,7 +24,7 @@ Options:
   --sample-seed S    deterministic sample (default: 0)
   --full             alias for --n 500
   --model ID         only this model id from models.json (repeatable)
-  --harness NAME     only this harness: codex | pi | tk | omp (repeatable)
+  --harness NAME     only this harness: codex | pi | tk | omp | fx (repeatable)
   --driver MODE      auto | harbor | pier | thin  (default: auto)
   --skip-eval        produce patches only; do not run official eval
   --dry-check        print --help for runner + adapters and exit 0
@@ -73,6 +73,8 @@ if [ "$DRY" -eq 1 ]; then
   "$ADAPTERS/tk.sh" --help
   echo
   "$ADAPTERS/omp.sh" --help
+  echo
+  "$ADAPTERS/fx.sh" --help
   exit 0
 fi
 
@@ -159,8 +161,8 @@ if [ -z "$HARNESSES" ]; then
 fi
 for h in $HARNESSES; do
   case "$h" in
-    codex|pi|tk|omp) ;;
-    *) echo "unknown harness: $h (only codex, pi, tk, omp)" >&2; exit 2 ;;
+    codex|pi|tk|omp|fx) ;;
+    *) echo "unknown harness: $h (only codex, pi, tk, omp, fx)" >&2; exit 2 ;;
   esac
 done
 
@@ -339,6 +341,12 @@ run_thin_cell() {
         "$ADAPTERS/omp.sh" "$dest" "$dest/.bench_prompt.md" >"$log" 2>&1
       rc=$?
       ;;
+    fx)
+      model=$(json_get "$mid" "['fx']['model']")
+      BENCH_MODEL="$model" BENCH_EFFORT="$effort" \
+        "$ADAPTERS/fx.sh" "$dest" "$dest/.bench_prompt.md" >"$log" 2>&1
+      rc=$?
+      ;;
   esac
   set -e
   collect_patch "$dest" "$base" "$patch"
@@ -442,7 +450,7 @@ for mid in $MODEL_IDS; do
     fi
     if [ "$DRIVER" = harbor ] || [ "$DRIVER" = pier ]; then
       if [ "$used" != thin ]; then
-        echo "note: $used drove Codex; Harbor/Pier cannot drive pi/tk/omp" >&2
+        echo "note: $used drove Codex; Harbor/Pier cannot drive pi/tk/omp/fx" >&2
         continue
       fi
       echo "$DRIVER could not drive $harness; falling back to thin loop" >&2

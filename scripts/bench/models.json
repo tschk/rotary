@@ -8,11 +8,13 @@
     "codex",
     "pi",
     "tk",
-    "omp"
+    "omp",
+    "fx"
   ],
   "notes": {
     "source": "Detected ~/.codex/config.toml model=gpt-5.6-sol effort=low; second slot gpt-5.6-terra from ~/.codex/models_cache.json (priority 2). Same model+effort on every harness.",
     "tk_effort": "tk exec --effort is passed through when present; current telekinesis-rx4-consume tk exec only documents --model (no --effort yet).",
+    "fx": "fx (vercel-labs/fx) non-interactive: fx ask --yolo --no-save; stdin /dev/null. Model via --model if advertised else FX_MODEL. Effort via --effort/--thinking if advertised. Unauthenticated (no fx login / setup / AI_GATEWAY_API_KEY) fail closed.",
     "omp": "omp v18 non-interactive: -p --print --cwd TASK --no-session --provider openai-codex --model openai-codex/<id> --thinking <effort>; stdin /dev/null. Bare gpt-5.6-sol fuzzy-matches cursor first (no CURSOR_ACCESS_TOKEN)."
   },
   "models": [
@@ -36,6 +38,10 @@
         "model": "gpt-5.6-sol",
         "thinking": "low",
         "provider": "openai-codex"
+      },
+      "fx": {
+        "model": "gpt-5.6-sol",
+        "effort": "low"
       }
     },
     {
@@ -58,6 +64,10 @@
         "model": "gpt-5.6-terra",
         "thinking": "low",
         "provider": "openai-codex"
+      },
+      "fx": {
+        "model": "gpt-5.6-terra",
+        "effort": "low"
       }
     }
   ]
