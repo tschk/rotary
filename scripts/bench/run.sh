@@ -334,7 +334,8 @@ run_thin_cell() {
       ;;
     omp)
       model=$(json_get "$mid" "['omp']['model']")
-      BENCH_MODEL="$model" BENCH_EFFORT="$effort" \
+      prov=$(json_get "$mid" "['omp']['provider']")
+      BENCH_MODEL="$model" BENCH_EFFORT="$effort" BENCH_OMP_PROVIDER="$prov" \
         "$ADAPTERS/omp.sh" "$dest" "$dest/.bench_prompt.md" >"$log" 2>&1
       rc=$?
       ;;

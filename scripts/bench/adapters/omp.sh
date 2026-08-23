@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Drive OMP against a checked-out SWE-bench task directory.
 # Usage: omp.sh TASK_DIR [PROMPT_FILE]
-# Env: BENCH_MODEL, BENCH_EFFORT, OMP_BIN
+# Env: BENCH_MODEL, BENCH_OMP_PROVIDER, BENCH_EFFORT, OMP_BIN
 set -euo pipefail
 
 usage() {
@@ -14,11 +14,14 @@ Usage:
 Reads the issue prompt from PROMPT_FILE or $TASK_DIR/.bench_prompt.md.
 Writes a git patch or leaves the repo fixed. stdin is /dev/null.
 
-Non-interactive: omp -p --print --cwd TASK --no-session --model <id>
+Non-interactive: omp -p --print --cwd TASK --no-session --model openai-codex/<id>
 Thinking/effort: --thinking (off, minimal, low, medium, high, xhigh, max, auto).
 
 Env:
-  BENCH_MODEL           model id (default: gpt-5.6-sol)
+  BENCH_MODEL           model id (default: gpt-5.6-sol). Bare ids are
+                        prefixed with BENCH_OMP_PROVIDER so fuzzy match
+                        does not land on cursor.
+  BENCH_OMP_PROVIDER    OMP provider prefix (default: openai-codex)
   BENCH_EFFORT          thinking level (default: low). Passed as --thinking.
   OMP_BIN               OMP binary (default: /opt/homebrew/bin/omp or PATH)
   BENCH_AGENT_TIMEOUT   seconds (optional)
@@ -38,6 +41,13 @@ TASK_DIR=$(cd "$1" && pwd)
 PROMPT_FILE=${2:-"$TASK_DIR/.bench_prompt.md"}
 MODEL=${BENCH_MODEL:-gpt-5.6-sol}
 EFFORT=${BENCH_EFFORT:-low}
+PROVIDER=${BENCH_OMP_PROVIDER:-openai-codex}
+# Prefer provider/model so "gpt-5.6-sol" does not fuzzy-match cursor first.
+if [[ "$MODEL" == */* ]]; then
+  MODEL_SPEC="$MODEL"
+else
+  MODEL_SPEC="${PROVIDER}/${MODEL}"
+fi
 
 if [[ -n "${OMP_BIN:-}" ]]; then
   OMP="$OMP_BIN"
@@ -60,7 +70,7 @@ help_text=$("$OMP" --help 2>&1 || true)
 
 cd "$TASK_DIR"
 # -p is --print; keep both as documented for non-interactive runs.
-cmd=("$OMP" -p --print --cwd "$TASK_DIR" --no-session --model "$MODEL")
+cmd=("$OMP" -p --print --cwd "$TASK_DIR" --no-session --model "$MODEL_SPEC")
 if grep -q -- '--thinking' <<<"$help_text"; then
   cmd+=(--thinking "$EFFORT")
 fi
