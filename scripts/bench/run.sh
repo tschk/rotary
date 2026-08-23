@@ -24,7 +24,7 @@ Options:
   --sample-seed S    deterministic sample (default: 0)
   --full             alias for --n 500
   --model ID         only this model id from models.json (repeatable)
-  --harness NAME     only this harness: codex | pi | tk (repeatable)
+  --harness NAME     only this harness: codex | pi | tk | omp (repeatable)
   --driver MODE      auto | harbor | pier | thin  (default: auto)
   --skip-eval        produce patches only; do not run official eval
   --dry-check        print --help for runner + adapters and exit 0
@@ -71,6 +71,8 @@ if [ "$DRY" -eq 1 ]; then
   "$ADAPTERS/pi.sh" --help
   echo
   "$ADAPTERS/tk.sh" --help
+  echo
+  "$ADAPTERS/omp.sh" --help
   exit 0
 fi
 
@@ -157,8 +159,8 @@ if [ -z "$HARNESSES" ]; then
 fi
 for h in $HARNESSES; do
   case "$h" in
-    codex|pi|tk) ;;
-    *) echo "unknown harness: $h (only codex, pi, tk)" >&2; exit 2 ;;
+    codex|pi|tk|omp) ;;
+    *) echo "unknown harness: $h (only codex, pi, tk, omp)" >&2; exit 2 ;;
   esac
 done
 
@@ -212,14 +214,22 @@ write_prompt() {
   python3 "$ROOT/lib/prompt.py" --sample "$SAMPLE_JSONL" --instance-id "$iid" --out "$dest/.bench_prompt.md"
 }
 
+# Runner-owned helpers that must never enter model_patch / official eval.
+BENCH_HELPER_FILES=".bench_prompt.md"
+
 collect_patch() {
   dest=$1
   base=$2
   patch_out=$3
+  # Strip files the runner planted (prompt, etc.) before collecting the agent patch.
+  for helper in $BENCH_HELPER_FILES; do
+    rm -f "$dest/$helper"
+    git -C "$dest" rm -f --ignore-unmatch --quiet "$helper" >/dev/null 2>&1 || true
+  done
   git -C "$dest" add -A >/dev/null 2>&1 || true
-  git -C "$dest" diff --binary "$base" > "$patch_out" || true
+  git -C "$dest" diff --binary "$base" -- . ":(exclude).bench_prompt.md" > "$patch_out" || true
   if [ ! -s "$patch_out" ]; then
-    git -C "$dest" diff --binary --cached "$base" > "$patch_out" || true
+    git -C "$dest" diff --binary --cached "$base" -- . ":(exclude).bench_prompt.md" > "$patch_out" || true
   fi
 }
 
@@ -320,6 +330,12 @@ run_thin_cell() {
       model=$(json_get "$mid" "['tk']['model']")
       BENCH_MODEL="$model" BENCH_EFFORT="$effort" \
         "$ADAPTERS/tk.sh" "$dest" "$dest/.bench_prompt.md" >"$log" 2>&1
+      rc=$?
+      ;;
+    omp)
+      model=$(json_get "$mid" "['omp']['model']")
+      BENCH_MODEL="$model" BENCH_EFFORT="$effort" \
+        "$ADAPTERS/omp.sh" "$dest" "$dest/.bench_prompt.md" >"$log" 2>&1
       rc=$?
       ;;
   esac
@@ -425,7 +441,7 @@ for mid in $MODEL_IDS; do
     fi
     if [ "$DRIVER" = harbor ] || [ "$DRIVER" = pier ]; then
       if [ "$used" != thin ]; then
-        echo "note: $used drove Codex; Harbor/Pier cannot drive pi/tk" >&2
+        echo "note: $used drove Codex; Harbor/Pier cannot drive pi/tk/omp" >&2
         continue
       fi
       echo "$DRIVER could not drive $harness; falling back to thin loop" >&2
