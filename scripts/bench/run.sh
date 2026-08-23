@@ -7,6 +7,7 @@ ROOT=$(cd "$(dirname "$0")" && pwd)
 MODELS_JSON="$ROOT/models.json"
 CACHE_DIR="$ROOT/.cache"
 ADAPTERS="$ROOT/adapters"
+export PATH="${HOME}/.local/bin:${PATH}"
 
 usage() {
   cat <<'H'
@@ -101,12 +102,15 @@ ensure_harbor() {
   if command -v harbor >/dev/null 2>&1; then
     return 0
   fi
+  if [ -x "${HOME}/.local/bin/harbor" ]; then
+    return 0
+  fi
   if command -v uv >/dev/null 2>&1; then
     uv tool install harbor || return 1
   else
     return 1
   fi
-  command -v harbor >/dev/null 2>&1
+  command -v harbor >/dev/null 2>&1 || [ -x "${HOME}/.local/bin/harbor" ]
 }
 
 harbor_download() {
