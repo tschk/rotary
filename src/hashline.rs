@@ -5,7 +5,7 @@
 //! MV, and REM. Stale tags, elided lines, unseen lines, and no-ops fail closed.
 
 use sha2::{Digest, Sha256};
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::fmt;
 
 /// How aggressively to parse an edit script.
@@ -84,6 +84,88 @@ impl Default for ReadOptions {
     }
 }
 
+impl ReadOptions {
+    /// Derive `head`/`tail` from `limit` only so they never exceed `max_visible`.
+    ///
+    /// `offset` is not part of this mapping: hashline reads ignore it (plain
+    /// `read` still treats `offset` as a start line).
+    pub fn from_limit(limit: usize) -> Self {
+        let max_visible = limit.max(1);
+        let tail = max_visible / 4;
+        let head = max_visible - tail;
+        debug_assert!(head + tail == max_visible);
+        Self {
+            max_visible: Some(max_visible),
+            head,
+            tail,
+        }
+    }
+}
+
+/// Last hashline-tagged read per path. Missing or mismatched tags fail closed
+/// (nothing is treated as visible).
+#[derive(Debug, Clone, Default)]
+pub struct HashlineSight {
+    by_path: HashMap<String, SightEntry>,
+}
+
+#[derive(Debug, Clone)]
+struct SightEntry {
+    tag: String,
+    visible: VisibleSet,
+}
+
+pub fn normalize_sight_path(path: &str) -> String {
+    let p = path.trim().replace('\\', "/");
+    match p.strip_prefix("./") {
+        Some(rest) => rest.to_string(),
+        None => p,
+    }
+}
+
+impl HashlineSight {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn remember(&mut self, path: &str, tag: impl Into<String>, visible: VisibleSet) {
+        self.by_path.insert(
+            normalize_sight_path(path),
+            SightEntry {
+                tag: tag.into(),
+                visible,
+            },
+        );
+    }
+
+    pub fn forget(&mut self, path: &str) {
+        self.by_path.remove(&normalize_sight_path(path));
+    }
+
+    /// Visible lines from the last hashline read of `path` whose tag matches.
+    /// Empty (fail closed) when there is no prior read or the tag differs.
+    pub fn visible_for(&self, path: &str, tag: &str) -> VisibleSet {
+        self.visible_for_any([path], tag)
+    }
+
+    /// First matching prior read among `paths` whose tag equals `tag`.
+    /// Empty (fail closed) when none match.
+    pub fn visible_for_any(
+        &self,
+        paths: impl IntoIterator<Item = impl AsRef<str>>,
+        tag: &str,
+    ) -> VisibleSet {
+        for path in paths {
+            if let Some(e) = self.by_path.get(&normalize_sight_path(path.as_ref())) {
+                if e.tag == tag {
+                    return e.visible.clone();
+                }
+            }
+        }
+        VisibleSet::from_lines([])
+    }
+}
+
 /// Fail-closed hashline errors.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HashlineError {
@@ -94,6 +176,8 @@ pub enum HashlineError {
     Parse(String),
     Ambiguous(String),
     EmptyScript,
+    /// Line number exceeds the *current* buffer (e.g. PUT after CUT).
+    OutOfRange { line: usize },
 }
 
 impl fmt::Display for HashlineError {
@@ -108,6 +192,7 @@ impl fmt::Display for HashlineError {
             Self::Parse(m) => write!(f, "parse error: {m}"),
             Self::Ambiguous(m) => write!(f, "ambiguous edit: {m}"),
             Self::EmptyScript => write!(f, "empty edit script"),
+            Self::OutOfRange { line } => write!(f, "out of range line {line}"),
         }
     }
 }
@@ -128,10 +213,11 @@ pub fn format_read(path: &str, content: &str, opts: ReadOptions) -> TaggedRead {
     let lines: Vec<&str> = content.lines().collect();
     let n = lines.len();
     let mut out = format!("[{path}#{tag}]\n");
+    let (head, tail) = clamp_head_tail(opts.head, opts.tail, opts.max_visible);
     let (visible, show): (VisibleSet, Vec<usize>) = match opts.max_visible {
-        Some(max) if n > max && opts.head + opts.tail < n => {
-            let head = opts.head.min(n);
-            let tail = opts.tail.min(n.saturating_sub(head));
+        Some(max) if n > max && head + tail < n => {
+            let head = head.min(n);
+            let tail = tail.min(n.saturating_sub(head));
             let tail_start = n - tail + 1;
             let mut vis = BTreeSet::new();
             let mut order = Vec::new();
@@ -210,18 +296,14 @@ pub fn apply(
         return Err(HashlineError::Noop);
     }
     let (mut lines, ended_nl) = split_keep(content);
-    let total = lines.len();
+    // Elision is against the tagged snapshot. Bounds are checked per-op
+    // against the *current* buffer so CUT-then-PUT cannot panic.
     for op in &ops {
         match op {
             Op::Put { start, end, .. } | Op::Cut { start, end } | Op::Mv { start, end, .. } => {
-                check_range(*start, *end, total, visible)?;
+                check_visible(*start, *end, visible)?;
             }
             Op::Rem => {}
-        }
-        if let Op::Mv { dest, .. } = op {
-            if *dest == 0 || *dest > total + 1 {
-                return Err(HashlineError::UnseenLine { line: *dest });
-            }
         }
     }
     for op in ops {
@@ -242,20 +324,35 @@ pub fn apply(
     Ok(next)
 }
 
-fn check_range(
-    start: usize,
-    end: usize,
-    total: usize,
-    visible: &VisibleSet,
-) -> Result<(), HashlineError> {
+fn clamp_head_tail(head: usize, tail: usize, max_visible: Option<usize>) -> (usize, usize) {
+    let Some(max) = max_visible else {
+        return (head, tail);
+    };
+    if head + tail <= max {
+        return (head, tail);
+    }
+    let tail = max / 4;
+    (max - tail, tail)
+}
+
+fn check_visible(start: usize, end: usize, visible: &VisibleSet) -> Result<(), HashlineError> {
     if start == 0 || end == 0 || start > end {
         return Err(HashlineError::Parse(format!("bad range {start}-{end}")));
     }
-    if end > total {
-        return Err(HashlineError::UnseenLine { line: end });
-    }
     if !visible.allows_range(start, end) {
         return Err(HashlineError::ElidedLine { line: start });
+    }
+    Ok(())
+}
+
+fn check_current_range(start: usize, end: usize, len: usize) -> Result<(), HashlineError> {
+    if start == 0 || end == 0 || start > end {
+        return Err(HashlineError::Parse(format!("bad range {start}-{end}")));
+    }
+    if start > len || end > len {
+        return Err(HashlineError::OutOfRange {
+            line: start.max(end),
+        });
     }
     Ok(())
 }
@@ -268,14 +365,20 @@ fn apply_op(lines: &mut Vec<String>, op: Op) -> Result<(), HashlineError> {
             end,
             lines: repl,
         } => {
+            check_current_range(start, end, lines.len())?;
             lines.splice(start - 1..end, repl);
             Ok(())
         }
         Op::Cut { start, end } => {
+            check_current_range(start, end, lines.len())?;
             lines.drain(start - 1..end);
             Ok(())
         }
         Op::Mv { start, end, dest } => {
+            check_current_range(start, end, lines.len())?;
+            if dest == 0 || dest > lines.len() + 1 {
+                return Err(HashlineError::OutOfRange { line: dest });
+            }
             if dest >= start && dest <= end {
                 return Err(HashlineError::Ambiguous(
                     "MV dest inside source range".into(),
@@ -286,7 +389,7 @@ fn apply_op(lines: &mut Vec<String>, op: Op) -> Result<(), HashlineError> {
             lines.drain(start - 1..end);
             let insert_at = if dest > end { dest - 1 - len } else { dest - 1 };
             if insert_at > lines.len() {
-                return Err(HashlineError::UnseenLine { line: dest });
+                return Err(HashlineError::OutOfRange { line: dest });
             }
             for (i, line) in block.into_iter().enumerate() {
                 lines.insert(insert_at + i, line);
@@ -596,7 +699,112 @@ mod tests {
             ModelFamily::Strict,
         )
         .unwrap_err();
-        assert!(matches!(err, HashlineError::UnseenLine { line: 99 }));
+        assert!(matches!(err, HashlineError::OutOfRange { line: 99 }));
+    }
+
+    #[test]
+    fn cut_then_put_out_of_range_does_not_panic() {
+        let c = src();
+        let tag = tag_for(c);
+        // CUT 1-4 empties the file; PUT 3 would panic if ranges were only
+        // checked against the original length.
+        let err = apply(
+            c,
+            &tag,
+            "CUT 1-4\nPUT 3: nope\n",
+            &VisibleSet::all_lines(),
+            ModelFamily::Strict,
+        )
+        .unwrap_err();
+        assert!(matches!(err, HashlineError::OutOfRange { line: 3 }));
+    }
+
+    #[test]
+    fn sequential_cut_then_put_on_remaining_line() {
+        let c = src();
+        let tag = tag_for(c);
+        let out = apply(
+            c,
+            &tag,
+            "CUT 2-3\nPUT 2: DELTA\n",
+            &VisibleSet::all_lines(),
+            ModelFamily::Strict,
+        )
+        .unwrap();
+        assert_eq!(out, "alpha\nDELTA\n");
+    }
+
+    #[test]
+    fn from_limit_head_plus_tail_never_exceeds_max() {
+        for limit in [0, 1, 2, 5, 10, 50, 400] {
+            let opts = ReadOptions::from_limit(limit);
+            let max = opts.max_visible.unwrap();
+            assert_eq!(opts.head + opts.tail, max);
+            assert!(opts.head + opts.tail <= max);
+        }
+    }
+
+    #[test]
+    fn format_read_clamps_head_tail_that_exceed_max() {
+        let long = (1..=20)
+            .map(|i| format!("L{i}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+        let read = format_read(
+            "big.txt",
+            &long,
+            ReadOptions {
+                max_visible: Some(6),
+                head: 100,
+                tail: 80,
+            },
+        );
+        // 6 = head 5 + tail 1 after clamp
+        assert!(read.visible.allows(1));
+        assert!(read.visible.allows(5));
+        assert!(!read.visible.allows(6));
+        assert!(read.visible.allows(20));
+        assert!(!read.visible.allows(10));
+    }
+
+    #[test]
+    fn sight_fail_closed_without_prior_read() {
+        let sight = HashlineSight::new();
+        let vis = sight.visible_for("a.rs", "deadbeef");
+        assert!(!vis.allows(1));
+        let c = src();
+        let tag = tag_for(c);
+        let err = apply(c, &tag, "PUT 1: x\n", &vis, ModelFamily::Strict).unwrap_err();
+        assert!(matches!(err, HashlineError::ElidedLine { line: 1 }));
+    }
+
+    #[test]
+    fn sight_remembers_last_hashline_read() {
+        let long = (1..=20)
+            .map(|i| format!("L{i}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+        let read = format_read(
+            "big.txt",
+            &long,
+            ReadOptions {
+                max_visible: Some(6),
+                head: 2,
+                tail: 2,
+            },
+        );
+        let mut sight = HashlineSight::new();
+        sight.remember("./big.txt", &read.tag, read.visible.clone());
+        let vis = sight.visible_for("big.txt", &read.tag);
+        assert!(vis.allows(1));
+        assert!(!vis.allows(10));
+        let err = apply(&long, &read.tag, "PUT 10: nope\n", &vis, ModelFamily::Strict)
+            .unwrap_err();
+        assert!(matches!(err, HashlineError::ElidedLine { line: 10 }));
+        sight.forget("big.txt");
+        assert!(!sight.visible_for("big.txt", &read.tag).allows(1));
     }
 
     #[test]

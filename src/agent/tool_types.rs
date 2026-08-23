@@ -138,6 +138,8 @@ pub struct ToolContext {
     /// Optional LSP manager for diagnostics / navigation tools.
     #[cfg(feature = "ipc")]
     pub lsp: Option<Arc<crate::lsp::LspManager>>,
+    /// Last hashline read per path. `hashline_edit` fail-closes without a match.
+    pub hashline_sight: Arc<parking_lot::RwLock<crate::hashline::HashlineSight>>,
 }
 
 impl ToolContext {
@@ -156,6 +158,9 @@ impl ToolContext {
             todo_updates: None,
             #[cfg(feature = "ipc")]
             lsp: None,
+            hashline_sight: Arc::new(parking_lot::RwLock::new(
+                crate::hashline::HashlineSight::new(),
+            )),
         }
     }
 

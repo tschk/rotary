@@ -342,6 +342,8 @@ pub struct Agent {
     pub todo_config: Option<TodoConfig>,
     /// Persistable todo state for the current agent session.
     pub todo_state: Arc<RwLock<TodoState>>,
+    /// Hashline visibility from the last tagged read, shared across tool calls.
+    hashline_sight: Arc<RwLock<crate::hashline::HashlineSight>>,
     /// Opt-in command that must pass before a task can complete.
     pub quality_gate: Option<QualityGateConfig>,
     #[cfg(feature = "graph-memory")]
@@ -413,6 +415,7 @@ impl Agent {
             auto_compact_after: 0,
             todo_config: None,
             todo_state: Arc::new(RwLock::new(TodoState::default())),
+            hashline_sight: Arc::new(RwLock::new(crate::hashline::HashlineSight::new())),
             quality_gate: None,
             #[cfg(feature = "graph-memory")]
             semantic_recall: None,
@@ -989,6 +992,7 @@ impl Agent {
         let pending_scope = Arc::new(parking_lot::Mutex::new(None));
         tool_ctx.pending_scope = Some(Arc::clone(&pending_scope));
         tool_ctx.todo_state = Some(Arc::clone(&self.todo_state));
+        tool_ctx.hashline_sight = Arc::clone(&self.hashline_sight);
         tool_ctx.todo_config = self.todo_config.clone();
         tool_ctx.todo_updates = self
             .todo_config
@@ -1756,6 +1760,7 @@ impl Agent {
         let mut tool_ctx = ToolContext::new(self.workspace_root.clone());
         tool_ctx.os_sandbox_required = self.policy.enable_os_sandbox && self.os_sandbox.is_none();
         tool_ctx.cancellation = self.turn_cancellation.reset();
+        tool_ctx.hashline_sight = Arc::clone(&self.hashline_sight);
         #[cfg(feature = "ipc")]
         {
             tool_ctx.lsp = Some(Arc::clone(&self.lsp));

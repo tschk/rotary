@@ -120,8 +120,8 @@ pub fn register_builtin_tools(registry: &mut ToolRegistry) {
     let tools: &[(&str, &str, &str, crate::agent::ToolExecuteFn, ToolEffect)] = &[
         (
             "read",
-            "Read the contents of a file at the given path. Returns content with line numbers.",
-            r#"{"type":"object","properties":{"path":{"type":"string"},"offset":{"type":"integer"},"limit":{"type":"integer"},"hashline":{"type":"boolean"}},"required":["path"]}"#,
+            "Read a file with line numbers. offset is the start line for the plain read; ignored when hashline is true. limit is the max lines (plain) or max visible lines (hashline; head/tail are derived from limit only).",
+            r#"{"type":"object","properties":{"path":{"type":"string"},"offset":{"type":"integer","description":"Start line for the plain numbered read. Ignored when hashline is true."},"limit":{"type":"integer","description":"Max lines for the plain read, or max visible lines for a hashline read."},"hashline":{"type":"boolean","description":"If true, return a tagged hashline read and record visibility for hashline_edit."}},"required":["path"]}"#,
             fs::exec_read,
             ToolEffect::Read,
         ),
@@ -141,7 +141,7 @@ pub fn register_builtin_tools(registry: &mut ToolRegistry) {
         ),
         (
             "hashline_edit",
-            "Apply a hashline PUT/CUT/MV/REM script. Fails closed on stale tag, unseen/elided lines, and no-ops.",
+            "Apply a hashline PUT/CUT/MV/REM script. Requires a prior hashline read of the same path+tag; elided or unseen lines and no-ops fail closed. Sequential ops are checked against the current buffer.",
             r#"{"type":"object","properties":{"path":{"type":"string"},"tag":{"type":"string"},"script":{"type":"string"},"family":{"type":"string"}},"required":["path","tag","script"]}"#,
             fs::exec_hashline_edit,
             ToolEffect::Write,
@@ -606,5 +606,99 @@ mod tests {
             .await
             .unwrap();
         assert!(!cancelled.is_error, "{}", cancelled.content);
+    }
+
+    #[tokio::test]
+    async fn hashline_edit_requires_prior_read() {
+        let tmp = TempDir::new().unwrap();
+        let ctx = Arc::new(ToolContext::new(tmp.path()));
+        fs::exec_write(
+            ctx.clone(),
+            r#"{"path":"a.txt","content":"alpha\nbeta\n"}"#.to_string(),
+        )
+        .await;
+        let tag = crate::hashline::tag_for("alpha\nbeta\n");
+        let args = format!(
+            r#"{{"path":"a.txt","tag":"{tag}","script":"PUT 1: ALPHA\n"}}"#
+        );
+        let edit = fs::exec_hashline_edit(ctx, args).await;
+        assert!(edit.is_error, "{}", edit.content);
+        assert!(
+            edit.content.contains("elided") || edit.content.contains("unseen"),
+            "{}",
+            edit.content
+        );
+    }
+
+    #[tokio::test]
+    async fn hashline_read_then_edit() {
+        let tmp = TempDir::new().unwrap();
+        let ctx = Arc::new(ToolContext::new(tmp.path()));
+        fs::exec_write(
+            ctx.clone(),
+            r#"{"path":"a.txt","content":"alpha\nbeta\n"}"#.to_string(),
+        )
+        .await;
+        let read = fs::exec_read(
+            ctx.clone(),
+            r#"{"path":"a.txt","hashline":true}"#.to_string(),
+        )
+        .await;
+        assert!(!read.is_error, "{}", read.content);
+        assert!(read.content.starts_with("[a.txt#"), "{}", read.content);
+        let tag = read.content.split('#').nth(1).unwrap().split(']').next().unwrap();
+        let args = format!(
+            r#"{{"path":"a.txt","tag":"{tag}","script":"PUT 1: ALPHA\n"}}"#
+        );
+        let edit = fs::exec_hashline_edit(ctx.clone(), args).await;
+        assert!(!edit.is_error, "{}", edit.content);
+        let again = fs::exec_read(ctx, r#"{"path":"a.txt"}"#.to_string()).await;
+        assert!(again.content.contains("ALPHA"), "{}", again.content);
+    }
+
+    #[tokio::test]
+    async fn hashline_elided_edit_fails_closed() {
+        let tmp = TempDir::new().unwrap();
+        let ctx = Arc::new(ToolContext::new(tmp.path()));
+        let content = (1..=20).map(|i| format!("L{i}")).collect::<Vec<_>>().join("\n") + "\n";
+        let write_args = serde_json::json!({"path":"big.txt","content":content}).to_string();
+        fs::exec_write(ctx.clone(), write_args).await;
+        let read = fs::exec_read(
+            ctx.clone(),
+            r#"{"path":"big.txt","hashline":true,"limit":6}"#.to_string(),
+        )
+        .await;
+        assert!(!read.is_error, "{}", read.content);
+        assert!(read.content.contains("elided"), "{}", read.content);
+        let tag = read.content.split('#').nth(1).unwrap().split(']').next().unwrap();
+        let args = format!(
+            r#"{{"path":"big.txt","tag":"{tag}","script":"PUT 10: nope\n"}}"#
+        );
+        let edit = fs::exec_hashline_edit(ctx, args).await;
+        assert!(edit.is_error, "{}", edit.content);
+        assert!(edit.content.contains("elided"), "{}", edit.content);
+    }
+
+    #[tokio::test]
+    async fn hashline_offset_does_not_inflate_head() {
+        let tmp = TempDir::new().unwrap();
+        let ctx = Arc::new(ToolContext::new(tmp.path()));
+        let content = (1..=20).map(|i| format!("L{i}")).collect::<Vec<_>>().join("\n") + "\n";
+        fs::exec_write(
+            ctx.clone(),
+            serde_json::json!({"path":"big.txt","content":content}).to_string(),
+        )
+        .await;
+        let read = fs::exec_read(
+            ctx,
+            r#"{"path":"big.txt","hashline":true,"offset":1000,"limit":6}"#.to_string(),
+        )
+        .await;
+        assert!(!read.is_error, "{}", read.content);
+        // from_limit(6) => head 5 + tail 1. offset must not become head.
+        assert!(read.content.contains("1:L1"), "{}", read.content);
+        assert!(read.content.contains("elided"), "{}", read.content);
+        assert!(!read.content.contains("10:L10"), "{}", read.content);
+        assert!(read.content.contains("20:L20"), "{}", read.content);
     }
 }

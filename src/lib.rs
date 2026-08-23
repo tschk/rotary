@@ -166,8 +166,8 @@ pub use guardrails::{
 };
 pub use hashline::{
     apply as apply_hashline, format_read as format_hashline_read, tag_for as hashline_tag_for,
-    HashlineError, ModelFamily as HashlineModelFamily, ParseMode as HashlineParseMode,
-    ReadOptions as HashlineReadOptions, TaggedRead, VisibleSet,
+    HashlineError, HashlineSight, ModelFamily as HashlineModelFamily,
+    ParseMode as HashlineParseMode, ReadOptions as HashlineReadOptions, TaggedRead, VisibleSet,
 };
 pub use hooks::{HookDecision, HookEvent, HookFn, HookRegistry};
 pub use mode::{Profile, Scope};

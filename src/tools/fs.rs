@@ -13,6 +13,19 @@ use tokio::io::AsyncReadExt;
 #[cfg(feature = "builtin-tools")]
 use tokio::process::Command;
 
+
+fn hashline_display_path(ctx: &ToolContext, full: &std::path::Path, requested: &str) -> String {
+    if let Ok(rel) = full.strip_prefix(&ctx.workspace_root) {
+        return rel.to_string_lossy().trim_start_matches('/').to_string();
+    }
+    if let Ok(root) = ctx.workspace_root.canonicalize() {
+        if let Ok(rel) = full.strip_prefix(root) {
+            return rel.to_string_lossy().trim_start_matches('/').to_string();
+        }
+    }
+    requested.trim_start_matches("./").to_string()
+}
+
 pub(crate) fn exec_read(ctx: Arc<ToolContext>, args: String) -> ToolFuture {
     Box::pin(async move {
         let path = match parse_str_field(&args, "path") {
@@ -33,18 +46,21 @@ pub(crate) fn exec_read(ctx: Arc<ToolContext>, args: String) -> ToolFuture {
         match tokio::fs::read_to_string(&full).await {
             Ok(content) => {
                 if hashline {
-                    let display = full
-                        .strip_prefix(&ctx.workspace_root)
-                        .unwrap_or(full.as_path());
+                    // `offset` is a start-line for the plain numbered read only.
+                    // Hashline elision is derived from `limit` so head+tail cannot
+                    // exceed max_visible.
+                    let _ = offset;
+                    let display = hashline_display_path(&ctx, &full, &path);
                     let tagged = crate::hashline::format_read(
-                        &display.to_string_lossy(),
+                        &display,
                         &content,
-                        crate::hashline::ReadOptions {
-                            max_visible: Some(limit.max(1)),
-                            head: offset.max(1).min(limit),
-                            tail: (limit / 4).max(1),
-                        },
+                        crate::hashline::ReadOptions::from_limit(limit),
                     );
+                    {
+                        let mut sight = ctx.hashline_sight.write();
+                        sight.remember(&display, tagged.tag.clone(), tagged.visible.clone());
+                        sight.remember(&path, tagged.tag.clone(), tagged.visible.clone());
+                    }
                     return ToolResult::ok("read", tagged.text);
                 }
                 let lines: Vec<&str> = content.lines().collect();
@@ -164,15 +180,24 @@ pub(crate) fn exec_hashline_edit(ctx: Arc<ToolContext>, args: String) -> ToolFut
             Ok(c) => c,
             Err(e) => return ToolResult::err("hashline_edit", format!("read failed: {e}")),
         };
-        match crate::hashline::apply(
-            &content,
-            &tag,
-            &script,
-            &crate::hashline::VisibleSet::all_lines(),
-            family,
-        ) {
+        let display = hashline_display_path(&ctx, &full, &path);
+        let visible = ctx
+            .hashline_sight
+            .read()
+            .visible_for_any([&path, &display], &tag);
+        match crate::hashline::apply(&content, &tag, &script, &visible, family) {
             Ok(next) => match tokio::fs::write(&full, &next).await {
-                Ok(_) => ToolResult::ok("hashline_edit", format!("edited {}", path)),
+                Ok(_) => {
+                    ctx.hashline_sight.write().forget(&path);
+                    let display = full
+                        .strip_prefix(&ctx.workspace_root)
+                        .unwrap_or(full.as_path());
+                    let display = display.to_string_lossy();
+                    ctx.hashline_sight
+                        .write()
+                        .forget(display.trim_start_matches('/'));
+                    ToolResult::ok("hashline_edit", format!("edited {}", path))
+                }
                 Err(e) => ToolResult::err("hashline_edit", format!("write failed: {e}")),
             },
             Err(e) => ToolResult::err("hashline_edit", e.to_string()),

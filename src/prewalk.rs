@@ -139,7 +139,64 @@ fn shell_mutates(args: &str) -> bool {
     if cmd.is_empty() {
         return false;
     }
+    // echo/cat with redirects mutate. Pipes and subshells are treated as
+    // mutating because we cannot conservatively prove they are read-only.
+    if crate::permissions::has_unsupported_shell_syntax(cmd) || has_pipe_or_subshell(cmd) {
+        return true;
+    }
     read_only_shell(cmd).map(|ro| !ro).unwrap_or(true)
+}
+
+fn has_pipe_or_subshell(command: &str) -> bool {
+    let bytes = command.as_bytes();
+    let mut i = 0;
+    let mut in_single = false;
+    let mut in_double = false;
+    while i < bytes.len() {
+        let c = bytes[i];
+        if in_single {
+            if c == b'\\' {
+                i += 2;
+                continue;
+            }
+            if c == b'\'' {
+                in_single = false;
+            }
+            i += 1;
+            continue;
+        }
+        if in_double {
+            if c == b'\\' {
+                i += 2;
+                continue;
+            }
+            if c == b'"' {
+                in_double = false;
+            }
+            i += 1;
+            continue;
+        }
+        match c {
+            b'\\' => {
+                i += 2;
+                continue;
+            }
+            b'\'' => {
+                in_single = true;
+                i += 1;
+                continue;
+            }
+            b'"' => {
+                in_double = true;
+                i += 1;
+                continue;
+            }
+            b'|' | b'(' | b')' => return true,
+            _ => {}
+        }
+        i += 1;
+    }
+    false
 }
 
 fn extract_command(args: &str) -> Option<String> {
@@ -217,6 +274,29 @@ mod tests {
         let mut p = Prewalk::new("big", Some("smol".into()));
         assert!(!p.record_tool("bash", Some(r#"{"command":"ls -la"}"#)));
         assert!(p.record_tool("bash", Some(r#"{"command":"rm file"}"#)));
+        assert!(p.is_switched());
+    }
+
+    #[test]
+    fn echo_and_cat_redirects_mutate() {
+        assert!(shell_mutates(r#"{"command":"echo hi > /tmp/x"}"#));
+        assert!(shell_mutates(r#"{"command":"cat < /etc/passwd"}"#));
+        assert!(shell_mutates(r#"{"command":"echo hi >> /tmp/x"}"#));
+        assert!(!shell_mutates(r#"{"command":"echo hello"}"#));
+        assert!(!shell_mutates(r#"{"command":"cat README.md"}"#));
+    }
+
+    #[test]
+    fn pipes_and_subshells_mutate() {
+        assert!(shell_mutates(r#"{"command":"ls | wc"}"#));
+        assert!(shell_mutates(r#"{"command":"(echo hi)"}"#));
+        assert!(shell_mutates(r#"{"command":"echo `whoami`"}"#));
+        assert!(is_mutating_call(
+            "bash",
+            Some(r#"{"command":"echo hi > /tmp/x"}"#)
+        ));
+        let mut p = Prewalk::new("big", Some("smol".into()));
+        assert!(p.record_tool("bash", Some(r#"{"command":"echo hi > /tmp/x"}"#)));
         assert!(p.is_switched());
     }
 }
