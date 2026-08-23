@@ -246,7 +246,7 @@ official_eval() {
   ids=$(tr '\n' ' ' < "$IDS_FILE")
   if python3 -c "import swebench.harness.run_evaluation" 2>/dev/null; then
     python3 -m swebench.harness.run_evaluation \
-      --dataset_name princeton-nlp/SWE-bench_Verified \
+      --dataset_name SWE-bench/SWE-bench_Verified \
       --split test \
       --predictions_path "$preds" \
       --instance_ids $ids \
@@ -254,7 +254,7 @@ official_eval() {
       --run_id "$run_id" || return 1
   elif command -v uv >/dev/null 2>&1; then
     uv run --with swebench python -m swebench.harness.run_evaluation \
-      --dataset_name princeton-nlp/SWE-bench_Verified \
+      --dataset_name SWE-bench/SWE-bench_Verified \
       --split test \
       --predictions_path "$preds" \
       --instance_ids $ids \
