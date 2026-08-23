@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# DeepSWE runner: host-side adapters (tk/codex/pi/omp/fx) + Pier task verifier.
+# DeepSWE runner: host-side adapters (tk/codex/pi/omp/fx/opencode) + Pier task verifier.
 # Bash 3.2 compatible (macOS /bin/bash).
 set -euo pipefail
 
@@ -23,7 +23,7 @@ Options:
   --n N              sample size (default: 20)
   --sample-seed S    Pier-compatible sample (default: 0)
   --model ID         model id from models.json (default: gpt-5.6-sol)
-  --harness NAME     repeatable; default tk codex pi omp fx
+  --harness NAME     repeatable; default tk codex pi omp fx (opencode opt-in)
   --tasks DIR        DeepSWE tasks root (default: /tmp/deep-swe/tasks)
   --out DIR          output directory
   --skip-eval        host patches only; do not run Pier verifier
@@ -63,7 +63,7 @@ if [ -z "$HARNESSES" ]; then
 fi
 for h in $HARNESSES; do
   case "$h" in
-    codex|pi|tk|omp|fx) ;;
+    codex|pi|tk|omp|fx|opencode) ;;
     *) echo "unknown harness: $h" >&2; exit 2 ;;
   esac
 done

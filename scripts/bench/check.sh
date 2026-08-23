@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT=$(cd "$(dirname "$0")" && pwd)
 fail=0
 
-for a in codex pi tk omp fx; do
+for a in codex pi tk omp fx opencode; do
   p="$ROOT/adapters/$a.sh"
   if [[ ! -f "$p" ]]; then
     echo "missing $p"; fail=1
@@ -22,10 +22,15 @@ cfg = json.load(open(sys.argv[1]))
 assert "models" in cfg and len(cfg["models"]) >= 2
 ids = {m["id"] for m in cfg["models"]}
 assert "gpt-5.6-sol" in ids
+assert "deepseek-v4-flash" in ids
 for m in cfg["models"]:
     assert m.get("effort")
-    assert "codex" in m and "pi" in m and "tk" in m and "omp" in m and "fx" in m
+    if m["id"] in ("gpt-5.6-sol", "gpt-5.6-terra"):
+        assert "codex" in m and "pi" in m and "tk" in m and "omp" in m and "fx" in m
+    if m["id"] == "deepseek-v4-flash":
+        assert "opencode" in m and m["opencode"].get("model")
 assert "omp" in cfg.get("harnesses", []) and "fx" in cfg.get("harnesses", [])
+assert "opencode" in cfg.get("harnesses", [])
 print("ok models.json", sorted(ids))
 PY
 

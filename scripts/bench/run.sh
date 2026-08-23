@@ -24,7 +24,7 @@ Options:
   --sample-seed S    deterministic sample (default: 0)
   --full             alias for --n 500
   --model ID         only this model id from models.json (repeatable)
-  --harness NAME     only this harness: codex | pi | tk | omp | fx (repeatable)
+  --harness NAME     only this harness: codex | pi | tk | omp | fx | opencode (repeatable)
   --driver MODE      auto | harbor | pier | thin  (default: auto)
   --skip-eval        produce patches only; do not run official eval
   --dry-check        print --help for runner + adapters and exit 0
@@ -80,6 +80,8 @@ if [ "$DRY" -eq 1 ]; then
   "$ADAPTERS/omp.sh" --help
   echo
   "$ADAPTERS/fx.sh" --help
+  echo
+  "$ADAPTERS/opencode.sh" --help
   exit 0
 fi
 
@@ -183,8 +185,8 @@ if [ -z "$HARNESSES" ]; then
 fi
 for h in $HARNESSES; do
   case "$h" in
-    codex|pi|tk|omp|fx) ;;
-    *) echo "unknown harness: $h (only codex, pi, tk, omp, fx)" >&2; exit 2 ;;
+    codex|pi|tk|omp|fx|opencode) ;;
+    *) echo "unknown harness: $h (only codex, pi, tk, omp, fx, opencode)" >&2; exit 2 ;;
   esac
 done
 
@@ -367,6 +369,12 @@ run_thin_cell() {
       model=$(json_get "$mid" "['fx']['model']")
       BENCH_MODEL="$model" BENCH_EFFORT="$effort" \
         "$ADAPTERS/fx.sh" "$dest" "$dest/.bench_prompt.md" >"$log" 2>&1
+      rc=$?
+      ;;
+    opencode)
+      model=$(json_get "$mid" "['opencode']['model']")
+      BENCH_MODEL="$model" BENCH_EFFORT="$effort" \
+        "$ADAPTERS/opencode.sh" "$dest" "$dest/.bench_prompt.md" >"$log" 2>&1
       rc=$?
       ;;
   esac
