@@ -62,24 +62,28 @@ impl SandboxProfileGenerator {
     }
 
     /// Render the seatbelt profile text for `config`.
+    ///
+    /// macOS 15+/27: a deny-default profile that only allows scoped
+    /// `file-read*` plus `process-exec`/`process-fork` SIGABRTs bash/dyld
+    /// (shell `$?` 134, Rust `ExitStatus::code()` `None` → -1, no output).
+    /// `test_bash_in_macos_sandbox` flakes for the same reason. Reads are
+    /// unrestricted; writes stay workspace/tmp-scoped; secrets stay denied.
     pub fn generate_seatbelt_profile(config: &OsSandboxConfig) -> String {
         let workspace = config.workspace.display().to_string();
         let home = std::env::var("HOME").unwrap_or_else(|_| "/root".to_string());
         let mut lines: Vec<String> = Vec::new();
         lines.push("(version 1)".to_string());
         lines.push("(deny default)".to_string());
-        lines.push("(allow process-exec)".to_string());
-        lines.push("(allow process-fork)".to_string());
-        lines.push(format!("(allow file-read* (subpath \"{workspace}\"))"));
-        lines.push("(allow file-read* (subpath \"/usr\"))".to_string());
-        lines.push("(allow file-read* (subpath \"/bin\"))".to_string());
-        lines.push("(allow file-read* (subpath \"/sbin\"))".to_string());
-        lines.push("(allow file-read* (subpath \"/opt\"))".to_string());
-        lines.push("(allow file-read* (subpath \"/Library\"))".to_string());
-        lines.push("(allow file-read* (subpath \"/System\"))".to_string());
-        lines.push("(allow file-read* (subpath \"/private/var/db/dyld\"))".to_string());
-        lines.push("(allow file-read* (literal \"/dev/null\"))".to_string());
-        lines.push("(allow file-read* (literal \"/dev/urandom\"))".to_string());
+        lines.push("(allow process*)".to_string());
+        lines.push("(allow file-map-executable)".to_string());
+        lines.push("(allow sysctl-read)".to_string());
+        lines.push("(allow mach-lookup)".to_string());
+        lines.push("(allow signal)".to_string());
+        lines.push("(allow ipc-posix*)".to_string());
+        lines.push("(allow file-ioctl)".to_string());
+        // Global read is required for dyld/shared cache/firmlinks. Do not
+        // shrink this back to /usr+/bin+/System — that aborts bash.
+        lines.push("(allow file-read*)".to_string());
         lines.push("(allow file-write* (literal \"/dev/null\"))".to_string());
         lines.push(format!("(allow file-write* (subpath \"{workspace}\"))"));
         if config.allow_tmp {

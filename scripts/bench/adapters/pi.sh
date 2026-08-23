@@ -55,8 +55,14 @@ if [[ ! -f "$PROMPT_FILE" ]]; then
 fi
 
 PROMPT=$(cat "$PROMPT_FILE")
+help_text=$("$PI" --help 2>&1 || true)
 cd "$TASK_DIR"
-cmd=("$PI" --provider "$PROVIDER" --model "$MODEL" --thinking "$EFFORT" --print --approve --no-session "$PROMPT")
+# ask_question is how Pi stops on "Which option?" in --print mode.
+cmd=("$PI" --provider "$PROVIDER" --model "$MODEL" --thinking "$EFFORT" --print --approve --no-session)
+if grep -q -- 'ask_question' <<<"$help_text"; then
+  cmd+=(--exclude-tools ask_question)
+fi
+cmd+=("$PROMPT")
 
 run() {
   "${cmd[@]}" </dev/null

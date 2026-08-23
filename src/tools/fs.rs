@@ -347,6 +347,16 @@ fn format_output(stdout_buf: Vec<u8>, stderr_buf: Vec<u8>, exit_code: i32) -> St
     result
 }
 
+
+#[cfg(feature = "builtin-tools")]
+pub(crate) fn is_sandbox_signal_flake(stdout: &[u8], stderr: &[u8], exit_code: i32) -> bool {
+    // Rust maps signaled children to None → we store -1. sandbox-exec
+    // SIGABRT/SIGKILL also show up as 134/137 when the wrapper exits.
+    stdout.is_empty()
+        && stderr.is_empty()
+        && matches!(exit_code, -1 | 134 | 137)
+}
+
 #[cfg(not(feature = "builtin-tools"))]
 pub(crate) fn exec_bash(_ctx: Arc<ToolContext>, _args: String) -> ToolFuture {
     Box::pin(async move { ToolResult::err("bash", "builtin-tools feature not enabled") })
@@ -381,24 +391,48 @@ pub(crate) fn exec_bash(ctx: Arc<ToolContext>, args: String) -> ToolFuture {
             Err(e) => return ToolResult::err("bash", e),
         };
 
-        let mut cmd = match build_command(&ctx, &command, &working_dir) {
-            Ok(c) => c,
-            Err(e) => return ToolResult::err("bash", e),
-        };
-
-        let child = match cmd.spawn() {
-            Ok(c) => c,
-            Err(e) => return ToolResult::err("bash", format!("failed to execute: {e}")),
-        };
-
         let timeout = Duration::from_secs(timeout_secs);
-        let (stdout_buf, stderr_buf, exit_code) = match wait_and_drain(ctx, child, timeout).await {
-            Ok(res) => res,
-            Err(msg) => return ToolResult::err("bash", msg),
-        };
-
-        let result = format_output(stdout_buf, stderr_buf, exit_code);
-        ToolResult::ok("bash", result)
+        // Seatbelt flake: empty + signal death (-1 / 134 ABRT / 137 KILL).
+        // Retry once; still dead → fail-closed (do not return ok + exit -1).
+        let mut last_flake = None;
+        for attempt in 0..2 {
+            let mut cmd = match build_command(&ctx, &command, &working_dir) {
+                Ok(c) => c,
+                Err(e) => return ToolResult::err("bash", e),
+            };
+            let child = match cmd.spawn() {
+                Ok(c) => c,
+                Err(e) => return ToolResult::err("bash", format!("failed to execute: {e}")),
+            };
+            let (stdout_buf, stderr_buf, exit_code) =
+                match wait_and_drain(ctx.clone(), child, timeout).await {
+                    Ok(res) => res,
+                    Err(msg) => return ToolResult::err("bash", msg),
+                };
+            if ctx.os_sandbox.is_some()
+                && is_sandbox_signal_flake(&stdout_buf, &stderr_buf, exit_code)
+            {
+                last_flake = Some(exit_code);
+                if attempt == 0 {
+                    continue;
+                }
+                return ToolResult::err(
+                    "bash",
+                    format!(
+                        "OS sandbox aborted the process (exit {exit_code}, no output); refuse fail-open"
+                    ),
+                );
+            }
+            let result = format_output(stdout_buf, stderr_buf, exit_code);
+            return ToolResult::ok("bash", result);
+        }
+        ToolResult::err(
+            "bash",
+            format!(
+                "OS sandbox aborted the process (exit {}, no output); refuse fail-open",
+                last_flake.unwrap_or(-1)
+            ),
+        )
     })
 }
 

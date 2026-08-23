@@ -435,6 +435,17 @@ mod tests {
         assert!(result.content.contains(workspace.to_str().unwrap()));
     }
 
+    #[cfg(feature = "builtin-tools")]
+    #[test]
+    fn sandbox_signal_flake_is_empty_abrt_kill_or_minus_one() {
+        assert!(fs::is_sandbox_signal_flake(b"", b"", -1));
+        assert!(fs::is_sandbox_signal_flake(b"", b"", 134));
+        assert!(fs::is_sandbox_signal_flake(b"", b"", 137));
+        assert!(!fs::is_sandbox_signal_flake(b"hi", b"", -1));
+        assert!(!fs::is_sandbox_signal_flake(b"", b"denied", 134));
+        assert!(!fs::is_sandbox_signal_flake(b"", b"", 1));
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn test_bash_large_stdout() {
