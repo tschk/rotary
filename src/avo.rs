@@ -43,12 +43,41 @@ pub fn lineage_p_t(logits: &[f64], temperature: f64) -> Vec<f64> {
     } else {
         temperature
     };
-    let max = logits.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-    let exps: Vec<f64> = logits.iter().map(|z| ((z - max) / t).exp()).collect();
+    let inf_count = logits
+        .iter()
+        .filter(|z| z.is_infinite() && **z > 0.0)
+        .count();
+    if inf_count > 0 {
+        let mass = 1.0 / inf_count as f64;
+        return logits
+            .iter()
+            .map(|z| {
+                if z.is_infinite() && *z > 0.0 {
+                    mass
+                } else {
+                    0.0
+                }
+            })
+            .collect();
+    }
+    let finite: Vec<f64> = logits.iter().copied().filter(|z| z.is_finite()).collect();
+    if finite.is_empty() {
+        return vec![0.0; logits.len()];
+    }
+    let max = finite.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    let exps: Vec<f64> = logits
+        .iter()
+        .map(|z| {
+            if z.is_finite() {
+                ((z - max) / t).exp()
+            } else {
+                0.0
+            }
+        })
+        .collect();
     let sum: f64 = exps.iter().sum();
     if sum == 0.0 || !sum.is_finite() {
-        let n = logits.len() as f64;
-        return vec![1.0 / n; logits.len()];
+        return vec![0.0; logits.len()];
     }
     exps.into_iter().map(|e| e / sum).collect()
 }
@@ -59,6 +88,7 @@ pub enum CommitDecision {
     Accept { previous_best: f64, candidate: f64 },
     RejectNotBetter { best: f64, candidate: f64 },
     RefuseMain { branch: String },
+    RejectNonFinite { best: f64, candidate: f64 },
 }
 
 impl fmt::Display for CommitDecision {
@@ -74,11 +104,15 @@ impl fmt::Display for CommitDecision {
             Self::RefuseMain { branch } => {
                 write!(f, "refuse commit on protected branch {branch}")
             }
+            Self::RejectNonFinite { best, candidate } => {
+                write!(f, "reject non-finite score {candidate} vs {best}")
+            }
         }
     }
 }
 
 pub fn is_protected_branch(branch: &str) -> bool {
+    let branch = branch.strip_prefix("refs/heads/").unwrap_or(branch);
     matches!(branch, "main" | "master")
 }
 
@@ -95,6 +129,12 @@ pub fn commit_if_better(
     }
     let b = best.f();
     let c = candidate.f();
+    if !b.is_finite() || !c.is_finite() {
+        return CommitDecision::RejectNonFinite {
+            best: b,
+            candidate: c,
+        };
+    }
     if c > b {
         CommitDecision::Accept {
             previous_best: b,
@@ -128,15 +168,16 @@ impl StallDetector {
     }
 
     /// Record `f` for a candidate. Returns true when stalled.
+    /// Always agrees with [`Self::is_stalled`] after the update (including
+    /// `patience == 0`).
     pub fn observe(&mut self, f: f64) -> bool {
         if f > self.best + self.epsilon {
             self.best = f;
             self.stale = 0;
-            false
         } else {
             self.stale += 1;
-            self.stale >= self.patience
         }
+        self.is_stalled()
     }
 
     pub fn is_stalled(&self) -> bool {
@@ -195,6 +236,60 @@ mod tests {
         assert!(!s.observe(1.0));
         assert!(!s.observe(1.0));
         assert!(!s.observe(1.0));
+        assert!(s.observe(1.0));
+        assert!(s.is_stalled());
+    }
+
+    fn score(quality: f64) -> LineageScore {
+        LineageScore {
+            id: "x".into(),
+            p_t: 1.0,
+            incorrect: false,
+            quality,
+        }
+    }
+
+    #[test]
+    fn commit_if_better_rejects_non_finite() {
+        let best = score(10.0);
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert!(matches!(
+                commit_if_better("feat/x", &best, &score(bad)),
+                CommitDecision::RejectNonFinite { .. }
+            ));
+            assert!(matches!(
+                commit_if_better("feat/x", &score(bad), &score(11.0)),
+                CommitDecision::RejectNonFinite { .. }
+            ));
+        }
+    }
+
+    #[test]
+    fn plus_inf_lineage_keeps_dominant_mass() {
+        let p = lineage_p_t(&[f64::INFINITY, 0.0], 1.0);
+        assert!((p[0] - 1.0).abs() < 1e-12);
+        assert!(p[1].abs() < 1e-12);
+        let nan_p = lineage_p_t(&[f64::NAN, 1.0], 1.0);
+        assert!(nan_p[0].abs() < 1e-12);
+        assert!((nan_p[1] - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn protects_canonical_main_ref() {
+        let best = score(1.0);
+        let cand = score(2.0);
+        assert!(is_protected_branch("refs/heads/main"));
+        assert!(is_protected_branch("refs/heads/master"));
+        assert!(matches!(
+            commit_if_better("refs/heads/main", &best, &cand),
+            CommitDecision::RefuseMain { .. }
+        ));
+    }
+
+    #[test]
+    fn zero_patience_observe_matches_is_stalled() {
+        let mut s = StallDetector::new(0, 0.01);
+        assert!(s.is_stalled());
         assert!(s.observe(1.0));
         assert!(s.is_stalled());
     }

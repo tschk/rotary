@@ -72,6 +72,8 @@ pub struct ReadOptions {
     pub max_visible: Option<usize>,
     pub head: usize,
     pub tail: usize,
+    /// 0-based start line. Visible output never exceeds `max_visible`.
+    pub offset: usize,
 }
 
 impl Default for ReadOptions {
@@ -80,6 +82,7 @@ impl Default for ReadOptions {
             max_visible: Some(400),
             head: 200,
             tail: 80,
+            offset: 0,
         }
     }
 }
@@ -87,8 +90,7 @@ impl Default for ReadOptions {
 impl ReadOptions {
     /// Derive `head`/`tail` from `limit` only so they never exceed `max_visible`.
     ///
-    /// `offset` is not part of this mapping: hashline reads ignore it (plain
-    /// `read` still treats `offset` as a start line).
+    /// `offset` is applied separately via [`ReadOptions::with_offset`].
     pub fn from_limit(limit: usize) -> Self {
         let max_visible = limit.max(1);
         let tail = max_visible / 4;
@@ -98,7 +100,14 @@ impl ReadOptions {
             max_visible: Some(max_visible),
             head,
             tail,
+            offset: 0,
         }
+    }
+
+    /// Treat `offset` as a 0-based start line without growing `max_visible`.
+    pub fn with_offset(mut self, offset: usize) -> Self {
+        self.offset = offset;
+        self
     }
 }
 
@@ -156,10 +165,12 @@ impl HashlineSight {
         tag: &str,
     ) -> VisibleSet {
         for path in paths {
-            if let Some(e) = self.by_path.get(&normalize_sight_path(path.as_ref())) {
-                if e.tag == tag {
-                    return e.visible.clone();
-                }
+            if let Some(e) = self
+                .by_path
+                .get(&normalize_sight_path(path.as_ref()))
+                .filter(|e| e.tag == tag)
+            {
+                return e.visible.clone();
             }
         }
         VisibleSet::from_lines([])
@@ -169,15 +180,24 @@ impl HashlineSight {
 /// Fail-closed hashline errors.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HashlineError {
-    StaleTag { expected: String, actual: String },
-    UnseenLine { line: usize },
-    ElidedLine { line: usize },
+    StaleTag {
+        expected: String,
+        actual: String,
+    },
+    UnseenLine {
+        line: usize,
+    },
+    ElidedLine {
+        line: usize,
+    },
     Noop,
     Parse(String),
     Ambiguous(String),
     EmptyScript,
     /// Line number exceeds the *current* buffer (e.g. PUT after CUT).
-    OutOfRange { line: usize },
+    OutOfRange {
+        line: usize,
+    },
 }
 
 impl fmt::Display for HashlineError {
@@ -213,15 +233,18 @@ pub fn format_read(path: &str, content: &str, opts: ReadOptions) -> TaggedRead {
     let lines: Vec<&str> = content.lines().collect();
     let n = lines.len();
     let mut out = format!("[{path}#{tag}]\n");
+    let start = opts.offset.min(n);
+    let remaining = n.saturating_sub(start);
     let (head, tail) = clamp_head_tail(opts.head, opts.tail, opts.max_visible);
     let (visible, show): (VisibleSet, Vec<usize>) = match opts.max_visible {
-        Some(max) if n > max && head + tail < n => {
-            let head = head.min(n);
-            let tail = tail.min(n.saturating_sub(head));
+        Some(max) if remaining > max && head + tail < remaining => {
+            let head = head.min(remaining);
+            let tail = tail.min(remaining.saturating_sub(head));
+            let head_end = start + head;
             let tail_start = n - tail + 1;
             let mut vis = BTreeSet::new();
             let mut order = Vec::new();
-            for i in 1..=head {
+            for i in (start + 1)..=head_end {
                 vis.insert(i);
                 order.push(i);
             }
@@ -231,12 +254,16 @@ pub fn format_read(path: &str, content: &str, opts: ReadOptions) -> TaggedRead {
             }
             (VisibleSet::from_lines(vis), order)
         }
-        _ => (VisibleSet::all_lines(), (1..=n).collect()),
+        _ if start == 0 => (VisibleSet::all_lines(), (1..=n).collect()),
+        _ => (
+            VisibleSet::from_lines((start + 1)..=n),
+            ((start + 1)..=n).collect(),
+        ),
     };
 
     let mut last = 0usize;
     for i in &show {
-        if last > 0 && *i > last + 1 {
+        if *i > last + 1 {
             out.push_str(&format!("... [elided {}-{}] ...\n", last + 1, i - 1));
         }
         let text = lines[*i - 1];
@@ -295,13 +322,19 @@ pub fn apply(
     if ops.iter().all(|o| matches!(o, Op::Rem)) {
         return Err(HashlineError::Noop);
     }
-    let (mut lines, ended_nl) = split_keep(content);
+    let (mut lines, ended_nl, eol) = split_keep(content);
     // Elision is against the tagged snapshot. Bounds are checked per-op
     // against the *current* buffer so CUT-then-PUT cannot panic.
     for op in &ops {
         match op {
-            Op::Put { start, end, .. } | Op::Cut { start, end } | Op::Mv { start, end, .. } => {
+            Op::Put { start, end, .. } | Op::Cut { start, end } => {
                 check_visible(*start, *end, visible)?;
+            }
+            Op::Mv { start, end, dest } => {
+                check_visible(*start, *end, visible)?;
+                if !visible.allows(*dest) {
+                    return Err(HashlineError::ElidedLine { line: *dest });
+                }
             }
             Op::Rem => {}
         }
@@ -309,13 +342,11 @@ pub fn apply(
     for op in ops {
         apply_op(&mut lines, op)?;
     }
-    let mut next = lines.join("\n");
-    if ended_nl || content.is_empty() {
-        if !next.ends_with('\n') {
-            next.push('\n');
-        }
+    let mut next = lines.join(eol);
+    if (ended_nl || content.is_empty()) && !next.ends_with('\n') {
+        next.push_str(eol);
     }
-    if content.is_empty() && next == "\n" {
+    if content.is_empty() && (next == "\n" || next == "\r\n") {
         next.clear();
     }
     if next == content {
@@ -399,12 +430,24 @@ fn apply_op(lines: &mut Vec<String>, op: Op) -> Result<(), HashlineError> {
     }
 }
 
-fn split_keep(content: &str) -> (Vec<String>, bool) {
+fn split_keep(content: &str) -> (Vec<String>, bool, &'static str) {
     if content.is_empty() {
-        return (Vec::new(), false);
+        return (Vec::new(), false, "\n");
     }
+    let eol = if content.contains("\r\n") {
+        "\r\n"
+    } else {
+        "\n"
+    };
     let ended = content.ends_with('\n');
-    (content.lines().map(str::to_string).collect(), ended)
+    let mut lines: Vec<String> = content
+        .split('\n')
+        .map(|l| l.trim_end_matches('\r').to_string())
+        .collect();
+    if ended {
+        lines.pop();
+    }
+    (lines, ended, eol)
 }
 
 fn parse_script(script: &str, family: ModelFamily) -> Result<Vec<Op>, HashlineError> {
@@ -514,7 +557,13 @@ fn parse_range(rest: &str, mode: ParseMode) -> Result<(usize, usize), HashlineEr
     if rest.is_empty() {
         return Err(HashlineError::Parse("missing range".into()));
     }
-    let token = rest.split_whitespace().next().unwrap_or("");
+    let mut parts = rest.split_whitespace();
+    let token = parts.next().unwrap_or("");
+    if mode == ParseMode::Strict && parts.next().is_some() {
+        return Err(HashlineError::Parse(format!(
+            "trailing tokens after range: {rest}"
+        )));
+    }
     parse_span(token, mode)
 }
 
@@ -758,6 +807,7 @@ mod tests {
                 max_visible: Some(6),
                 head: 100,
                 tail: 80,
+                offset: 0,
             },
         );
         // 6 = head 5 + tail 1 after clamp
@@ -793,6 +843,7 @@ mod tests {
                 max_visible: Some(6),
                 head: 2,
                 tail: 2,
+                offset: 0,
             },
         );
         let mut sight = HashlineSight::new();
@@ -800,8 +851,14 @@ mod tests {
         let vis = sight.visible_for("big.txt", &read.tag);
         assert!(vis.allows(1));
         assert!(!vis.allows(10));
-        let err = apply(&long, &read.tag, "PUT 10: nope\n", &vis, ModelFamily::Strict)
-            .unwrap_err();
+        let err = apply(
+            &long,
+            &read.tag,
+            "PUT 10: nope\n",
+            &vis,
+            ModelFamily::Strict,
+        )
+        .unwrap_err();
         assert!(matches!(err, HashlineError::ElidedLine { line: 10 }));
         sight.forget("big.txt");
         assert!(!sight.visible_for("big.txt", &read.tag).allows(1));
@@ -821,6 +878,7 @@ mod tests {
                 max_visible: Some(6),
                 head: 2,
                 tail: 2,
+                offset: 0,
             },
         );
         assert!(read.text.contains("[elided 3-18]"));
@@ -919,10 +977,115 @@ mod tests {
                 max_visible: None,
                 head: 0,
                 tail: 0,
+                offset: 0,
             },
         );
         assert!(r.text.starts_with(&format!("[demo.rs#{}]", r.tag)));
         assert!(r.text.contains("1:alpha"));
         assert_eq!(r.tag, tag_for(c));
+    }
+
+    #[test]
+    fn preserve_crlf_on_rewrite() {
+        let c = "alpha\r\nbeta\r\ngamma\r\n";
+        let tag = tag_for(c);
+        let out = apply(
+            c,
+            &tag,
+            "PUT 2: BETA\n",
+            &VisibleSet::all_lines(),
+            ModelFamily::Strict,
+        )
+        .unwrap();
+        assert_eq!(out, "alpha\r\nBETA\r\ngamma\r\n");
+        // Unchanged PUT must still be a no-op (CRLF not rewritten to LF).
+        let err = apply(
+            c,
+            &tag,
+            "PUT 2: beta\n",
+            &VisibleSet::all_lines(),
+            ModelFamily::Strict,
+        )
+        .unwrap_err();
+        assert_eq!(err, HashlineError::Noop);
+    }
+
+    #[test]
+    fn sequential_cut_then_cut_out_of_range() {
+        let c = src();
+        let tag = tag_for(c);
+        let err = apply(
+            c,
+            &tag,
+            "CUT 1\nCUT 4\n",
+            &VisibleSet::all_lines(),
+            ModelFamily::Strict,
+        )
+        .unwrap_err();
+        assert!(matches!(err, HashlineError::OutOfRange { line: 4 }));
+    }
+
+    #[test]
+    fn strict_cut_rejects_trailing_tokens() {
+        let c = src();
+        let tag = tag_for(c);
+        let err = apply(
+            c,
+            &tag,
+            "CUT 2 garbage\n",
+            &VisibleSet::all_lines(),
+            ModelFamily::Strict,
+        )
+        .unwrap_err();
+        assert!(matches!(err, HashlineError::Parse(_)));
+    }
+
+    #[test]
+    fn mv_dest_must_be_visible() {
+        let long = (1..=20)
+            .map(|i| format!("L{i}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+        let read = format_read(
+            "big.txt",
+            &long,
+            ReadOptions {
+                max_visible: Some(6),
+                head: 2,
+                tail: 2,
+                offset: 0,
+            },
+        );
+        let err = apply(
+            &long,
+            &read.tag,
+            "MV 1 10\n",
+            &read.visible,
+            ModelFamily::Strict,
+        )
+        .unwrap_err();
+        assert!(matches!(err, HashlineError::ElidedLine { line: 10 }));
+    }
+
+    #[test]
+    fn format_read_honors_offset_within_max_visible() {
+        let long = (1..=50)
+            .map(|i| format!("L{i}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+        let read = format_read(
+            "big.txt",
+            &long,
+            ReadOptions::from_limit(10).with_offset(20),
+        );
+        let vis = &read.visible;
+        assert!(!vis.allows(1));
+        assert!(vis.allows(21));
+        assert!(read.text.contains("21:L21"));
+        assert!(!read.text.contains("1:L1\n") || !vis.allows(1));
+        let shown = (1..=50).filter(|i| vis.allows(*i)).count();
+        assert!(shown <= 10);
     }
 }

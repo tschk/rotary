@@ -13,7 +13,6 @@ use tokio::io::AsyncReadExt;
 #[cfg(feature = "builtin-tools")]
 use tokio::process::Command;
 
-
 fn hashline_display_path(ctx: &ToolContext, full: &std::path::Path, requested: &str) -> String {
     if let Ok(rel) = full.strip_prefix(&ctx.workspace_root) {
         return rel.to_string_lossy().trim_start_matches('/').to_string();
@@ -46,15 +45,13 @@ pub(crate) fn exec_read(ctx: Arc<ToolContext>, args: String) -> ToolFuture {
         match tokio::fs::read_to_string(&full).await {
             Ok(content) => {
                 if hashline {
-                    // `offset` is a start-line for the plain numbered read only.
-                    // Hashline elision is derived from `limit` so head+tail cannot
-                    // exceed max_visible.
-                    let _ = offset;
+                    // Honor `offset` as a 0-based start line; `limit` still
+                    // caps visible lines (head+tail never exceed max_visible).
                     let display = hashline_display_path(&ctx, &full, &path);
                     let tagged = crate::hashline::format_read(
                         &display,
                         &content,
-                        crate::hashline::ReadOptions::from_limit(limit),
+                        crate::hashline::ReadOptions::from_limit(limit).with_offset(offset),
                     );
                     {
                         let mut sight = ctx.hashline_sight.write();

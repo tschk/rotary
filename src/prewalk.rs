@@ -123,6 +123,10 @@ impl Prewalk {
 
 /// Write tools, hashline apply, and shells that mutate.
 pub fn is_mutating_call(name: &str, args: Option<&str>) -> bool {
+    // Session-scoped planning metadata is not a workspace write.
+    if name == "todo" {
+        return false;
+    }
     if name == "hashline_edit" || is_write_tool(name) {
         return true;
     }
@@ -139,12 +143,19 @@ fn shell_mutates(args: &str) -> bool {
     if cmd.is_empty() {
         return false;
     }
-    // echo/cat with redirects mutate. Pipes and subshells are treated as
-    // mutating because we cannot conservatively prove they are read-only.
+    // Mutation markers (redirects, find -delete, pipes) beat the RO whitelist.
     if crate::permissions::has_unsupported_shell_syntax(cmd) || has_pipe_or_subshell(cmd) {
         return true;
     }
+    if has_mutating_flags(cmd) {
+        return true;
+    }
     read_only_shell(cmd).map(|ro| !ro).unwrap_or(true)
+}
+
+fn has_mutating_flags(cmd: &str) -> bool {
+    cmd.split_whitespace()
+        .any(|tok| matches!(tok, "-delete" | "-exec" | "-execdir" | "-ok" | "-okdir"))
 }
 
 fn has_pipe_or_subshell(command: &str) -> bool {
@@ -298,5 +309,23 @@ mod tests {
         let mut p = Prewalk::new("big", Some("smol".into()));
         assert!(p.record_tool("bash", Some(r#"{"command":"echo hi > /tmp/x"}"#)));
         assert!(p.is_switched());
+    }
+
+    #[test]
+    fn find_delete_mutates_before_ro_whitelist() {
+        assert!(shell_mutates(r#"{"command":"find . -name '*.o' -delete"}"#));
+        let mut p = Prewalk::new("big", Some("smol".into()));
+        assert!(p.record_tool("bash", Some(r#"{"command":"find . -delete"}"#)));
+        assert!(p.is_switched());
+    }
+
+    #[test]
+    fn todo_does_not_flip_prewalk() {
+        let mut p = Prewalk::new("big", Some("smol".into()));
+        assert!(!is_mutating_call("todo", Some(r#"{"action":"list"}"#)));
+        assert!(!p.record_tool("todo", Some(r#"{"action":"list"}"#)));
+        assert!(!p.record_tool("todo", Some(r#"{"action":"add"}"#)));
+        assert!(!p.is_switched());
+        assert_eq!(p.current_model(), "big");
     }
 }

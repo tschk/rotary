@@ -618,9 +618,7 @@ mod tests {
         )
         .await;
         let tag = crate::hashline::tag_for("alpha\nbeta\n");
-        let args = format!(
-            r#"{{"path":"a.txt","tag":"{tag}","script":"PUT 1: ALPHA\n"}}"#
-        );
+        let args = format!(r#"{{"path":"a.txt","tag":"{tag}","script":"PUT 1: ALPHA\n"}}"#);
         let edit = fs::exec_hashline_edit(ctx, args).await;
         assert!(edit.is_error, "{}", edit.content);
         assert!(
@@ -646,10 +644,15 @@ mod tests {
         .await;
         assert!(!read.is_error, "{}", read.content);
         assert!(read.content.starts_with("[a.txt#"), "{}", read.content);
-        let tag = read.content.split('#').nth(1).unwrap().split(']').next().unwrap();
-        let args = format!(
-            r#"{{"path":"a.txt","tag":"{tag}","script":"PUT 1: ALPHA\n"}}"#
-        );
+        let tag = read
+            .content
+            .split('#')
+            .nth(1)
+            .unwrap()
+            .split(']')
+            .next()
+            .unwrap();
+        let args = format!(r#"{{"path":"a.txt","tag":"{tag}","script":"PUT 1: ALPHA\n"}}"#);
         let edit = fs::exec_hashline_edit(ctx.clone(), args).await;
         assert!(!edit.is_error, "{}", edit.content);
         let again = fs::exec_read(ctx, r#"{"path":"a.txt"}"#.to_string()).await;
@@ -660,7 +663,11 @@ mod tests {
     async fn hashline_elided_edit_fails_closed() {
         let tmp = TempDir::new().unwrap();
         let ctx = Arc::new(ToolContext::new(tmp.path()));
-        let content = (1..=20).map(|i| format!("L{i}")).collect::<Vec<_>>().join("\n") + "\n";
+        let content = (1..=20)
+            .map(|i| format!("L{i}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
         let write_args = serde_json::json!({"path":"big.txt","content":content}).to_string();
         fs::exec_write(ctx.clone(), write_args).await;
         let read = fs::exec_read(
@@ -670,10 +677,15 @@ mod tests {
         .await;
         assert!(!read.is_error, "{}", read.content);
         assert!(read.content.contains("elided"), "{}", read.content);
-        let tag = read.content.split('#').nth(1).unwrap().split(']').next().unwrap();
-        let args = format!(
-            r#"{{"path":"big.txt","tag":"{tag}","script":"PUT 10: nope\n"}}"#
-        );
+        let tag = read
+            .content
+            .split('#')
+            .nth(1)
+            .unwrap()
+            .split(']')
+            .next()
+            .unwrap();
+        let args = format!(r#"{{"path":"big.txt","tag":"{tag}","script":"PUT 10: nope\n"}}"#);
         let edit = fs::exec_hashline_edit(ctx, args).await;
         assert!(edit.is_error, "{}", edit.content);
         assert!(edit.content.contains("elided"), "{}", edit.content);
@@ -683,7 +695,11 @@ mod tests {
     async fn hashline_offset_does_not_inflate_head() {
         let tmp = TempDir::new().unwrap();
         let ctx = Arc::new(ToolContext::new(tmp.path()));
-        let content = (1..=20).map(|i| format!("L{i}")).collect::<Vec<_>>().join("\n") + "\n";
+        let content = (1..=20)
+            .map(|i| format!("L{i}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
         fs::exec_write(
             ctx.clone(),
             serde_json::json!({"path":"big.txt","content":content}).to_string(),
@@ -691,14 +707,15 @@ mod tests {
         .await;
         let read = fs::exec_read(
             ctx,
-            r#"{"path":"big.txt","hashline":true,"offset":1000,"limit":6}"#.to_string(),
+            r#"{"path":"big.txt","hashline":true,"offset":10,"limit":6}"#.to_string(),
         )
         .await;
         assert!(!read.is_error, "{}", read.content);
-        // from_limit(6) => head 5 + tail 1. offset must not become head.
-        assert!(read.content.contains("1:L1"), "{}", read.content);
+        // offset 10 + from_limit(6) => lines after 10, at most 6 visible.
+        assert!(!read.content.contains("1:L1\n"), "{}", read.content);
+        assert!(read.content.contains("11:L11"), "{}", read.content);
         assert!(read.content.contains("elided"), "{}", read.content);
-        assert!(!read.content.contains("10:L10"), "{}", read.content);
+        assert!(!read.content.contains("16:L16"), "{}", read.content);
         assert!(read.content.contains("20:L20"), "{}", read.content);
     }
 }
