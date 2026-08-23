@@ -121,7 +121,7 @@ pub fn register_builtin_tools(registry: &mut ToolRegistry) {
         (
             "read",
             "Read the contents of a file at the given path. Returns content with line numbers.",
-            r#"{"type":"object","properties":{"path":{"type":"string"},"offset":{"type":"integer"},"limit":{"type":"integer"}},"required":["path"]}"#,
+            r#"{"type":"object","properties":{"path":{"type":"string"},"offset":{"type":"integer"},"limit":{"type":"integer"},"hashline":{"type":"boolean"}},"required":["path"]}"#,
             fs::exec_read,
             ToolEffect::Read,
         ),
@@ -137,6 +137,13 @@ pub fn register_builtin_tools(registry: &mut ToolRegistry) {
             "Perform a string replacement in a file. old_string must be unique.",
             r#"{"type":"object","properties":{"path":{"type":"string"},"old_string":{"type":"string"},"new_string":{"type":"string"}},"required":["path","old_string","new_string"]}"#,
             fs::exec_edit,
+            ToolEffect::Write,
+        ),
+        (
+            "hashline_edit",
+            "Apply a hashline PUT/CUT/MV/REM script. Fails closed on stale tag, unseen/elided lines, and no-ops.",
+            r#"{"type":"object","properties":{"path":{"type":"string"},"tag":{"type":"string"},"script":{"type":"string"},"family":{"type":"string"}},"required":["path","tag","script"]}"#,
+            fs::exec_hashline_edit,
             ToolEffect::Write,
         ),
         (
@@ -308,6 +315,7 @@ mod tests {
             "read",
             "write",
             "edit",
+            "hashline_edit",
             "bash",
             "grep",
             "find",

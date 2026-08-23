@@ -21,6 +21,10 @@ pub(crate) fn exec_read(ctx: Arc<ToolContext>, args: String) -> ToolFuture {
         };
         let offset = parse_num_field(&args, "offset").unwrap_or(0) as usize;
         let limit = parse_num_field(&args, "limit").unwrap_or(2000) as usize;
+        let hashline = serde_json::from_str::<serde_json::Value>(&args)
+            .ok()
+            .and_then(|v| v.get("hashline").and_then(|x| x.as_bool()))
+            .unwrap_or(false);
 
         let full = match resolve_path(&ctx, &path, false) {
             Ok(p) => p,
@@ -28,6 +32,21 @@ pub(crate) fn exec_read(ctx: Arc<ToolContext>, args: String) -> ToolFuture {
         };
         match tokio::fs::read_to_string(&full).await {
             Ok(content) => {
+                if hashline {
+                    let display = full
+                        .strip_prefix(&ctx.workspace_root)
+                        .unwrap_or(full.as_path());
+                    let tagged = crate::hashline::format_read(
+                        &display.to_string_lossy(),
+                        &content,
+                        crate::hashline::ReadOptions {
+                            max_visible: Some(limit.max(1)),
+                            head: offset.max(1).min(limit),
+                            tail: (limit / 4).max(1),
+                        },
+                    );
+                    return ToolResult::ok("read", tagged.text);
+                }
                 let lines: Vec<&str> = content.lines().collect();
                 let start = offset.min(lines.len());
                 let end = (start + limit).min(lines.len());
@@ -115,6 +134,48 @@ pub(crate) fn exec_edit(ctx: Arc<ToolContext>, args: String) -> ToolFuture {
         match tokio::fs::write(&full, &new_content).await {
             Ok(_) => ToolResult::ok("edit", format!("edited {}", path)),
             Err(e) => ToolResult::err("edit", format!("write failed: {e}")),
+        }
+    })
+}
+
+pub(crate) fn exec_hashline_edit(ctx: Arc<ToolContext>, args: String) -> ToolFuture {
+    Box::pin(async move {
+        let path = match parse_str_field(&args, "path") {
+            Some(p) => p,
+            None => return ToolResult::err("hashline_edit", "path required"),
+        };
+        let tag = match parse_str_field(&args, "tag") {
+            Some(t) => t,
+            None => return ToolResult::err("hashline_edit", "tag required"),
+        };
+        let script = match parse_str_field(&args, "script") {
+            Some(s) => s,
+            None => return ToolResult::err("hashline_edit", "script required"),
+        };
+        let family = match parse_str_field(&args, "family").as_deref() {
+            Some("sloppy") => crate::hashline::ModelFamily::Sloppy,
+            _ => crate::hashline::ModelFamily::Strict,
+        };
+        let full = match resolve_path(&ctx, &path, true) {
+            Ok(p) => p,
+            Err(e) => return ToolResult::err("hashline_edit", e),
+        };
+        let content = match tokio::fs::read_to_string(&full).await {
+            Ok(c) => c,
+            Err(e) => return ToolResult::err("hashline_edit", format!("read failed: {e}")),
+        };
+        match crate::hashline::apply(
+            &content,
+            &tag,
+            &script,
+            &crate::hashline::VisibleSet::all_lines(),
+            family,
+        ) {
+            Ok(next) => match tokio::fs::write(&full, &next).await {
+                Ok(_) => ToolResult::ok("hashline_edit", format!("edited {}", path)),
+                Err(e) => ToolResult::err("hashline_edit", format!("write failed: {e}")),
+            },
+            Err(e) => ToolResult::err("hashline_edit", e.to_string()),
         }
     })
 }
