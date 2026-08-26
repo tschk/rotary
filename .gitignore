@@ -10,3 +10,5 @@ vendor/rs_peekaboo/target/
 
 target/
 references/
+scripts/bench/out/
+scripts/bench/.cache/

@@ -24,6 +24,7 @@ flowchart LR
 - [Boundary ADR](https://github.com/semitechnological/telekinesis/blob/main/docs/ADR-001-rotary-engine-telekinesis-host.md) — rotary engine and telekinesis host ownership.
 - [Comparison](COMPARISON.md) — scope relative to other harnesses.
 - [Roadmap](ROADMAP.md) — completed capabilities and near-term work.
+- [Accuracy bench](BENCH.md) — SWE-bench Verified resolve rate (Codex / Pi / tk).
 
 ## Command contract
 

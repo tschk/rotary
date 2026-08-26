@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# Cheap structural check for the SWE-bench Verified + DeepSWE benches.
+set -euo pipefail
+ROOT=$(cd "$(dirname "$0")" && pwd)
+fail=0
+
+for a in codex pi tk omp fx opencode; do
+  p="$ROOT/adapters/$a.sh"
+  if [[ ! -f "$p" ]]; then
+    echo "missing $p"; fail=1
+  elif [[ ! -x "$p" ]]; then
+    echo "not executable $p"; fail=1
+  else
+    "$p" --help >/dev/null
+    echo "ok adapter $a --help"
+  fi
+done
+
+python3 - "$ROOT/models.json" <<'PY'
+import json, sys
+cfg = json.load(open(sys.argv[1]))
+assert "models" in cfg and len(cfg["models"]) >= 2
+ids = {m["id"] for m in cfg["models"]}
+assert "gpt-5.6-sol" in ids
+assert "deepseek-v4-flash" in ids
+for m in cfg["models"]:
+    assert m.get("effort")
+    if m["id"] in ("gpt-5.6-sol", "gpt-5.6-terra"):
+        assert "codex" in m and "pi" in m and "tk" in m and "omp" in m and "fx" in m
+    if m["id"] == "deepseek-v4-flash":
+        assert "opencode" in m and m["opencode"].get("model")
+assert "omp" in cfg.get("harnesses", []) and "fx" in cfg.get("harnesses", [])
+assert "opencode" in cfg.get("harnesses", [])
+print("ok models.json", sorted(ids))
+PY
+
+"$ROOT/run.sh" --help >/dev/null
+echo "ok run.sh --help"
+"$ROOT/run.sh" --dry-check >/dev/null
+echo "ok run.sh --dry-check"
+
+"$ROOT/deepswe/run.sh" --help >/dev/null
+echo "ok deepswe/run.sh --help"
+if [[ -x "$ROOT/deepswe/thin_task.sh" && -f "$ROOT/deepswe/apply_host_patch.py" && -f "$ROOT/deepswe/sample.py" && -f "$ROOT/deepswe/report.py" ]]; then
+  echo "ok deepswe runner files"
+else
+  echo "missing deepswe runner files"; fail=1
+fi
+
+if [[ "$fail" -ne 0 ]]; then
+  exit 1
+fi
+echo "bench check passed"

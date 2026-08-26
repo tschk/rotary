@@ -26,6 +26,7 @@ pub mod agent;
 pub mod autoresearch;
 #[cfg(feature = "autoresearch")]
 pub mod autoresearch_controller;
+pub mod avo;
 #[cfg(feature = "skills")]
 pub mod background_review;
 pub mod compaction;
@@ -41,6 +42,7 @@ pub mod extract;
 #[cfg(feature = "graph-memory")]
 pub mod graph_memory;
 pub mod guardrails;
+pub mod hashline;
 pub mod hooks;
 pub mod mode;
 #[cfg(feature = "routing")]
@@ -52,6 +54,7 @@ pub mod permissions;
 pub mod personality;
 #[cfg(feature = "marketplace")]
 pub mod plugin;
+pub mod prewalk;
 pub mod prompt_cache;
 pub mod provider;
 #[cfg(feature = "extract")]
@@ -126,6 +129,10 @@ pub use autoresearch_controller::{
     AutoresearchIteration, AutoresearchSubscriber, BaselineResult, BudgetKind, CompletionReason,
     ExperimentHypothesis, ExperimentWorkspace, FinalPatch, HypothesisOutcome, IterationStatus,
 };
+pub use avo::{
+    commit_if_better, is_protected_branch, lineage_p_t, objective_f, CommitDecision, LineageScore,
+    StallDetector,
+};
 #[cfg(feature = "skills")]
 pub use background_review::{
     BackgroundReviewConfig, BackgroundReviewer, ReviewResult, ReviewSignal,
@@ -157,6 +164,11 @@ pub use graph_memory::{
 pub use guardrails::{
     classify_tool, GuardrailConfig, GuardrailDecision, SelfHealingRetry, ToolClass, ToolGuardrails,
 };
+pub use hashline::{
+    apply as apply_hashline, format_read as format_hashline_read, tag_for as hashline_tag_for,
+    HashlineError, HashlineSight, ModelFamily as HashlineModelFamily,
+    ParseMode as HashlineParseMode, ReadOptions as HashlineReadOptions, TaggedRead, VisibleSet,
+};
 pub use hooks::{HookDecision, HookEvent, HookFn, HookRegistry};
 pub use mode::{Profile, Scope};
 #[cfg(feature = "routing")]
@@ -180,6 +192,7 @@ pub use permissions::{
     ChannelPlanApprover, Decision, PermissionMode, PlanApprover, PlanDecision, PlanProposal,
     Policy, PolicyAuthorizer, ShellNode, ShellSimple,
 };
+pub use prewalk::{is_mutating_call, Prewalk};
 pub use prompt_cache::{
     apply_cache_control, CachePoint, CachePosition, CacheProvider, CacheStats, CacheStatsTracker,
     CacheTtl, PromptCacheConfig,

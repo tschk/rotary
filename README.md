@@ -41,6 +41,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ## Docs
 
+### Hashline, prewalk, AVO
+
+The engine owns the tagged edit protocol (`rx4::hashline`), the one-way
+investigate→smol switch (`rx4::prewalk`, `RX4_SMOL_MODEL`), and AVO helpers
+(`rx4::avo`: `P_t`, two-part `f`, commit-if-better, stall). Hosts enable them;
+they should not fork the protocol. See `docs/HARNESS.md`.
+
+### Opt-in autoresearch
+
 - [Documentation index](docs/README.md)
 - [Hosting guide](docs/HOSTS.md)
 - **[telekinesis](https://github.com/tschk/telekinesis)** — CLI/TUI product host

@@ -352,7 +352,10 @@ mod tests {
         assert!(profile.contains(".ssh"));
         assert!(profile.contains(".aws"));
         assert!(profile.contains(".config/gcloud"));
-        assert!(!profile.contains("(allow file-read*)\n"));
+        // Global file-read* is required so bash/dyld does not SIGABRT.
+        assert!(profile.contains("(allow file-read*)\n"));
+        assert!(profile.contains("(allow process*)"));
+        assert!(profile.contains("(allow file-map-executable)"));
     }
 
     #[test]

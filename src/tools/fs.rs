@@ -13,6 +13,18 @@ use tokio::io::AsyncReadExt;
 #[cfg(feature = "builtin-tools")]
 use tokio::process::Command;
 
+fn hashline_display_path(ctx: &ToolContext, full: &std::path::Path, requested: &str) -> String {
+    if let Ok(rel) = full.strip_prefix(&ctx.workspace_root) {
+        return rel.to_string_lossy().trim_start_matches('/').to_string();
+    }
+    if let Ok(root) = ctx.workspace_root.canonicalize() {
+        if let Ok(rel) = full.strip_prefix(root) {
+            return rel.to_string_lossy().trim_start_matches('/').to_string();
+        }
+    }
+    requested.trim_start_matches("./").to_string()
+}
+
 pub(crate) fn exec_read(ctx: Arc<ToolContext>, args: String) -> ToolFuture {
     Box::pin(async move {
         let path = match parse_str_field(&args, "path") {
@@ -21,6 +33,10 @@ pub(crate) fn exec_read(ctx: Arc<ToolContext>, args: String) -> ToolFuture {
         };
         let offset = parse_num_field(&args, "offset").unwrap_or(0) as usize;
         let limit = parse_num_field(&args, "limit").unwrap_or(2000) as usize;
+        let hashline = serde_json::from_str::<serde_json::Value>(&args)
+            .ok()
+            .and_then(|v| v.get("hashline").and_then(|x| x.as_bool()))
+            .unwrap_or(false);
 
         let full = match resolve_path(&ctx, &path, false) {
             Ok(p) => p,
@@ -28,6 +44,22 @@ pub(crate) fn exec_read(ctx: Arc<ToolContext>, args: String) -> ToolFuture {
         };
         match tokio::fs::read_to_string(&full).await {
             Ok(content) => {
+                if hashline {
+                    // Honor `offset` as a 0-based start line; `limit` still
+                    // caps visible lines (head+tail never exceed max_visible).
+                    let display = hashline_display_path(&ctx, &full, &path);
+                    let tagged = crate::hashline::format_read(
+                        &display,
+                        &content,
+                        crate::hashline::ReadOptions::from_limit(limit).with_offset(offset),
+                    );
+                    {
+                        let mut sight = ctx.hashline_sight.write();
+                        sight.remember(&display, tagged.tag.clone(), tagged.visible.clone());
+                        sight.remember(&path, tagged.tag.clone(), tagged.visible.clone());
+                    }
+                    return ToolResult::ok("read", tagged.text);
+                }
                 let lines: Vec<&str> = content.lines().collect();
                 let start = offset.min(lines.len());
                 let end = (start + limit).min(lines.len());
@@ -115,6 +147,57 @@ pub(crate) fn exec_edit(ctx: Arc<ToolContext>, args: String) -> ToolFuture {
         match tokio::fs::write(&full, &new_content).await {
             Ok(_) => ToolResult::ok("edit", format!("edited {}", path)),
             Err(e) => ToolResult::err("edit", format!("write failed: {e}")),
+        }
+    })
+}
+
+pub(crate) fn exec_hashline_edit(ctx: Arc<ToolContext>, args: String) -> ToolFuture {
+    Box::pin(async move {
+        let path = match parse_str_field(&args, "path") {
+            Some(p) => p,
+            None => return ToolResult::err("hashline_edit", "path required"),
+        };
+        let tag = match parse_str_field(&args, "tag") {
+            Some(t) => t,
+            None => return ToolResult::err("hashline_edit", "tag required"),
+        };
+        let script = match parse_str_field(&args, "script") {
+            Some(s) => s,
+            None => return ToolResult::err("hashline_edit", "script required"),
+        };
+        let family = match parse_str_field(&args, "family").as_deref() {
+            Some("sloppy") => crate::hashline::ModelFamily::Sloppy,
+            _ => crate::hashline::ModelFamily::Strict,
+        };
+        let full = match resolve_path(&ctx, &path, true) {
+            Ok(p) => p,
+            Err(e) => return ToolResult::err("hashline_edit", e),
+        };
+        let content = match tokio::fs::read_to_string(&full).await {
+            Ok(c) => c,
+            Err(e) => return ToolResult::err("hashline_edit", format!("read failed: {e}")),
+        };
+        let display = hashline_display_path(&ctx, &full, &path);
+        let visible = ctx
+            .hashline_sight
+            .read()
+            .visible_for_any([&path, &display], &tag);
+        match crate::hashline::apply(&content, &tag, &script, &visible, family) {
+            Ok(next) => match tokio::fs::write(&full, &next).await {
+                Ok(_) => {
+                    ctx.hashline_sight.write().forget(&path);
+                    let display = full
+                        .strip_prefix(&ctx.workspace_root)
+                        .unwrap_or(full.as_path());
+                    let display = display.to_string_lossy();
+                    ctx.hashline_sight
+                        .write()
+                        .forget(display.trim_start_matches('/'));
+                    ToolResult::ok("hashline_edit", format!("edited {}", path))
+                }
+                Err(e) => ToolResult::err("hashline_edit", format!("write failed: {e}")),
+            },
+            Err(e) => ToolResult::err("hashline_edit", e.to_string()),
         }
     })
 }
@@ -264,6 +347,16 @@ fn format_output(stdout_buf: Vec<u8>, stderr_buf: Vec<u8>, exit_code: i32) -> St
     result
 }
 
+
+#[cfg(feature = "builtin-tools")]
+pub(crate) fn is_sandbox_signal_flake(stdout: &[u8], stderr: &[u8], exit_code: i32) -> bool {
+    // Rust maps signaled children to None → we store -1. sandbox-exec
+    // SIGABRT/SIGKILL also show up as 134/137 when the wrapper exits.
+    stdout.is_empty()
+        && stderr.is_empty()
+        && matches!(exit_code, -1 | 134 | 137)
+}
+
 #[cfg(not(feature = "builtin-tools"))]
 pub(crate) fn exec_bash(_ctx: Arc<ToolContext>, _args: String) -> ToolFuture {
     Box::pin(async move { ToolResult::err("bash", "builtin-tools feature not enabled") })
@@ -298,24 +391,48 @@ pub(crate) fn exec_bash(ctx: Arc<ToolContext>, args: String) -> ToolFuture {
             Err(e) => return ToolResult::err("bash", e),
         };
 
-        let mut cmd = match build_command(&ctx, &command, &working_dir) {
-            Ok(c) => c,
-            Err(e) => return ToolResult::err("bash", e),
-        };
-
-        let child = match cmd.spawn() {
-            Ok(c) => c,
-            Err(e) => return ToolResult::err("bash", format!("failed to execute: {e}")),
-        };
-
         let timeout = Duration::from_secs(timeout_secs);
-        let (stdout_buf, stderr_buf, exit_code) = match wait_and_drain(ctx, child, timeout).await {
-            Ok(res) => res,
-            Err(msg) => return ToolResult::err("bash", msg),
-        };
-
-        let result = format_output(stdout_buf, stderr_buf, exit_code);
-        ToolResult::ok("bash", result)
+        // Seatbelt flake: empty + signal death (-1 / 134 ABRT / 137 KILL).
+        // Retry once; still dead → fail-closed (do not return ok + exit -1).
+        let mut last_flake = None;
+        for attempt in 0..2 {
+            let mut cmd = match build_command(&ctx, &command, &working_dir) {
+                Ok(c) => c,
+                Err(e) => return ToolResult::err("bash", e),
+            };
+            let child = match cmd.spawn() {
+                Ok(c) => c,
+                Err(e) => return ToolResult::err("bash", format!("failed to execute: {e}")),
+            };
+            let (stdout_buf, stderr_buf, exit_code) =
+                match wait_and_drain(ctx.clone(), child, timeout).await {
+                    Ok(res) => res,
+                    Err(msg) => return ToolResult::err("bash", msg),
+                };
+            if ctx.os_sandbox.is_some()
+                && is_sandbox_signal_flake(&stdout_buf, &stderr_buf, exit_code)
+            {
+                last_flake = Some(exit_code);
+                if attempt == 0 {
+                    continue;
+                }
+                return ToolResult::err(
+                    "bash",
+                    format!(
+                        "OS sandbox aborted the process (exit {exit_code}, no output); refuse fail-open"
+                    ),
+                );
+            }
+            let result = format_output(stdout_buf, stderr_buf, exit_code);
+            return ToolResult::ok("bash", result);
+        }
+        ToolResult::err(
+            "bash",
+            format!(
+                "OS sandbox aborted the process (exit {}, no output); refuse fail-open",
+                last_flake.unwrap_or(-1)
+            ),
+        )
     })
 }
 
