@@ -147,6 +147,12 @@ fn shell_mutates(args: &str) -> bool {
     if crate::permissions::has_unsupported_shell_syntax(cmd) || has_pipe_or_subshell(cmd) {
         return true;
     }
+    crate::permissions::shell_segments(cmd)
+        .iter()
+        .any(|seg| segment_mutates(seg))
+}
+
+fn segment_mutates(cmd: &str) -> bool {
     if has_mutating_flags(cmd) {
         return true;
     }
@@ -316,6 +322,18 @@ mod tests {
         assert!(shell_mutates(r#"{"command":"find . -name '*.o' -delete"}"#));
         let mut p = Prewalk::new("big", Some("smol".into()));
         assert!(p.record_tool("bash", Some(r#"{"command":"find . -delete"}"#)));
+        assert!(p.is_switched());
+    }
+
+    #[test]
+    fn compound_shell_writes_mutate() {
+        assert!(shell_mutates(r#"{"command":"true && rm file"}"#));
+        assert!(shell_mutates(r#"{"command":"ls; mv a b"}"#));
+        assert!(shell_mutates(r#"{"command":"echo hi || rm file"}"#));
+        assert!(!shell_mutates(r#"{"command":"true && ls"}"#));
+        assert!(!shell_mutates(r#"{"command":"ls; echo ok"}"#));
+        let mut p = Prewalk::new("big", Some("smol".into()));
+        assert!(p.record_tool("bash", Some(r#"{"command":"true && rm file"}"#)));
         assert!(p.is_switched());
     }
 

@@ -188,7 +188,7 @@ pier_verify() {
   prc=$?
   set -e
   echo "$prc" > "$job_parent/${job_name}.pier_rc"
-  return 0
+  return "$prc"
 }
 
 parse_reward() {
@@ -199,14 +199,12 @@ import json, sys
 from pathlib import Path
 root, iid = Path(sys.argv[1]), sys.argv[2]
 hits = sorted(root.rglob("reward.json"), key=lambda p: p.stat().st_mtime, reverse=True)
-# Prefer a reward whose trial path mentions the task id.
+# Only accept a reward whose trial path mentions the task id.
 chosen = None
 for p in hits:
     if iid.replace("_", "")[:20] in str(p).replace("_", "") or iid in str(p):
         chosen = p
         break
-if chosen is None and hits:
-    chosen = hits[0]
 if chosen is None:
     print("null")
     raise SystemExit(0)
