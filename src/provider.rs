@@ -547,11 +547,12 @@ fn parse_sse_events(
         return parse_anthropic_event(json, state);
     }
 
-    // OpenAI-compatible providers send usage in a final stream chunk when
-    // `stream_options.include_usage` is enabled. That chunk commonly has no
-    // choices, so inspect it before looking for a delta.
+    // Usage may arrive on a dedicated final chunk (OpenAI spec with
+    // `stream_options.include_usage`) or attached to every chunk — OpenCode's
+    // router does the latter. Stash it and only emit when the chunk carries
+    // nothing else, so per-chunk usage never shadows content deltas.
     if let Some(usage) = json.get("usage").and_then(parse_token_usage) {
-        return vec![Ok(StreamEvent::Usage(usage))];
+        state.usage = usage;
     }
 
     let delta = &json["choices"][0]["delta"];
@@ -592,6 +593,10 @@ fn parse_sse_events(
         .get("finish_reason")
         .and_then(|f| f.as_str());
     if matches!(finish, Some("stop")) {
+        let has_usage = state.usage.input_tokens > 0 || state.usage.output_tokens > 0;
+        if has_usage {
+            return vec![Ok(StreamEvent::Usage(state.usage)), Ok(StreamEvent::Done)];
+        }
         return vec![Ok(StreamEvent::Done)];
     }
     if matches!(finish, Some("tool_calls")) {
@@ -601,6 +606,11 @@ fn parse_sse_events(
             .into_values()
             .map(|call| Ok(StreamEvent::ToolCall(call)))
             .collect();
+    }
+
+    // Usage-only chunk (no choices content, no finish).
+    if state.usage.input_tokens > 0 || state.usage.output_tokens > 0 {
+        return vec![Ok(StreamEvent::Usage(state.usage))];
     }
 
     Vec::new()
@@ -928,5 +938,54 @@ mod tests {
             false,
         );
         assert!(body.get("reasoning_effort").is_none());
+    }
+}
+
+#[cfg(all(test, feature = "providers"))]
+mod opencode_usage_tests {
+    use super::*;
+
+    fn chunk(content: &str, with_usage: bool) -> serde_json::Value {
+        let mut v = serde_json::json!({
+            "choices": [{"index": 0, "delta": {"content": content}, "finish_reason": null}]
+        });
+        if with_usage {
+            v["usage"] = serde_json::json!({"prompt_tokens": 10, "completion_tokens": 5});
+        }
+        v
+    }
+
+    #[test]
+    fn per_chunk_usage_does_not_swallow_deltas() {
+        let mut state = StreamState::default();
+        let events = parse_sse_events(&chunk("hel", true), "opencode-go", &mut state);
+        assert!(matches!(events.as_slice(), [Ok(StreamEvent::Delta(t))] if t == "hel"));
+        let events = parse_sse_events(&chunk("lo", true), "opencode-go", &mut state);
+        assert!(matches!(events.as_slice(), [Ok(StreamEvent::Delta(t))] if t == "lo"));
+    }
+
+    #[test]
+    fn usage_only_chunk_still_emits_usage() {
+        let mut state = StreamState::default();
+        let json = serde_json::json!({
+            "choices": [],
+            "usage": {"prompt_tokens": 7, "completion_tokens": 3}
+        });
+        let events = parse_sse_events(&json, "openai", &mut state);
+        assert!(matches!(events.as_slice(), [Ok(StreamEvent::Usage(_))]));
+    }
+
+    #[test]
+    fn stop_emits_usage_then_done_when_present() {
+        let mut state = StreamState::default();
+        let _ = parse_sse_events(&chunk("x", true), "opencode-go", &mut state);
+        let json = serde_json::json!({
+            "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5}
+        });
+        let events = parse_sse_events(&json, "opencode-go", &mut state);
+        assert_eq!(events.len(), 2);
+        assert!(matches!(events[0], Ok(StreamEvent::Usage(_))));
+        assert!(matches!(events[1], Ok(StreamEvent::Done)));
     }
 }
