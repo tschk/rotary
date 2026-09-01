@@ -219,60 +219,77 @@ impl Session {
             };
             let ty = v.get("type").and_then(|t| t.as_str()).unwrap_or("");
             if ty == "session_meta" {
-                if let Some(s) = v.get("id").and_then(|x| x.as_str()) {
-                    // Validate imported ID before accepting it.
-                    if let Err(e) = crate::tools::common::validate_identifier(s) {
-                        tracing::warn!("rejecting malicious session id '{s}': {e}");
-                        continue;
-                    }
-                    id = s.to_string();
-                    session.id = id.clone();
-                }
-                if let Some(s) = v.get("name").and_then(|x| x.as_str()) {
-                    name = s.to_string();
-                    session.name = name.clone();
-                }
+                Self::parse_session_meta(&mut id, &mut name, &mut session, &v);
                 continue;
             }
             if ty == "session_todos" {
-                if let Some(todos) = v.get("todos") {
-                    if let Ok(todos) = serde_json::from_value(todos.clone()) {
-                        session.todos = todos;
-                    }
-                }
+                Self::parse_session_todos(&mut session, &v);
                 continue;
             }
             // Accept typed message lines or bare role/content lines.
             if ty == "message" || v.get("role").is_some() {
-                let role_str = v.get("role").and_then(|r| r.as_str()).unwrap_or("user");
-                let role = match role_str {
-                    "assistant" => Role::Assistant,
-                    "system" => Role::System,
-                    "tool" => Role::Tool,
-                    _ => Role::User,
-                };
-                let text = v
-                    .get("content")
-                    .and_then(|c| c.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                if let Some(eid) = v.get("id").and_then(|x| x.as_u64()) {
-                    let parent = v.get("parent_id").and_then(|x| x.as_u64());
-                    if eid >= session.next_id {
-                        session.next_id = eid + 1;
-                    }
-                    session.entries.push(Entry {
-                        id: eid,
-                        parent_id: parent,
-                        role,
-                        content: text,
-                    });
-                } else {
-                    session.append(role, text);
-                }
+                Self::parse_session_message(&mut session, &v);
             }
         }
         Ok(session)
+    }
+
+    fn parse_session_meta(
+        id: &mut String,
+        name: &mut String,
+        session: &mut Session,
+        v: &serde_json::Value,
+    ) {
+        if let Some(s) = v.get("id").and_then(|x| x.as_str()) {
+            // Validate imported ID before accepting it.
+            if let Err(e) = crate::tools::common::validate_identifier(s) {
+                tracing::warn!("rejecting malicious session id '{s}': {e}");
+                return;
+            }
+            *id = s.to_string();
+            session.id = id.clone();
+        }
+        if let Some(s) = v.get("name").and_then(|x| x.as_str()) {
+            *name = s.to_string();
+            session.name = name.clone();
+        }
+    }
+
+    fn parse_session_todos(session: &mut Session, v: &serde_json::Value) {
+        if let Some(todos) = v.get("todos") {
+            if let Ok(todos) = serde_json::from_value(todos.clone()) {
+                session.todos = todos;
+            }
+        }
+    }
+
+    fn parse_session_message(session: &mut Session, v: &serde_json::Value) {
+        let role_str = v.get("role").and_then(|r| r.as_str()).unwrap_or("user");
+        let role = match role_str {
+            "assistant" => Role::Assistant,
+            "system" => Role::System,
+            "tool" => Role::Tool,
+            _ => Role::User,
+        };
+        let text = v
+            .get("content")
+            .and_then(|c| c.as_str())
+            .unwrap_or("")
+            .to_string();
+        if let Some(eid) = v.get("id").and_then(|x| x.as_u64()) {
+            let parent = v.get("parent_id").and_then(|x| x.as_u64());
+            if eid >= session.next_id {
+                session.next_id = eid + 1;
+            }
+            session.entries.push(Entry {
+                id: eid,
+                parent_id: parent,
+                role,
+                content: text,
+            });
+        } else {
+            session.append(role, text);
+        }
     }
 
     pub fn messages(&self) -> Vec<Message> {
