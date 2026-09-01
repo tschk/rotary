@@ -447,6 +447,34 @@ mod tests {
         assert!(s.entries[0].content.contains(&secret));
     }
 
+    #[test]
+    fn merge_sessions() {
+        let mut s1 = Session::new("s1", "base");
+        s1.append(Role::User, "q1");
+        s1.append(Role::Assistant, "a1");
+
+        let mut s2 = Session::new("s2", "branch");
+        s2.append(Role::User, "q2");
+        s2.append(Role::Assistant, "a2");
+        s2.append(Role::User, "q3");
+
+        let merged_count = s1.merge(&s2);
+
+        assert_eq!(merged_count, 3);
+        assert_eq!(s1.entries.len(), 5);
+        assert_eq!(s1.entries[0].content, "q1");
+        assert_eq!(s1.entries[1].content, "a1");
+        assert_eq!(s1.entries[2].content, "q2");
+        assert_eq!(s1.entries[3].content, "a2");
+        assert_eq!(s1.entries[4].content, "q3");
+
+        // Assert IDs are sequential in the target session
+        assert_eq!(s1.entries[2].id, 3);
+        assert_eq!(s1.entries[3].id, 4);
+        assert_eq!(s1.entries[4].id, 5);
+        assert_eq!(s1.next_id, 6);
+    }
+
     #[cfg(feature = "sqlite-sessions")]
     #[test]
     fn sqlite_roundtrip() {
