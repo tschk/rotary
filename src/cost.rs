@@ -213,6 +213,29 @@ mod tests {
     }
 
     #[test]
+    fn registry_default_pricing_values() {
+        let registry = PricingRegistry::new();
+
+        let gpt4o = registry.get("gpt-4o").unwrap();
+        assert!((gpt4o.input_per_1m - 2.50).abs() < 1e-9);
+        assert!((gpt4o.output_per_1m - 10.00).abs() < 1e-9);
+        assert!(gpt4o.cache_read_per_1m.is_none());
+        assert!(gpt4o.cache_write_per_1m.is_none());
+
+        let gpt4o_mini = registry.get("gpt-4o-mini").unwrap();
+        assert!((gpt4o_mini.input_per_1m - 0.15).abs() < 1e-9);
+        assert!((gpt4o_mini.output_per_1m - 0.60).abs() < 1e-9);
+        assert!(gpt4o_mini.cache_read_per_1m.is_none());
+        assert!(gpt4o_mini.cache_write_per_1m.is_none());
+
+        let sonnet = registry.get("claude-3.5-sonnet").unwrap();
+        assert!((sonnet.input_per_1m - 3.00).abs() < 1e-9);
+        assert!((sonnet.output_per_1m - 15.00).abs() < 1e-9);
+        assert!((sonnet.cache_read_per_1m.unwrap() - 0.30).abs() < 1e-9);
+        assert!((sonnet.cache_write_per_1m.unwrap() - 3.75).abs() < 1e-9);
+    }
+
+    #[test]
     fn registry_returns_none_for_unknown() {
         let registry = PricingRegistry::new();
         assert!(registry.get("unknown-model").is_none());

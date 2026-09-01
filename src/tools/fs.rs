@@ -347,14 +347,11 @@ fn format_output(stdout_buf: Vec<u8>, stderr_buf: Vec<u8>, exit_code: i32) -> St
     result
 }
 
-
 #[cfg(feature = "builtin-tools")]
 pub(crate) fn is_sandbox_signal_flake(stdout: &[u8], stderr: &[u8], exit_code: i32) -> bool {
     // Rust maps signaled children to None → we store -1. sandbox-exec
     // SIGABRT/SIGKILL also show up as 134/137 when the wrapper exits.
-    stdout.is_empty()
-        && stderr.is_empty()
-        && matches!(exit_code, -1 | 134 | 137)
+    stdout.is_empty() && stderr.is_empty() && matches!(exit_code, -1 | 134 | 137)
 }
 
 #[cfg(not(feature = "builtin-tools"))]
