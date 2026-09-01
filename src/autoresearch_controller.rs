@@ -1205,6 +1205,30 @@ impl AutoresearchController {
 
     async fn evaluate(&mut self) -> Result<Evaluation, AutoresearchControllerError> {
         let started = Instant::now();
+
+        self.run_warmups().await?;
+
+        let (samples, aggregated_metrics, output) = self.run_measurements().await?;
+
+        let (checks_passed, checks_output) = self.run_checks().await?;
+
+        let metric = median(&mut samples.clone()).expect("measurement_runs was validated");
+        Ok(Evaluation {
+            measurement: AggregatedMeasurement {
+                metric,
+                samples,
+                metrics: aggregated_metrics,
+                warmup_runs: self.config.warmup_runs,
+                measurement_runs: self.config.measurement_runs,
+                duration_ms: started.elapsed().as_millis() as u64,
+                checks_passed,
+                output,
+                checks_output,
+            },
+        })
+    }
+
+    async fn run_warmups(&self) -> Result<(), AutoresearchControllerError> {
         for _ in 0..self.config.warmup_runs {
             let result = self
                 .run_shell(
@@ -1214,6 +1238,12 @@ impl AutoresearchController {
                 .await?;
             self.ensure_process_success(&result, "warmup measurement")?;
         }
+        Ok(())
+    }
+
+    async fn run_measurements(
+        &self,
+    ) -> Result<(Vec<f64>, BTreeMap<String, f64>, String), AutoresearchControllerError> {
         let mut samples = Vec::with_capacity(self.config.measurement_runs);
         let mut metric_values: BTreeMap<String, Vec<f64>> = BTreeMap::new();
         let mut output = String::new();
@@ -1238,13 +1268,6 @@ impl AutoresearchController {
             }
             output.push_str(&truncate_output(&result.output));
         }
-        let checks = self
-            .run_shell(
-                &self.config.checks_command,
-                self.config.checks_timeout_seconds,
-            )
-            .await?;
-        let checks_passed = !checks.timed_out && checks.exit_code == Some(0);
         let aggregated_metrics = metric_values
             .into_iter()
             .map(|(name, mut values)| {
@@ -1254,20 +1277,19 @@ impl AutoresearchController {
                 )
             })
             .collect();
-        let metric = median(&mut samples.clone()).expect("measurement_runs was validated");
-        Ok(Evaluation {
-            measurement: AggregatedMeasurement {
-                metric,
-                samples,
-                metrics: aggregated_metrics,
-                warmup_runs: self.config.warmup_runs,
-                measurement_runs: self.config.measurement_runs,
-                duration_ms: started.elapsed().as_millis() as u64,
-                checks_passed,
-                output,
-                checks_output: truncate_output(&checks.output),
-            },
-        })
+        Ok((samples, aggregated_metrics, output))
+    }
+
+    async fn run_checks(&self) -> Result<(bool, String), AutoresearchControllerError> {
+        let checks = self
+            .run_shell(
+                &self.config.checks_command,
+                self.config.checks_timeout_seconds,
+            )
+            .await?;
+        let checks_passed = !checks.timed_out && checks.exit_code == Some(0);
+        let checks_output = truncate_output(&checks.output);
+        Ok((checks_passed, checks_output))
     }
 
     fn ensure_process_success(
