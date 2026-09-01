@@ -347,14 +347,11 @@ fn format_output(stdout_buf: Vec<u8>, stderr_buf: Vec<u8>, exit_code: i32) -> St
     result
 }
 
-
 #[cfg(feature = "builtin-tools")]
 pub(crate) fn is_sandbox_signal_flake(stdout: &[u8], stderr: &[u8], exit_code: i32) -> bool {
     // Rust maps signaled children to None → we store -1. sandbox-exec
     // SIGABRT/SIGKILL also show up as 134/137 when the wrapper exits.
-    stdout.is_empty()
-        && stderr.is_empty()
-        && matches!(exit_code, -1 | 134 | 137)
+    stdout.is_empty() && stderr.is_empty() && matches!(exit_code, -1 | 134 | 137)
 }
 
 #[cfg(not(feature = "builtin-tools"))]
@@ -459,45 +456,7 @@ pub(crate) fn exec_grep(ctx: Arc<ToolContext>, args: String) -> ToolFuture {
                 } else {
                     full
                 };
-                let shared = crate::search::picker_for(root)?;
-                let guard = shared.read().map_err(|e| e.to_string())?;
-                let picker = guard.as_ref().ok_or("picker missing")?;
-                let query = fff_search::parse_grep_query(&pattern);
-                let options = fff_search::GrepSearchOptions {
-                    before_context: context,
-                    after_context: context,
-                    page_limit: 100,
-                    ..Default::default()
-                };
-                let grep_result = picker.grep(&query, &options);
-
-                let mut out = String::new();
-                for m in &grep_result.matches {
-                    let file = &grep_result.files[m.file_index];
-                    let path = file.absolute_path(picker, &picker.base_path);
-                    let path_str = path.to_string_lossy();
-                    for (i, line) in m.context_before.iter().enumerate() {
-                        let num = m.line_number as usize - m.context_before.len() + i;
-                        out.push_str(&format!("  {num:>6}\t{path_str}\t{line}\n"));
-                    }
-                    out.push_str(&format!(
-                        "> {line_number:>6}\t{path_str}\t{line_content}\n",
-                        line_number = m.line_number,
-                        line_content = m.line_content
-                    ));
-                    for (i, line) in m.context_after.iter().enumerate() {
-                        let num = m.line_number as usize + 1 + i;
-                        out.push_str(&format!("  {num:>6}\t{path_str}\t{line}\n"));
-                    }
-                    if context > 0 && !m.context_after.is_empty() {
-                        out.push_str("  ---\n");
-                    }
-                }
-                Ok::<_, String>(if out.is_empty() {
-                    "(no matches)".to_string()
-                } else {
-                    out
-                })
+                fff_grep(root, &pattern, context)
             })
             .await
             .unwrap_or_else(|e| Err(format!("search task failed: {e}")));
@@ -689,6 +648,49 @@ fn walk_files(root: &std::path::Path, out: &mut Vec<std::path::PathBuf>, max: us
             out.push(path);
         }
     }
+}
+
+#[cfg(all(feature = "builtin-tools", feature = "fff"))]
+fn fff_grep(root: std::path::PathBuf, pattern: &str, context: usize) -> Result<String, String> {
+    let shared = crate::search::picker_for(root)?;
+    let guard = shared.read().map_err(|e| e.to_string())?;
+    let picker = guard.as_ref().ok_or("picker missing")?;
+    let query = fff_search::parse_grep_query(pattern);
+    let options = fff_search::GrepSearchOptions {
+        before_context: context,
+        after_context: context,
+        page_limit: 100,
+        ..Default::default()
+    };
+    let grep_result = picker.grep(&query, &options);
+
+    let mut out = String::new();
+    for m in &grep_result.matches {
+        let file = &grep_result.files[m.file_index];
+        let path = file.absolute_path(picker, &picker.base_path);
+        let path_str = path.to_string_lossy();
+        for (i, line) in m.context_before.iter().enumerate() {
+            let num = m.line_number as usize - m.context_before.len() + i;
+            out.push_str(&format!("  {num:>6}\t{path_str}\t{line}\n"));
+        }
+        out.push_str(&format!(
+            "> {line_number:>6}\t{path_str}\t{line_content}\n",
+            line_number = m.line_number,
+            line_content = m.line_content
+        ));
+        for (i, line) in m.context_after.iter().enumerate() {
+            let num = m.line_number as usize + 1 + i;
+            out.push_str(&format!("  {num:>6}\t{path_str}\t{line}\n"));
+        }
+        if context > 0 && !m.context_after.is_empty() {
+            out.push_str("  ---\n");
+        }
+    }
+    Ok(if out.is_empty() {
+        "(no matches)".to_string()
+    } else {
+        out
+    })
 }
 
 #[cfg(all(feature = "builtin-tools", not(feature = "fff")))]
