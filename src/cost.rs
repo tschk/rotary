@@ -282,7 +282,6 @@ mod tests {
         assert!((cost - 2.50).abs() < 1e-9);
     }
 
-
     #[test]
     fn estimate_cost_zero_tokens() {
         let registry = PricingRegistry::new();
