@@ -347,19 +347,66 @@ fn format_output(stdout_buf: Vec<u8>, stderr_buf: Vec<u8>, exit_code: i32) -> St
     result
 }
 
-
 #[cfg(feature = "builtin-tools")]
 pub(crate) fn is_sandbox_signal_flake(stdout: &[u8], stderr: &[u8], exit_code: i32) -> bool {
     // Rust maps signaled children to None → we store -1. sandbox-exec
     // SIGABRT/SIGKILL also show up as 134/137 when the wrapper exits.
-    stdout.is_empty()
-        && stderr.is_empty()
-        && matches!(exit_code, -1 | 134 | 137)
+    stdout.is_empty() && stderr.is_empty() && matches!(exit_code, -1 | 134 | 137)
 }
 
 #[cfg(not(feature = "builtin-tools"))]
 pub(crate) fn exec_bash(_ctx: Arc<ToolContext>, _args: String) -> ToolFuture {
     Box::pin(async move { ToolResult::err("bash", "builtin-tools feature not enabled") })
+}
+
+#[cfg(feature = "builtin-tools")]
+fn validate_bash_sandbox(ctx: &ToolContext, command: &str) -> Result<(), String> {
+    // Fail closed: policy requires OS sandbox but runner unavailable.
+    if ctx.os_sandbox_required && ctx.os_sandbox.is_none() {
+        return Err("OS sandbox required but unavailable — shell execution blocked".to_string());
+    }
+
+    if let Some(sb) = ctx.sandbox.as_ref() {
+        if let Err(e) = sb.validate_command(command) {
+            return Err(e.to_string());
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(feature = "builtin-tools")]
+async fn run_bash_with_retry(
+    ctx: Arc<ToolContext>,
+    command: String,
+    working_dir: std::path::PathBuf,
+    timeout: Duration,
+) -> Result<String, String> {
+    // Seatbelt flake: empty + signal death (-1 / 134 ABRT / 137 KILL).
+    // Retry once; still dead → fail-closed (do not return ok + exit -1).
+    let mut last_flake = None;
+    for attempt in 0..2 {
+        let mut cmd = build_command(&ctx, &command, &working_dir)?;
+        let child = cmd.spawn().map_err(|e| format!("failed to execute: {e}"))?;
+        let (stdout_buf, stderr_buf, exit_code) =
+            wait_and_drain(ctx.clone(), child, timeout).await?;
+        if ctx.os_sandbox.is_some() && is_sandbox_signal_flake(&stdout_buf, &stderr_buf, exit_code)
+        {
+            last_flake = Some(exit_code);
+            if attempt == 0 {
+                continue;
+            }
+            return Err(format!(
+                "OS sandbox aborted the process (exit {exit_code}, no output); refuse fail-open"
+            ));
+        }
+        let result = format_output(stdout_buf, stderr_buf, exit_code);
+        return Ok(result);
+    }
+    Err(format!(
+        "OS sandbox aborted the process (exit {}, no output); refuse fail-open",
+        last_flake.unwrap_or(-1)
+    ))
 }
 
 #[cfg(feature = "builtin-tools")]
@@ -372,18 +419,8 @@ pub(crate) fn exec_bash(ctx: Arc<ToolContext>, args: String) -> ToolFuture {
         let cwd = parse_str_field(&args, "cwd");
         let timeout_secs = parse_num_field(&args, "timeout").unwrap_or(120);
 
-        // Fail closed: policy requires OS sandbox but runner unavailable.
-        if ctx.os_sandbox_required && ctx.os_sandbox.is_none() {
-            return ToolResult::err(
-                "bash",
-                "OS sandbox required but unavailable — shell execution blocked",
-            );
-        }
-
-        if let Some(sb) = ctx.sandbox.as_ref() {
-            if let Err(e) = sb.validate_command(&command) {
-                return ToolResult::err("bash", e.to_string());
-            }
+        if let Err(e) = validate_bash_sandbox(&ctx, &command) {
+            return ToolResult::err("bash", e);
         }
 
         let working_dir = match resolve_working_dir(&ctx, cwd) {
@@ -392,47 +429,11 @@ pub(crate) fn exec_bash(ctx: Arc<ToolContext>, args: String) -> ToolFuture {
         };
 
         let timeout = Duration::from_secs(timeout_secs);
-        // Seatbelt flake: empty + signal death (-1 / 134 ABRT / 137 KILL).
-        // Retry once; still dead → fail-closed (do not return ok + exit -1).
-        let mut last_flake = None;
-        for attempt in 0..2 {
-            let mut cmd = match build_command(&ctx, &command, &working_dir) {
-                Ok(c) => c,
-                Err(e) => return ToolResult::err("bash", e),
-            };
-            let child = match cmd.spawn() {
-                Ok(c) => c,
-                Err(e) => return ToolResult::err("bash", format!("failed to execute: {e}")),
-            };
-            let (stdout_buf, stderr_buf, exit_code) =
-                match wait_and_drain(ctx.clone(), child, timeout).await {
-                    Ok(res) => res,
-                    Err(msg) => return ToolResult::err("bash", msg),
-                };
-            if ctx.os_sandbox.is_some()
-                && is_sandbox_signal_flake(&stdout_buf, &stderr_buf, exit_code)
-            {
-                last_flake = Some(exit_code);
-                if attempt == 0 {
-                    continue;
-                }
-                return ToolResult::err(
-                    "bash",
-                    format!(
-                        "OS sandbox aborted the process (exit {exit_code}, no output); refuse fail-open"
-                    ),
-                );
-            }
-            let result = format_output(stdout_buf, stderr_buf, exit_code);
-            return ToolResult::ok("bash", result);
+
+        match run_bash_with_retry(ctx, command, working_dir, timeout).await {
+            Ok(result) => ToolResult::ok("bash", result),
+            Err(e) => ToolResult::err("bash", e),
         }
-        ToolResult::err(
-            "bash",
-            format!(
-                "OS sandbox aborted the process (exit {}, no output); refuse fail-open",
-                last_flake.unwrap_or(-1)
-            ),
-        )
     })
 }
 
