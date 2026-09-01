@@ -95,13 +95,13 @@ impl IpcServer {
     /// Run the IPC server on the current Tokio runtime.
     pub async fn run_async(&self) -> std::io::Result<()> {
         let path = Path::new(&self.socket_path);
-        if path.exists() {
-            std::fs::remove_file(path)?;
+        if tokio::fs::try_exists(path).await? {
+            tokio::fs::remove_file(path).await?;
         }
         let listener = tokio::net::UnixListener::bind(path)?;
         {
             use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+            tokio::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).await?;
         }
         info!("IPC server listening on {}", self.socket_path);
 
