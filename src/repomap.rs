@@ -283,7 +283,31 @@ impl RepoMap {
     }
 
     fn canonicalize(&self, path: &Path) -> PathBuf {
-        fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+        let abs = if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            self.workspace.join(path)
+        };
+        let mut current = abs.as_path();
+        let mut missing_components = Vec::new();
+        loop {
+            if let Ok(c) = fs::canonicalize(current) {
+                let mut resolved = c;
+                for comp in missing_components.into_iter().rev() {
+                    resolved.push(comp);
+                }
+                return resolved;
+            }
+            if let Some(parent) = current.parent() {
+                if let Some(name) = current.file_name() {
+                    missing_components.push(name.to_os_string());
+                }
+                current = parent;
+            } else {
+                break;
+            }
+        }
+        abs
     }
 
     fn project_hash(&self) -> String {
