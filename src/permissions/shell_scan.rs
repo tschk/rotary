@@ -563,156 +563,198 @@ pub struct ShellScan {
 /// Split `input` into simple commands (quote-aware) and command-substitution bodies.
 pub fn scan_shell(input: &str) -> ShellScan {
     let chars: Vec<char> = input.chars().collect();
-    let mut commands: Vec<Vec<String>> = Vec::new();
-    let mut nested: Vec<String> = Vec::new();
-    let mut words: Vec<String> = Vec::new();
-    let mut i = 0;
-    const BREAKS: &str = ";|&(){}";
-    while i < chars.len() {
-        let c = chars[i];
-        if c.is_whitespace() {
-            if c == '\n' && !words.is_empty() {
-                commands.push(std::mem::take(&mut words));
-            }
-            i += 1;
-            continue;
+    ShellScanner::new(&chars).scan()
+}
+
+struct ShellScanner<'a> {
+    chars: &'a [char],
+    i: usize,
+    commands: Vec<Vec<String>>,
+    nested: Vec<String>,
+    words: Vec<String>,
+}
+
+const BREAKS: &str = ";|&(){}";
+
+impl<'a> ShellScanner<'a> {
+    fn new(chars: &'a [char]) -> Self {
+        Self {
+            chars,
+            i: 0,
+            commands: Vec::new(),
+            nested: Vec::new(),
+            words: Vec::new(),
         }
-        if c == '#' && words.is_empty() {
-            while i < chars.len() && chars[i] != '\n' {
-                i += 1;
+    }
+
+    fn scan(mut self) -> ShellScan {
+        while self.i < self.chars.len() {
+            let c = self.chars[self.i];
+            if c.is_whitespace() {
+                if c == '\n' && !self.words.is_empty() {
+                    self.commands.push(std::mem::take(&mut self.words));
+                }
+                self.i += 1;
+                continue;
             }
-            continue;
+            if c == '#' && self.words.is_empty() {
+                while self.i < self.chars.len() && self.chars[self.i] != '\n' {
+                    self.i += 1;
+                }
+                continue;
+            }
+            if BREAKS.contains(c) {
+                if !self.words.is_empty() {
+                    self.commands.push(std::mem::take(&mut self.words));
+                }
+                while self.i < self.chars.len() && BREAKS.contains(self.chars[self.i]) {
+                    self.i += 1;
+                }
+                continue;
+            }
+
+            if let Some(word) = self.scan_word() {
+                self.words.push(word);
+            }
         }
-        if BREAKS.contains(c) {
-            if !words.is_empty() {
-                commands.push(std::mem::take(&mut words));
-            }
-            while i < chars.len() && BREAKS.contains(chars[i]) {
-                i += 1;
-            }
-            continue;
+
+        if !self.words.is_empty() {
+            self.commands.push(self.words);
         }
+
+        ShellScan {
+            commands: self.commands,
+            nested: self.nested,
+        }
+    }
+
+    fn scan_word(&mut self) -> Option<String> {
         let mut word = String::new();
         let mut started = false;
-        while i < chars.len()
-            && !chars[i].is_whitespace()
-            && (!BREAKS.contains(chars[i])
-                || (chars[i] == '&' && (word.ends_with('<') || word.ends_with('>'))))
+
+        while self.i < self.chars.len()
+            && !self.chars[self.i].is_whitespace()
+            && (!BREAKS.contains(self.chars[self.i])
+                || (self.chars[self.i] == '&' && (word.ends_with('<') || word.ends_with('>'))))
         {
-            let c = chars[i];
+            let c = self.chars[self.i];
+
             if c == '\\' {
-                if chars.get(i + 1) == Some(&'\n') {
-                    i += 2;
-                } else if i + 1 < chars.len() {
+                if self.chars.get(self.i + 1) == Some(&'\n') {
+                    self.i += 2;
+                } else if self.i + 1 < self.chars.len() {
                     started = true;
-                    word.push(chars[i + 1]);
-                    i += 2;
+                    word.push(self.chars[self.i + 1]);
+                    self.i += 2;
                 } else {
-                    i += 1;
+                    self.i += 1;
                 }
                 continue;
             }
             if c == '\'' {
                 started = true;
-                match read_delimited(&chars, i + 1, '\'', false) {
+                match read_delimited(self.chars, self.i + 1, '\'', false) {
                     Some((inner, end)) => {
                         word.push_str(&inner);
-                        i = end;
+                        self.i = end;
                     }
                     None => {
-                        word.push_str(&chars[i + 1..].iter().collect::<String>());
-                        i = chars.len();
+                        word.push_str(&self.chars[self.i + 1..].iter().collect::<String>());
+                        self.i = self.chars.len();
                     }
                 }
                 continue;
             }
-            if c == '$' && chars.get(i + 1) == Some(&'\'') {
+            if c == '$' && self.chars.get(self.i + 1) == Some(&'\'') {
                 started = true;
-                match read_delimited(&chars, i + 2, '\'', false) {
+                match read_delimited(self.chars, self.i + 2, '\'', false) {
                     Some((inner, end)) => {
                         word.push_str(&decode_ansi_c(&inner));
-                        i = end;
+                        self.i = end;
                     }
                     None => {
-                        word.push_str(&chars[i + 2..].iter().collect::<String>());
-                        i = chars.len();
+                        word.push_str(&self.chars[self.i + 2..].iter().collect::<String>());
+                        self.i = self.chars.len();
                     }
                 }
                 continue;
             }
             if c == '"' {
                 started = true;
-                i += 1;
-                while i < chars.len() && chars[i] != '"' {
-                    if chars[i] == '\\' && i + 1 < chars.len() {
-                        word.push(chars[i + 1]);
-                        i += 2;
-                    } else if chars[i] == '$' && chars.get(i + 1) == Some(&'(') {
-                        match command_substitution(&chars, i) {
-                            Some((body, end)) => {
-                                nested.push(body);
-                                i = end;
-                            }
-                            None => {
-                                word.push(chars[i]);
-                                i += 1;
-                            }
-                        }
-                    } else if chars[i] == '`' {
-                        match read_delimited(&chars, i + 1, '`', false) {
-                            Some((body, end)) => {
-                                nested.push(body);
-                                i = end;
-                            }
-                            None => i += 1,
-                        }
-                    } else {
-                        word.push(chars[i]);
-                        i += 1;
-                    }
-                }
-                if chars.get(i) == Some(&'"') {
-                    i += 1;
-                }
+                self.scan_double_quotes(&mut word);
                 continue;
             }
-            if c == '$' && chars.get(i + 1) == Some(&'(') {
+            if c == '$' && self.chars.get(self.i + 1) == Some(&'(') {
                 started = true;
-                match command_substitution(&chars, i) {
+                match command_substitution(self.chars, self.i) {
                     Some((body, end)) => {
-                        nested.push(body);
-                        i = end;
+                        self.nested.push(body);
+                        self.i = end;
                     }
                     None => {
                         word.push(c);
-                        i += 1;
+                        self.i += 1;
                     }
                 }
                 continue;
             }
             if c == '`' {
                 started = true;
-                match read_delimited(&chars, i + 1, '`', false) {
+                match read_delimited(self.chars, self.i + 1, '`', false) {
                     Some((body, end)) => {
-                        nested.push(body);
-                        i = end;
+                        self.nested.push(body);
+                        self.i = end;
                     }
-                    None => i += 1,
+                    None => self.i += 1,
                 }
                 continue;
             }
             word.push(c);
             started = true;
-            i += 1;
+            self.i += 1;
         }
+
         if started {
-            words.push(word);
+            Some(word)
+        } else {
+            None
         }
     }
-    if !words.is_empty() {
-        commands.push(words);
+
+    fn scan_double_quotes(&mut self, word: &mut String) {
+        self.i += 1;
+        while self.i < self.chars.len() && self.chars[self.i] != '"' {
+            if self.chars[self.i] == '\\' && self.i + 1 < self.chars.len() {
+                word.push(self.chars[self.i + 1]);
+                self.i += 2;
+            } else if self.chars[self.i] == '$' && self.chars.get(self.i + 1) == Some(&'(') {
+                match command_substitution(self.chars, self.i) {
+                    Some((body, end)) => {
+                        self.nested.push(body);
+                        self.i = end;
+                    }
+                    None => {
+                        word.push(self.chars[self.i]);
+                        self.i += 1;
+                    }
+                }
+            } else if self.chars[self.i] == '`' {
+                match read_delimited(self.chars, self.i + 1, '`', false) {
+                    Some((body, end)) => {
+                        self.nested.push(body);
+                        self.i = end;
+                    }
+                    None => self.i += 1,
+                }
+            } else {
+                word.push(self.chars[self.i]);
+                self.i += 1;
+            }
+        }
+        if self.chars.get(self.i) == Some(&'"') {
+            self.i += 1;
+        }
     }
-    ShellScan { commands, nested }
 }
 
 fn command_substitution(chars: &[char], start: usize) -> Option<(String, usize)> {
