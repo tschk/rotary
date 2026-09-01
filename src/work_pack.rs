@@ -40,11 +40,23 @@ impl WorkPack {
     /// Parse a markdown work pack from string content.
     pub fn parse(content: &str) -> Result<Self, WorkPackError> {
         let (front, body) = split_frontmatter(content);
-        let mut name = String::new();
-        let mut role = "worker".to_string();
-        let mut tools: Vec<String> = Vec::new();
-        let mut permission = PermissionMode::WorkspaceWrite;
 
+        let mut pack = Self {
+            name: String::new(),
+            role: "worker".to_string(),
+            tools: Vec::new(),
+            permission: PermissionMode::WorkspaceWrite,
+            instructions: body.trim().to_string(),
+        };
+
+        pack.apply_frontmatter(&front);
+        pack.resolve_name(&body)?;
+        pack.resolve_tools();
+
+        Ok(pack)
+    }
+
+    fn apply_frontmatter(&mut self, front: &str) {
         for line in front.lines() {
             let line = line.trim();
             if line.is_empty() || line == "---" {
@@ -54,10 +66,10 @@ impl WorkPack {
                 let k = k.trim().to_ascii_lowercase();
                 let v = v.trim().trim_matches('"').trim_matches('\'');
                 match k.as_str() {
-                    "name" => name = v.to_string(),
-                    "role" => role = v.to_string(),
+                    "name" => self.name = v.to_string(),
+                    "role" => self.role = v.to_string(),
                     "tools" => {
-                        tools = v
+                        self.tools = v
                             .split([',', ' '])
                             .map(str::trim)
                             .filter(|s| !s.is_empty())
@@ -65,7 +77,7 @@ impl WorkPack {
                             .collect();
                     }
                     "permission" | "permission_mode" => {
-                        permission = match v.to_ascii_lowercase().as_str() {
+                        self.permission = match v.to_ascii_lowercase().as_str() {
                             "full_access" | "full" => PermissionMode::FullAccess,
                             "read_only" | "readonly" | "read" => PermissionMode::ReadOnly,
                             "deny_all" | "deny" => PermissionMode::DenyAll,
@@ -76,32 +88,28 @@ impl WorkPack {
                 }
             }
         }
+    }
 
-        if name.is_empty() {
+    fn resolve_name(&mut self, body: &str) -> Result<(), WorkPackError> {
+        if self.name.is_empty() {
             // Fallback: first markdown heading.
             for line in body.lines() {
                 if let Some(h) = line.strip_prefix("# ") {
-                    name = h.trim().to_string();
+                    self.name = h.trim().to_string();
                     break;
                 }
             }
         }
-        if name.is_empty() {
+        if self.name.is_empty() {
             return Err(WorkPackError::Parse("missing pack name".into()));
         }
+        Ok(())
+    }
 
-        let instructions = body.trim().to_string();
-        if tools.is_empty() {
-            tools = default_tools_for_role(&role);
+    fn resolve_tools(&mut self) {
+        if self.tools.is_empty() {
+            self.tools = default_tools_for_role(&self.role);
         }
-
-        Ok(Self {
-            name,
-            role,
-            tools,
-            permission,
-            instructions,
-        })
     }
 
     /// Load from a file path.
