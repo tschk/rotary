@@ -101,7 +101,7 @@ impl IpcServer {
         let listener = tokio::net::UnixListener::bind(path)?;
         {
             use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+            tokio::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).await?;
         }
         info!("IPC server listening on {}", self.socket_path);
 
