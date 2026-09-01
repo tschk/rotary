@@ -486,7 +486,7 @@ mod tests {
             cache_read_tokens: 0,
             cache_write_tokens: 0,
         };
-        session.record("gpt-4o", usage.clone(), &registry);
+        session.record("gpt-4o", usage, &registry);
         let entries = session.entries();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].model, "gpt-4o");
