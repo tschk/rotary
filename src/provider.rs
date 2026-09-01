@@ -742,6 +742,7 @@ mod tests {
     use super::ProviderError;
     #[cfg(feature = "providers")]
     use super::*;
+    use super::{Message, Role};
 
     #[test]
     fn transient_errors_are_retryable() {
