@@ -186,6 +186,25 @@ impl SandboxManager {
         }
     }
 
+    fn reject_path<F>(
+        &self,
+        canonical: &Path,
+        kind: ViolationKind,
+        reason: &str,
+        err_fn: F,
+    ) -> Result<(), SandboxError>
+    where
+        F: FnOnce(String) -> SandboxError,
+    {
+        self.log_violation(&SandboxViolation {
+            timestamp: Utc::now(),
+            kind,
+            path_or_command: canonical.display().to_string(),
+            reason: reason.to_string(),
+        });
+        Err(err_fn(canonical.display().to_string()))
+    }
+
     /// Validate that `path` may be accessed, with `write` indicating whether
     /// the caller intends to mutate it.
     pub fn validate_path(&self, path: &Path, write: bool) -> Result<(), SandboxError> {
@@ -195,18 +214,17 @@ impl SandboxManager {
 
         let canonical = self.canonicalize(path);
         if self.matches_deny(&canonical) {
-            let reason = "path matches deny list";
-            self.log_violation(&SandboxViolation {
-                timestamp: Utc::now(),
-                kind: if write {
-                    ViolationKind::Write
-                } else {
-                    ViolationKind::Path
-                },
-                path_or_command: canonical.display().to_string(),
-                reason: reason.to_string(),
-            });
-            return Err(SandboxError::PathDenied(canonical.display().to_string()));
+            let kind = if write {
+                ViolationKind::Write
+            } else {
+                ViolationKind::Path
+            };
+            return self.reject_path(
+                &canonical,
+                kind,
+                "path matches deny list",
+                SandboxError::PathDenied,
+            );
         }
 
         match self.profile {
@@ -216,49 +234,41 @@ impl SandboxManager {
                 let in_allow = self.matches_allow(&canonical);
                 if !in_workspace && !in_temp && !in_allow {
                     if write {
-                        let reason = "write outside workspace, temp, and allow list";
-                        self.log_violation(&SandboxViolation {
-                            timestamp: Utc::now(),
-                            kind: ViolationKind::Write,
-                            path_or_command: canonical.display().to_string(),
-                            reason: reason.to_string(),
-                        });
-                        return Err(SandboxError::WriteDenied(canonical.display().to_string()));
+                        return self.reject_path(
+                            &canonical,
+                            ViolationKind::Write,
+                            "write outside workspace, temp, and allow list",
+                            SandboxError::WriteDenied,
+                        );
                     }
-                    let reason = "path outside workspace, temp, and allow list";
-                    self.log_violation(&SandboxViolation {
-                        timestamp: Utc::now(),
-                        kind: ViolationKind::Path,
-                        path_or_command: canonical.display().to_string(),
-                        reason: reason.to_string(),
-                    });
-                    return Err(SandboxError::PathDenied(canonical.display().to_string()));
+                    return self.reject_path(
+                        &canonical,
+                        ViolationKind::Path,
+                        "path outside workspace, temp, and allow list",
+                        SandboxError::PathDenied,
+                    );
                 }
                 Ok(())
             }
             SandboxProfile::ReadOnly => {
                 if write {
-                    let reason = "write denied under read-only profile";
-                    self.log_violation(&SandboxViolation {
-                        timestamp: Utc::now(),
-                        kind: ViolationKind::Write,
-                        path_or_command: canonical.display().to_string(),
-                        reason: reason.to_string(),
-                    });
-                    return Err(SandboxError::WriteDenied(canonical.display().to_string()));
+                    return self.reject_path(
+                        &canonical,
+                        ViolationKind::Write,
+                        "write denied under read-only profile",
+                        SandboxError::WriteDenied,
+                    );
                 }
                 Ok(())
             }
             SandboxProfile::Custom => {
                 if !self.matches_allow(&canonical) {
-                    let reason = "path not in custom allow list";
-                    self.log_violation(&SandboxViolation {
-                        timestamp: Utc::now(),
-                        kind: ViolationKind::Path,
-                        path_or_command: canonical.display().to_string(),
-                        reason: reason.to_string(),
-                    });
-                    return Err(SandboxError::PathDenied(canonical.display().to_string()));
+                    return self.reject_path(
+                        &canonical,
+                        ViolationKind::Path,
+                        "path not in custom allow list",
+                        SandboxError::PathDenied,
+                    );
                 }
                 Ok(())
             }
