@@ -418,6 +418,34 @@ mod tests {
     }
 
     #[test]
+    fn load_jsonl_recovers_from_malformed_lines() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("malformed.jsonl");
+
+        let valid_entry = serde_json::json!({
+            "id": 1,
+            "parent_id": null,
+            "role": "user",
+            "content": "valid message"
+        });
+
+        let content = format!(
+            "\n\n{}\nmalformed json\n{}\n{}\n",
+            "{}", // empty object
+            valid_entry,
+            serde_json::json!({"type": "session_todos", "todos": {"items": []}})
+        );
+
+        std::fs::write(&path, content).unwrap();
+
+        let loaded = Session::load_jsonl(&path).unwrap();
+        assert_eq!(loaded.id, "malformed");
+        assert_eq!(loaded.entries.len(), 1);
+        assert_eq!(loaded.entries[0].content, "valid message");
+        assert!(loaded.todos.items.is_empty());
+    }
+
+    #[test]
     fn codex_jsonl_roundtrip() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("codex.jsonl");
