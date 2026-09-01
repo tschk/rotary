@@ -1560,26 +1560,33 @@ mod tests {
     }
 
     #[test]
-    fn test_shell_pipelines() {
-        // Simple single command
+    fn test_shell_pipelines_single_command() {
         assert_eq!(shell_pipelines("echo a"), Vec::<Vec<String>>::new());
+    }
 
-        // Simple pipeline
+    #[test]
+    fn test_shell_pipelines_simple_pipeline() {
         assert_eq!(shell_pipelines("echo a | cat"), vec![vec!["echo a", "cat"]]);
+    }
 
-        // Multiple stages
+    #[test]
+    fn test_shell_pipelines_multiple_stages() {
         assert_eq!(
             shell_pipelines("echo a | cat | sort"),
             vec![vec!["echo a", "cat", "sort"]]
         );
+    }
 
-        // `|&` syntax
+    #[test]
+    fn test_shell_pipelines_pipe_and_ampersand() {
         assert_eq!(
             shell_pipelines("echo a |& cat"),
             vec![vec!["echo a", "cat"]]
         );
+    }
 
-        // Logical operators `||` and `&&` (should not form pipelines across them, but rather break them)
+    #[test]
+    fn test_shell_pipelines_logical_operators() {
         assert_eq!(
             shell_pipelines("echo a || echo b | cat"),
             vec![vec!["echo b", "cat"]]
@@ -1588,8 +1595,10 @@ mod tests {
             shell_pipelines("echo a && echo b | cat"),
             vec![vec!["echo b", "cat"]]
         );
+    }
 
-        // Quotes protecting `|`
+    #[test]
+    fn test_shell_pipelines_quotes() {
         assert_eq!(
             shell_pipelines("echo 'a | b' | cat"),
             vec![vec!["echo 'a | b'", "cat"]]
@@ -1602,35 +1611,45 @@ mod tests {
             shell_pipelines("echo `a | b` | cat"),
             vec![vec!["echo `a | b`", "cat"]]
         );
+    }
 
-        // Escapes protecting `|`
+    #[test]
+    fn test_shell_pipelines_escapes() {
         assert_eq!(
             shell_pipelines("echo a \\| b | cat"),
             vec![vec!["echo a \\| b", "cat"]]
         );
+    }
 
-        // Semicolons splitting commands
+    #[test]
+    fn test_shell_pipelines_semicolons() {
         assert_eq!(
             shell_pipelines("echo a ; echo b | cat ; echo c"),
             vec![vec!["echo b", "cat"]]
         );
+    }
 
-        // Newlines as command separators
+    #[test]
+    fn test_shell_pipelines_newlines() {
         assert_eq!(
             shell_pipelines("echo a\necho b | cat\necho c"),
             vec![vec!["echo b", "cat"]]
         );
+    }
 
-        // Background `&` as command separators
+    #[test]
+    fn test_shell_pipelines_background_ampersand() {
         assert_eq!(
             shell_pipelines("echo a & echo b | cat & echo c"),
             vec![vec!["echo b", "cat"]]
         );
+    }
 
-        // Empty segments ignored / malformed pipeline
+    #[test]
+    fn test_shell_pipelines_empty_segments() {
         assert_eq!(
             shell_pipelines("echo a | | cat"),
-            vec![vec!["echo a", "cat"]] // The function ignores empty segments
+            vec![vec!["echo a", "cat"]]
         );
     }
 
