@@ -57,3 +57,10 @@ When the `mcp` feature is on, the prefix exposes `tool_search` and
 - Plan accept wipes `<planning>` / `[planning]` / `PLAN:` tokens.
 - `WritePathSchedule`: omit paths = whole workspace = serialize writes.
 - `ContextCapsule` gives subagents zero ambient inheritance.
+- File snapshots and observed-version guards are host opt-in (`enable_file_guards`).
+- `TwoSessionCoordinator` moves messages only on explicit routes.
+- Skills with `required_tools` stay silent when those tools are not loaded.
+- `ModelBinding` is per request; it is not a process-global default.
+- `ShadowGit` checkpoints live in `.rx4/shadow.git` when the host enables it.
+- `HunkLog` records hashline edits for rewind without replacing `hashline::apply`.
+- Explore subagents default to depth 1 and do not inherit the parent transcript.

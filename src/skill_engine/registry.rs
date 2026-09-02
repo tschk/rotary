@@ -77,7 +77,18 @@ impl SkillRegistry {
     }
 
     fn auto_activate_sync(&self, prompt: &str) -> Vec<String> {
+        self.auto_activate_for_surface(prompt, None)
+    }
+
+    pub fn auto_activate_for_surface(
+        &self,
+        prompt: &str,
+        available_tools: Option<&[String]>,
+    ) -> Vec<String> {
         let mut matched: Vec<&Skill> = self.match_prompt(prompt);
+        if let Some(tools) = available_tools {
+            matched.retain(|s| s.matches_loadout(tools));
+        }
         matched.sort_by(|a, b| {
             b.confidence
                 .partial_cmp(&a.confidence)
@@ -283,6 +294,7 @@ mod tests {
             source_conversation: None,
             pinned: false,
             state: SkillState::Active,
+            required_tools: Vec::new(),
         };
         skill.recompute_confidence_with_prior(prior);
         assert!((skill.confidence - prior.mean(3, 1)).abs() < 1e-9);
@@ -307,6 +319,7 @@ mod tests {
             source_conversation: None,
             pinned: false,
             state: SkillState::Active,
+            required_tools: Vec::new(),
         };
         let other = Skill {
             id: "o".into(),
@@ -323,6 +336,7 @@ mod tests {
             source_conversation: None,
             pinned: false,
             state: SkillState::Active,
+            required_tools: Vec::new(),
         };
         registry.register(other);
         registry.register(deploy);
@@ -452,6 +466,7 @@ mod tests {
             source_conversation: None,
             pinned: false,
             state: SkillState::Active,
+            required_tools: Vec::new(),
         };
         low.recompute_confidence();
         let mut high = Skill {
@@ -469,6 +484,7 @@ mod tests {
             source_conversation: None,
             pinned: false,
             state: SkillState::Active,
+            required_tools: Vec::new(),
         };
         high.recompute_confidence();
         registry.register(low);
@@ -591,6 +607,7 @@ mod tests {
             source_conversation: None,
             pinned: false,
             state: SkillState::Active,
+            required_tools: Vec::new(),
         };
         let json_path = dir.path().join("json-1.json");
         std::fs::write(
@@ -653,5 +670,40 @@ mod tests {
         engine.load().expect("load");
         assert_eq!(engine.list().len(), 1);
         assert_eq!(engine.list()[0].name, "extra_skill");
+    }
+
+    #[test]
+    fn skips_skills_whose_required_tools_are_missing() {
+        let mut registry = SkillRegistry::new();
+        let mut gated = Skill {
+            id: "g".into(),
+            name: "gated".into(),
+            description: "d".into(),
+            trigger_patterns: vec!["deploy".into()],
+            instructions: "needs bash".into(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            success_count: 1,
+            failure_count: 0,
+            confidence: 0.9,
+            tags: vec![],
+            source_conversation: None,
+            pinned: false,
+            state: SkillState::Active,
+            required_tools: vec!["bash".into()],
+        };
+        gated.recompute_confidence();
+        registry.register(gated);
+        assert!(registry
+            .auto_activate_for_surface("deploy now", Some(&["read".into()]))
+            .is_empty());
+        assert_eq!(
+            registry.auto_activate_for_surface("deploy now", Some(&["bash".into()])),
+            vec!["needs bash".to_string()]
+        );
+        assert_eq!(
+            registry.auto_activate_for_surface("deploy now", None),
+            vec!["needs bash".to_string()]
+        );
     }
 }

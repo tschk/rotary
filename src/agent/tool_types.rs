@@ -141,6 +141,10 @@ pub struct ToolContext {
     pub lsp: Option<Arc<crate::lsp::LspManager>>,
     /// Last hashline read per path. `hashline_edit` fail-closes without a match.
     pub hashline_sight: Arc<parking_lot::RwLock<crate::hashline::HashlineSight>>,
+    pub snapshots: Option<Arc<parking_lot::RwLock<crate::snapshot::SnapshotStore>>>,
+    pub versions: Option<Arc<parking_lot::RwLock<crate::snapshot::FileVersionGuard>>>,
+    pub hunk_log: Option<Arc<parking_lot::RwLock<crate::hashline::HunkLog>>>,
+    pub worktree_claim: Option<crate::permissions::WorktreeClaim>,
 }
 
 impl ToolContext {
@@ -162,6 +166,10 @@ impl ToolContext {
             hashline_sight: Arc::new(parking_lot::RwLock::new(
                 crate::hashline::HashlineSight::new(),
             )),
+            snapshots: None,
+            versions: None,
+            hunk_log: None,
+            worktree_claim: None,
         }
     }
 
@@ -326,6 +334,12 @@ impl ToolRegistry {
 
     /// Get the effect class for a tool.
     /// Unknown tools default to Process (serial, no cache) — safer than Read.
+    pub fn names(&self) -> Vec<String> {
+        let mut names: Vec<String> = self.tools.iter().map(|t| t.name.clone()).collect();
+        names.sort();
+        names
+    }
+
     pub fn effect_of(&self, name: &str) -> ToolEffect {
         self.tools
             .get(name)

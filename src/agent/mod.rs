@@ -15,11 +15,12 @@ use crate::compaction::{
 };
 use crate::cost::{PricingRegistry, SessionCost, TokenUsage};
 use crate::guardrails::{
-    check_empty_turn, plan_tool_effect_batches, recover_empty_turn, GuardrailConfig,
-    GuardrailDecision, RecoveryAction, SelfHealingRetry, ToolGuardrails,
+    check_empty_turn, recover_empty_turn, schedule_tool_calls, GuardrailConfig, GuardrailDecision,
+    RecoveryAction, SelfHealingRetry, ToolGuardrails,
 };
 use crate::hooks::HookRegistry;
 use crate::mode::{self, Profile, Scope};
+use crate::models::ModelBinding;
 use crate::models::ModelRegistry;
 use crate::permissions::{
     Approver, AsyncApprover, Authorizer, Decision, PlanApprover, PlanDecision, PlanProposal,
@@ -415,6 +416,12 @@ pub struct Agent {
     last_gate_workspace_hash: Option<String>,
     pub session: Arc<RwLock<crate::session::Session>>,
     pub write_paths: crate::permissions::WritePathSchedule,
+    pub model_binding: Option<ModelBinding>,
+    file_snapshots: Option<Arc<RwLock<crate::snapshot::SnapshotStore>>>,
+    file_versions: Option<Arc<RwLock<crate::snapshot::FileVersionGuard>>>,
+    hunk_log: Arc<RwLock<crate::hashline::HunkLog>>,
+    shadow_git: Option<crate::shadow_git::ShadowGit>,
+    worktree_claim: Option<crate::permissions::WorktreeClaim>,
 }
 
 impl Agent {
@@ -484,6 +491,12 @@ impl Agent {
             last_gate_workspace_hash: None,
             session: Arc::new(RwLock::new(crate::session::Session::new("agent", "agent"))),
             write_paths: crate::permissions::WritePathSchedule::whole_workspace(),
+            model_binding: None,
+            file_snapshots: None,
+            file_versions: None,
+            hunk_log: Arc::new(RwLock::new(crate::hashline::HunkLog::new())),
+            shadow_git: None,
+            worktree_claim: None,
         };
         // Always attach userspace workspace sandbox (path confinement for FS tools).
         agent.ensure_userspace_sandbox();
@@ -504,6 +517,43 @@ impl Agent {
     }
 
     /// Replace the model metadata supplied by the host.
+    pub fn set_model_binding(&mut self, binding: ModelBinding) {
+        self.model = binding.model_id.clone();
+        self.model_binding = Some(binding);
+    }
+
+    pub fn enable_file_guards(&mut self) {
+        self.file_snapshots = Some(Arc::new(RwLock::new(crate::snapshot::SnapshotStore::new())));
+        self.file_versions = Some(Arc::new(RwLock::new(
+            crate::snapshot::FileVersionGuard::new(),
+        )));
+    }
+
+    pub fn enable_shadow_git(&mut self) -> Result<String, crate::shadow_git::ShadowGitError> {
+        let shadow = crate::shadow_git::ShadowGit::init(&self.workspace_root)?;
+        let hash = shadow.checkpoint("init")?;
+        self.shadow_git = Some(shadow);
+        Ok(hash)
+    }
+
+    pub fn checkpoint_turn(
+        &self,
+        turn_id: &str,
+    ) -> Result<String, crate::shadow_git::ShadowGitError> {
+        self.shadow_git
+            .as_ref()
+            .ok_or_else(|| crate::shadow_git::ShadowGitError("shadow-git not enabled".into()))?
+            .checkpoint(turn_id)
+    }
+
+    pub fn set_worktree_claim(&mut self, claim: crate::permissions::WorktreeClaim) {
+        self.worktree_claim = Some(claim);
+    }
+
+    pub fn hunk_log(&self) -> Arc<RwLock<crate::hashline::HunkLog>> {
+        Arc::clone(&self.hunk_log)
+    }
+
     pub fn set_model_registry(&mut self, registry: ModelRegistry) {
         self.model_registry = registry;
     }
@@ -1575,14 +1625,15 @@ impl Agent {
         calls: &[ToolCall],
         ctx: &Arc<ToolContext>,
     ) -> Vec<ToolResult> {
-        let effects: Vec<ToolEffect> = calls
+        let classified: Vec<(String, String, ToolEffect)> = calls
             .iter()
             .map(|c| {
-                let name = normalize_tool_name(&c.name);
-                self.tools.effect_of(name)
+                let name = normalize_tool_name(&c.name).to_string();
+                let registered = self.tools.effect_of(&name);
+                (name, c.arguments.clone(), registered)
             })
             .collect();
-        let batches = plan_tool_effect_batches(&effects);
+        let batches = schedule_tool_calls(&classified);
         let mut results: Vec<Option<ToolResult>> = vec![None; calls.len()];
         let mut join_failures: Vec<Option<String>> = vec![None; calls.len()];
 
@@ -1887,6 +1938,10 @@ impl Agent {
         tool_ctx.os_sandbox_required = self.policy.enable_os_sandbox && self.os_sandbox.is_none();
         tool_ctx.cancellation = self.turn_cancellation.reset();
         tool_ctx.hashline_sight = Arc::clone(&self.hashline_sight);
+        tool_ctx.snapshots = self.file_snapshots.clone();
+        tool_ctx.versions = self.file_versions.clone();
+        tool_ctx.hunk_log = Some(Arc::clone(&self.hunk_log));
+        tool_ctx.worktree_claim = self.worktree_claim.clone();
         #[cfg(feature = "ipc")]
         {
             tool_ctx.lsp = Some(Arc::clone(&self.lsp));

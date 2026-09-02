@@ -53,6 +53,15 @@
 - Unified exec `ProcessStdin` events; optional `apply_patch`; Guardian fail-closed Authorizer.
 - Plan-mode wipe on accept; `WritePathSchedule`; `ContextCapsule` (zero ambient inheritance).
 - Events: `RetryReason`, `ProcessStdin`, `RequestPermissions`, `PatchHunk`.
+- Pre-edit `SnapshotStore` and fail-closed `FileVersionGuard` (host opt-in via `Agent::enable_file_guards`).
+- `TwoSessionCoordinator` with explicit routes only (`multiagent`).
+- Skill injection skips skills whose `required_tools` are missing from the live loadout.
+- Per-request `ModelBinding` (credential id + model id + window).
+- Host-opt-in `ShadowGit` checkpoints under `.rx4/shadow.git` (user `.git` untouched).
+- Tool scheduler `reclassify_effect` / `schedule_tool_calls` (mutating barrier, model order).
+- `ExecPrefixRule` on `Policy` and fail-closed `WorktreeClaim` / `WorktreeAuthorizer`.
+- Hashline `HunkLog` rewind (`InPlace` / `Fork`); hashline apply path unchanged.
+- Explore `SubagentConfig::explore` is depth-1 (no child spawn); parent transcript is not merged.
 - Opt-in autoresearch sessions with resumable `.auto/` state, structured
   `METRIC name=value` parsing, correctness checks, and keep/discard decisions.
 - Isolated `AutoresearchController` with detached Git checkpoints, rollback,

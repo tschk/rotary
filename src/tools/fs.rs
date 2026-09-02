@@ -44,6 +44,9 @@ pub(crate) fn exec_read(ctx: Arc<ToolContext>, args: String) -> ToolFuture {
         };
         match tokio::fs::read_to_string(&full).await {
             Ok(content) => {
+                if let Some(versions) = &ctx.versions {
+                    versions.write().observe(&full, content.as_bytes());
+                }
                 if hashline {
                     // Honor `offset` as a 0-based start line; `limit` still
                     // caps visible lines (head+tail never exceed max_visible).
@@ -98,6 +101,19 @@ pub(crate) fn exec_write(ctx: Arc<ToolContext>, args: String) -> ToolFuture {
                 }
             }
         }
+        if let Some(claim) = &ctx.worktree_claim {
+            if !claim.allows(&full) {
+                return ToolResult::err("write", "path outside claimed worktree");
+            }
+        }
+        if let Some(versions) = &ctx.versions {
+            if let Err(e) = versions.read().check(&full) {
+                return ToolResult::err("write", e);
+            }
+        }
+        if let Some(store) = &ctx.snapshots {
+            store.write().snapshot_file(&full);
+        }
         match tokio::fs::write(&full, &content).await {
             Ok(_) => {
                 debug!("wrote {} bytes to {}", content.len(), full.display());
@@ -129,6 +145,19 @@ pub(crate) fn exec_edit(ctx: Arc<ToolContext>, args: String) -> ToolFuture {
             Ok(p) => p,
             Err(e) => return ToolResult::err("edit", e),
         };
+        if let Some(claim) = &ctx.worktree_claim {
+            if !claim.allows(&full) {
+                return ToolResult::err("edit", "path outside claimed worktree");
+            }
+        }
+        if let Some(versions) = &ctx.versions {
+            if let Err(e) = versions.read().check(&full) {
+                return ToolResult::err("edit", e);
+            }
+        }
+        if let Some(store) = &ctx.snapshots {
+            store.write().snapshot_file(&full);
+        }
         let content = match tokio::fs::read_to_string(&full).await {
             Ok(c) => c,
             Err(e) => return ToolResult::err("edit", format!("read failed: {e}")),
@@ -173,6 +202,19 @@ pub(crate) fn exec_hashline_edit(ctx: Arc<ToolContext>, args: String) -> ToolFut
             Ok(p) => p,
             Err(e) => return ToolResult::err("hashline_edit", e),
         };
+        if let Some(claim) = &ctx.worktree_claim {
+            if !claim.allows(&full) {
+                return ToolResult::err("hashline_edit", "path outside claimed worktree");
+            }
+        }
+        if let Some(versions) = &ctx.versions {
+            if let Err(e) = versions.read().check(&full) {
+                return ToolResult::err("hashline_edit", e);
+            }
+        }
+        if let Some(store) = &ctx.snapshots {
+            store.write().snapshot_file(&full);
+        }
         let content = match tokio::fs::read_to_string(&full).await {
             Ok(c) => c,
             Err(e) => return ToolResult::err("hashline_edit", format!("read failed: {e}")),
@@ -183,20 +225,30 @@ pub(crate) fn exec_hashline_edit(ctx: Arc<ToolContext>, args: String) -> ToolFut
             .read()
             .visible_for_any([&path, &display], &tag);
         match crate::hashline::apply(&content, &tag, &script, &visible, family) {
-            Ok(next) => match tokio::fs::write(&full, &next).await {
-                Ok(_) => {
-                    ctx.hashline_sight.write().forget(&path);
-                    let display = full
-                        .strip_prefix(&ctx.workspace_root)
-                        .unwrap_or(full.as_path());
-                    let display = display.to_string_lossy();
-                    ctx.hashline_sight
-                        .write()
-                        .forget(display.trim_start_matches('/'));
-                    ToolResult::ok("hashline_edit", format!("edited {}", path))
+            Ok(next) => {
+                if let Some(log) = &ctx.hunk_log {
+                    log.write().record(crate::hashline::HunkCheckpoint {
+                        path: path.clone(),
+                        before: content.clone(),
+                        after: next.clone(),
+                        tag: tag.clone(),
+                    });
                 }
-                Err(e) => ToolResult::err("hashline_edit", format!("write failed: {e}")),
-            },
+                match tokio::fs::write(&full, &next).await {
+                    Ok(_) => {
+                        ctx.hashline_sight.write().forget(&path);
+                        let display = full
+                            .strip_prefix(&ctx.workspace_root)
+                            .unwrap_or(full.as_path());
+                        let display = display.to_string_lossy();
+                        ctx.hashline_sight
+                            .write()
+                            .forget(display.trim_start_matches('/'));
+                        ToolResult::ok("hashline_edit", format!("edited {}", path))
+                    }
+                    Err(e) => ToolResult::err("hashline_edit", format!("write failed: {e}")),
+                }
+            }
             Err(e) => ToolResult::err("hashline_edit", e.to_string()),
         }
     })

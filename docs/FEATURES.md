@@ -29,7 +29,7 @@ rotary exposes **capabilities, not policy**. Scheduling, enabled flags, and life
 - **Context discipline** — tool definitions are serialized in stable name order, and `ToolRegistry::definitions_fingerprint()` lets hosts detect loadout changes that can invalidate a cached prompt prefix.
 - **OS sandbox** — optional seatbelt/bwrap wrap for bash via `Agent::enable_os_sandbox` (userspace `SandboxManager` still separate).
 - **Slash command parsing** — `/command` parsing for host UIs.
-- **Guardrails** — empty turn detection, repeated failure detection, tool-effect batch planning.
+- **Guardrails** — empty turn detection, repeated failure detection, tool-effect batch planning, live-arg reclassify + mutating barrier.
 - **Structured extraction** — JSON contracts for typed tool outputs.
 - **Subagent manager** — optional provider-driven `Agent::prompt` runs with workspace isolation directories.
 - **LSP client** — diagnostics, references, definition via Language Server Protocol.

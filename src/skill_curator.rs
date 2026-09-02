@@ -303,6 +303,7 @@ mod tests {
             source_conversation: None,
             pinned: false,
             state: SkillState::Active,
+            required_tools: Vec::new(),
         }
     }
 

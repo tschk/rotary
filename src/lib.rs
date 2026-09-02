@@ -72,11 +72,13 @@ pub mod secrets;
 #[cfg(feature = "zkr-memory")]
 pub mod self_improve;
 pub mod session;
+pub mod shadow_git;
 #[cfg(feature = "skills")]
 pub mod skill_curator;
 #[cfg(feature = "skills")]
 pub mod skill_engine;
 pub mod slash;
+pub mod snapshot;
 #[cfg(feature = "sse")]
 pub mod sse;
 pub mod subagent;
@@ -168,13 +170,15 @@ pub use graph_memory::{
     SemanticRecall,
 };
 pub use guardrails::{
-    classify_tool, recover_empty_turn, recover_stuck_tool, GuardrailConfig, GuardrailDecision,
-    RecoveryAction, SelfHealingRetry, ToolClass, ToolGuardrails,
+    classify_tool, reclassify_effect, recover_empty_turn, recover_stuck_tool, schedule_tool_calls,
+    GuardrailConfig, GuardrailDecision, RecoveryAction, SelfHealingRetry, ToolClass,
+    ToolGuardrails,
 };
 pub use hashline::{
     apply as apply_hashline, format_read as format_hashline_read, tag_for as hashline_tag_for,
-    HashlineError, HashlineSight, ModelFamily as HashlineModelFamily,
-    ParseMode as HashlineParseMode, ReadOptions as HashlineReadOptions, TaggedRead, VisibleSet,
+    HashlineError, HashlineSight, HunkCheckpoint, HunkLog, ModelFamily as HashlineModelFamily,
+    ParseMode as HashlineParseMode, ReadOptions as HashlineReadOptions, RewindError, RewindMode,
+    TaggedRead, VisibleSet,
 };
 pub use hooks::{HookDecision, HookEvent, HookFn, HookRegistry};
 pub use mode::{Profile, Scope};
@@ -183,12 +187,13 @@ pub use model_router::{
     ModelRouter, ModelRouterError, ModelTier, ProactiveMonitor, RouterConfig, SkillSuggestion,
     SubagentModelSelector, TaskTier, TaskType,
 };
-pub use models::{CompatConfig, ModelInfo, ModelRegistry};
+pub use models::{CompatConfig, ModelBinding, ModelInfo, ModelRegistry};
 #[cfg(all(feature = "ipc", feature = "multiagent"))]
 pub use multiagent::CoordinatorEvent;
 #[cfg(feature = "multiagent")]
 pub use multiagent::{
-    AgentProfile, AgentRole, MultiAgentCoordinator, MultiAgentError, TeamResult, TeamTask,
+    AgentProfile, AgentRole, MultiAgentCoordinator, MultiAgentError, SessionRoute, TeamResult,
+    TeamTask, TwoSessionCoordinator,
 };
 pub use permissions::{
     authorize, authorize_with_workspace, command_from_args, is_dangerous_shell_command,
@@ -196,9 +201,9 @@ pub use permissions::{
     shell_ast, shell_command_allowed, shell_command_matches_all, shell_command_matches_any,
     shell_rule_matches, shell_segments, shell_simples, AlwaysAllow, AlwaysApprovePlan, AlwaysDeny,
     ApprovalRequest, Approver, AsyncApprover, Authorizer, ChannelApprover, ChannelAsyncApprover,
-    ChannelPlanApprover, Decision, GuardianAuthorizer, GuardianReview, PermissionMode,
-    PlanApprover, PlanDecision, PlanProposal, Policy, PolicyAuthorizer, ShellNode, ShellSimple,
-    WritePathSchedule,
+    ChannelPlanApprover, Decision, ExecPrefixRule, GuardianAuthorizer, GuardianReview,
+    PermissionMode, PlanApprover, PlanDecision, PlanProposal, Policy, PolicyAuthorizer, ShellNode,
+    ShellSimple, WorktreeAuthorizer, WorktreeClaim, WritePathSchedule,
 };
 pub use prewalk::{is_mutating_call, Prewalk};
 pub use prompt_cache::{
@@ -222,6 +227,7 @@ pub use secrets::{
     filter_env_vars, is_sensitive_env_var, RedactionConfig, Redactor, SecretMatch, SecretPattern,
 };
 pub use session::Session;
+pub use shadow_git::{ShadowGit, ShadowGitError};
 #[cfg(feature = "skills")]
 pub use skill_curator::{CuratorConfig, CuratorSuggestion, SkillCurator, SuggestionKind};
 #[cfg(feature = "skills")]
@@ -230,6 +236,7 @@ pub use skill_engine::{
     SkillState,
 };
 pub use slash::{help_text as slash_help_text, parse as parse_slash, Command as SlashCommand};
+pub use snapshot::{FileSnapshot, FileVersionGuard, SnapshotStore};
 #[cfg(feature = "sse")]
 pub use sse::{SseError, SseEvent, SseParser};
 pub use subagent::{

@@ -127,6 +127,10 @@ pub struct SubagentConfig {
     pub timeout_seconds: Option<u64>,
     #[serde(default)]
     pub capsule: crate::capsule::ContextCapsule,
+    #[serde(default)]
+    pub merge_parent_transcript: bool,
+    #[serde(default)]
+    pub explore: bool,
 }
 
 fn default_max_steps() -> usize {
@@ -150,6 +154,30 @@ impl Default for SubagentConfig {
             task_contract: None,
             timeout_seconds: None,
             capsule: crate::capsule::ContextCapsule::empty(),
+            merge_parent_transcript: false,
+            explore: false,
+        }
+    }
+}
+
+impl SubagentConfig {
+    pub fn explore(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            permission_mode: Some(PermissionMode::ReadOnly),
+            allowed_tools: Some(vec![
+                "read".to_string(),
+                "grep".to_string(),
+                "find".to_string(),
+                "ls".to_string(),
+            ]),
+            limits: SubagentLimits {
+                max_depth: Some(0),
+                ..SubagentLimits::default()
+            },
+            merge_parent_transcript: false,
+            explore: true,
+            ..Self::default()
         }
     }
 }
@@ -1205,6 +1233,35 @@ mod tests {
         assert_eq!(handle.status(), SubagentStatus::Cancelled);
         assert_eq!(handle.wait().await.error.as_deref(), Some("cancelled"));
         assert_eq!(mgr.running_count(), 0);
+    }
+
+    #[test]
+    #[test]
+    fn explore_defaults_depth_one_without_parent_transcript() {
+        let c = SubagentConfig::explore("scout");
+        assert_eq!(c.limits.max_depth, Some(0));
+        assert!(!c.merge_parent_transcript);
+        assert!(c.explore);
+        assert_eq!(c.permission_mode, Some(PermissionMode::ReadOnly));
+        let mut parent = SubagentManager::new();
+        let parent_handle = parent
+            .spawn(config("parent"), "parent prompt", Path::new("."))
+            .expect("parent");
+        let mut child_cfg = SubagentConfig::explore("scout");
+        child_cfg.parent_id = Some(parent_handle.id().to_string());
+        let child = parent
+            .spawn(child_cfg, "look around", Path::new("."))
+            .expect("child");
+        let result = child.result().expect("result");
+        assert!(!result.output.contains("parent prompt"));
+        assert!(result.output.contains("look around"));
+        let grandchild_cfg = {
+            let mut c = SubagentConfig::explore("too-deep");
+            c.parent_id = Some(child.id().to_string());
+            c
+        };
+        let denied = parent.spawn(grandchild_cfg, "nope", Path::new("."));
+        assert!(denied.is_err());
     }
 
     #[test]

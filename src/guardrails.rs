@@ -384,6 +384,44 @@ impl Default for AbortSignal {
     }
 }
 
+pub fn reclassify_effect(name: &str, args: &str, registered: ToolEffect) -> ToolEffect {
+    if name == "bash" || name == "exec" || name == "shell" {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(args) {
+            if let Some(cmd) = v.get("command").and_then(|c| c.as_str()) {
+                let first = cmd.split_whitespace().next().unwrap_or("");
+                if matches!(
+                    first,
+                    "cat" | "ls" | "head" | "tail" | "pwd" | "echo" | "rg" | "grep" | "find"
+                ) {
+                    return ToolEffect::Read;
+                }
+                return ToolEffect::Process;
+            }
+        }
+        return ToolEffect::Process;
+    }
+    if is_mutating_name(name) {
+        ToolEffect::Write
+    } else {
+        registered
+    }
+}
+
+fn is_mutating_name(name: &str) -> bool {
+    matches!(
+        name,
+        "write" | "edit" | "hashline_edit" | "apply_patch" | "delete" | "rename" | "move"
+    )
+}
+
+pub fn schedule_tool_calls(calls: &[(String, String, ToolEffect)]) -> Vec<Vec<usize>> {
+    let effects: Vec<ToolEffect> = calls
+        .iter()
+        .map(|(name, args, registered)| reclassify_effect(name, args, *registered))
+        .collect();
+    plan_tool_effect_batches(&effects)
+}
+
 /// Plan tool effect batches — groups indices that can run in parallel.
 /// Consecutive parallel-capable tools (Read, Network) are grouped into a
 /// single batch; each non-parallel tool (Write, Process) gets its own batch.
@@ -851,6 +889,30 @@ mod tests {
     fn recover_empty_turn_retry_before_halt() {
         assert_eq!(recover_empty_turn(2, 5), RecoveryAction::Retry);
         assert!(matches!(recover_empty_turn(4, 5), RecoveryAction::Halt(_)));
+    }
+
+    #[test]
+    fn schedule_reclassifies_then_preserves_model_order() {
+        let calls = [
+            (
+                "bash".into(),
+                r#"{"command":"ls"}"#.into(),
+                ToolEffect::Process,
+            ),
+            (
+                "bash".into(),
+                r#"{"command":"pwd"}"#.into(),
+                ToolEffect::Process,
+            ),
+            ("write".into(), r#"{"path":"a"}"#.into(), ToolEffect::Write),
+            ("read".into(), r#"{"path":"b"}"#.into(), ToolEffect::Read),
+        ];
+        let batches = schedule_tool_calls(&calls);
+        assert_eq!(batches, vec![vec![0, 1], vec![2], vec![3]]);
+        assert_eq!(
+            reclassify_effect("bash", r#"{"command":"rm -rf x"}"#, ToolEffect::Read),
+            ToolEffect::Process
+        );
     }
 
     #[test]
