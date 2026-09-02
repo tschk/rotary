@@ -114,7 +114,7 @@ pub fn register_tools(registry: &ToolRegistry) {
 }
 
 fn register(
-    registry: &mut ToolRegistry,
+    registry: &ToolRegistry,
     name: &'static str,
     description: &'static str,
     parameters_json: &'static str,
