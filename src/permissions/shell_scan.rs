@@ -318,6 +318,52 @@ fn decode_ansi_c(value: &str) -> String {
     out
 }
 
+fn push_double_quote(inner: &str, out: &mut String) {
+    let subs = substitutions_in(inner);
+    if !subs.is_empty() {
+        out.push_str(&subs.join(" "));
+    } else if is_bare_word(inner) {
+        out.push_str(inner);
+    } else {
+        out.push_str("\"\"");
+    }
+}
+
+fn push_ansi_c_quote(inner: &str, out: &mut String) {
+    let decoded = decode_ansi_c(inner);
+    if is_bare_word(&decoded) {
+        out.push_str(&decoded);
+    } else {
+        out.push_str("''");
+    }
+}
+
+fn push_single_quote(inner: &str, out: &mut String) {
+    if is_bare_word(inner) {
+        out.push_str(inner);
+    } else {
+        out.push_str("''");
+    }
+}
+
+fn process_backslash(chars: &[char], i: usize, out: &mut String) -> usize {
+    match chars.get(i + 1) {
+        Some(&next) if next.is_ascii_alphanumeric() || "_@%+=:,./-".contains(next) => {
+            out.push(next);
+            i + 2
+        }
+        Some(&next) => {
+            out.push('\\');
+            out.push(next);
+            i + 2
+        }
+        None => {
+            out.push('\\');
+            i + 1
+        }
+    }
+}
+
 fn unquote_base(input: &str) -> String {
     let chars: Vec<char> = input.chars().collect();
     let mut out = String::new();
@@ -325,76 +371,28 @@ fn unquote_base(input: &str) -> String {
     while i < chars.len() {
         let c = chars[i];
         if c == '"' {
-            match read_delimited(&chars, i + 1, '"', true) {
-                Some((inner, end)) => {
-                    let subs = substitutions_in(&inner);
-                    if !subs.is_empty() {
-                        out.push_str(&subs.join(" "));
-                    } else if is_bare_word(&inner) {
-                        out.push_str(&inner);
-                    } else {
-                        out.push_str("\"\"");
-                    }
-                    i = end;
-                }
-                None => {
-                    out.push(c);
-                    i += 1;
-                }
+            if let Some((inner, end)) = read_delimited(&chars, i + 1, '"', true) {
+                push_double_quote(&inner, &mut out);
+                i = end;
+                continue;
             }
-            continue;
         }
         if c == '$' && chars.get(i + 1) == Some(&'\'') {
-            match read_delimited(&chars, i + 2, '\'', true) {
-                Some((inner, end)) => {
-                    let decoded = decode_ansi_c(&inner);
-                    if is_bare_word(&decoded) {
-                        out.push_str(&decoded);
-                    } else {
-                        out.push_str("''");
-                    }
-                    i = end;
-                }
-                None => {
-                    out.push(c);
-                    i += 1;
-                }
+            if let Some((inner, end)) = read_delimited(&chars, i + 2, '\'', true) {
+                push_ansi_c_quote(&inner, &mut out);
+                i = end;
+                continue;
             }
-            continue;
         }
         if c == '\'' {
-            match read_delimited(&chars, i + 1, '\'', false) {
-                Some((inner, end)) => {
-                    if is_bare_word(&inner) {
-                        out.push_str(&inner);
-                    } else {
-                        out.push_str("''");
-                    }
-                    i = end;
-                }
-                None => {
-                    out.push(c);
-                    i += 1;
-                }
+            if let Some((inner, end)) = read_delimited(&chars, i + 1, '\'', false) {
+                push_single_quote(&inner, &mut out);
+                i = end;
+                continue;
             }
-            continue;
         }
         if c == '\\' {
-            match chars.get(i + 1) {
-                Some(&next) if next.is_ascii_alphanumeric() || "_@%+=:,./-".contains(next) => {
-                    out.push(next);
-                    i += 2;
-                }
-                Some(&next) => {
-                    out.push('\\');
-                    out.push(next);
-                    i += 2;
-                }
-                None => {
-                    out.push('\\');
-                    i += 1;
-                }
-            }
+            i = process_backslash(&chars, i, &mut out);
             continue;
         }
         out.push(c);
@@ -870,6 +868,22 @@ pub fn shell_pipelines(input: &str) -> Vec<Vec<String>> {
     let mut quote: Option<char> = None;
     let mut i = 0usize;
     let segment = |from: usize, to: usize| -> String { chars[from..to].iter().collect() };
+
+    let add_segment = |start: usize, end: usize, pipeline: &mut Vec<String>| {
+        let s = segment(start, end);
+        if !s.trim().is_empty() {
+            pipeline.push(s.trim().to_string());
+        }
+    };
+
+    let finish_pipeline = |pipeline: &mut Vec<String>, pipelines: &mut Vec<Vec<String>>| {
+        if pipeline.len() > 1 {
+            pipelines.push(std::mem::take(pipeline));
+        } else {
+            pipeline.clear();
+        }
+    };
+
     while i < chars.len() {
         let c = chars[i];
         if c == '\\' {
@@ -889,24 +903,14 @@ pub fn shell_pipelines(input: &str) -> Vec<Vec<String>> {
             continue;
         }
         if (c == '|' || c == '&') && chars.get(i + 1) == Some(&c) {
-            let s = segment(start, i);
-            if !s.trim().is_empty() {
-                pipeline.push(s.trim().to_string());
-            }
-            if pipeline.len() > 1 {
-                pipelines.push(std::mem::take(&mut pipeline));
-            } else {
-                pipeline.clear();
-            }
+            add_segment(start, i, &mut pipeline);
+            finish_pipeline(&mut pipeline, &mut pipelines);
             i += 2;
             start = i;
             continue;
         }
         if c == '|' {
-            let s = segment(start, i);
-            if !s.trim().is_empty() {
-                pipeline.push(s.trim().to_string());
-            }
+            add_segment(start, i, &mut pipeline);
             i += 1;
             if chars.get(i) == Some(&'&') {
                 i += 1;
@@ -915,28 +919,16 @@ pub fn shell_pipelines(input: &str) -> Vec<Vec<String>> {
             continue;
         }
         if c == ';' || c == '\n' || c == '&' {
-            let s = segment(start, i);
-            if !s.trim().is_empty() {
-                pipeline.push(s.trim().to_string());
-            }
-            if pipeline.len() > 1 {
-                pipelines.push(std::mem::take(&mut pipeline));
-            } else {
-                pipeline.clear();
-            }
+            add_segment(start, i, &mut pipeline);
+            finish_pipeline(&mut pipeline, &mut pipelines);
             i += 1;
             start = i;
             continue;
         }
         i += 1;
     }
-    let s = segment(start.min(chars.len()), chars.len());
-    if !s.trim().is_empty() {
-        pipeline.push(s.trim().to_string());
-    }
-    if pipeline.len() > 1 {
-        pipelines.push(pipeline);
-    }
+    add_segment(start.min(chars.len()), chars.len(), &mut pipeline);
+    finish_pipeline(&mut pipeline, &mut pipelines);
     pipelines
 }
 
