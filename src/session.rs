@@ -425,6 +425,36 @@ mod tests {
     use super::*;
 
     #[test]
+    fn jsonl_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = Session::new("test_jsonl_session", "jsonl-test");
+        s.append(Role::User, "hello");
+        let secret = format!("sk-{}", "a".repeat(48));
+        s.append(Role::Assistant, format!("data: {}", secret));
+
+        let path = s.save_jsonl(dir.path()).unwrap();
+
+        let on_disk = std::fs::read_to_string(&path).unwrap();
+        assert!(!on_disk.contains(&secret));
+        assert!(on_disk.contains("[REDACTED:api-key]"));
+
+        let loaded = Session::load_jsonl(&path).unwrap();
+        assert_eq!(loaded.id, "test_jsonl_session");
+        assert_eq!(loaded.entries.len(), 2);
+        assert_eq!(loaded.entries[0].content, "hello");
+        assert_eq!(loaded.entries[1].content, "data: [REDACTED:api-key]");
+        assert!(loaded.todos.items.is_empty());
+    }
+
+    #[test]
+    fn save_jsonl_invalid_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Session::new("../invalid", "test");
+        let err = s.save_jsonl(dir.path()).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+    }
+
+    #[test]
     fn append_and_fork() {
         let mut s = Session::new("s1", "test");
         s.append(Role::User, "hello");
