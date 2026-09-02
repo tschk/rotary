@@ -196,8 +196,9 @@ pub use permissions::{
     shell_ast, shell_command_allowed, shell_command_matches_all, shell_command_matches_any,
     shell_rule_matches, shell_segments, shell_simples, AlwaysAllow, AlwaysApprovePlan, AlwaysDeny,
     ApprovalRequest, Approver, AsyncApprover, Authorizer, ChannelApprover, ChannelAsyncApprover,
-    ChannelPlanApprover, Decision, GuardianAuthorizer, PermissionMode, PlanApprover, PlanDecision,
-    PlanProposal, Policy, PolicyAuthorizer, ShellNode, ShellSimple, WritePathSchedule,
+    ChannelPlanApprover, Decision, GuardianAuthorizer, GuardianReview, PermissionMode,
+    PlanApprover, PlanDecision, PlanProposal, Policy, PolicyAuthorizer, ShellNode, ShellSimple,
+    WritePathSchedule,
 };
 pub use prewalk::{is_mutating_call, Prewalk};
 pub use prompt_cache::{
