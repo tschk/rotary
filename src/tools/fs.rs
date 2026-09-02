@@ -174,7 +174,7 @@ pub(crate) fn exec_edit(ctx: Arc<ToolContext>, args: String) -> ToolFuture {
         }
         let new_content = content.replacen(&old_string, &new_string, 1);
         match tokio::fs::write(&full, &new_content).await {
-            Ok(_) => ToolResult::ok("edit", format!("edited {}", path)),
+            Ok(_) => ToolResult::ok("edit", format!("edited {path}")),
             Err(e) => ToolResult::err("edit", format!("write failed: {e}")),
         }
     })
@@ -244,7 +244,7 @@ pub(crate) fn exec_hashline_edit(ctx: Arc<ToolContext>, args: String) -> ToolFut
                         ctx.hashline_sight
                             .write()
                             .forget(display.trim_start_matches('/'));
-                        ToolResult::ok("hashline_edit", format!("edited {}", path))
+                        ToolResult::ok("hashline_edit", format!("edited {path}"))
                     }
                     Err(e) => ToolResult::err("hashline_edit", format!("write failed: {e}")),
                 }

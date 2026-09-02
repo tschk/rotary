@@ -149,14 +149,12 @@ impl ToolGuardrails {
             if self.config.hard_stop_enabled && error_count >= self.config.exact_failure_block_after
             {
                 return GuardrailDecision::Stop(format!(
-                    "Tool '{}' failed {} consecutive times — blocking further attempts.",
-                    tool_name, error_count
+                    "Tool '{tool_name}' failed {error_count} consecutive times — blocking further attempts."
                 ));
             }
             if self.config.warnings_enabled && error_count >= self.config.exact_failure_warn_after {
                 return GuardrailDecision::Warn(format!(
-                    "WARNING: Tool '{}' keeps failing ({} consecutive errors). Try a different approach.",
-                    tool_name, error_count
+                    "WARNING: Tool '{tool_name}' keeps failing ({error_count} consecutive errors). Try a different approach."
                 ));
             }
         }
@@ -336,8 +334,7 @@ pub fn should_warn_at_iteration_threshold(current: usize, max: usize) -> bool {
 /// Returns a steering message to inject when approaching the iteration limit.
 pub fn iteration_handoff_steering_text(current: usize, max: usize) -> String {
     format!(
-        "Approaching tool iteration limit ({}/{}). Wrap up the current task and provide a summary of progress so far.",
-        current, max
+        "Approaching tool iteration limit ({current}/{max}). Wrap up the current task and provide a summary of progress so far."
     )
 }
 
