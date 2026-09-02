@@ -18,7 +18,7 @@ fn bridge() -> Result<Arc<ComputerUseBridge>, String> {
         .clone()
 }
 
-pub fn register_tools(registry: &mut ToolRegistry) {
+pub fn register_tools(registry: &ToolRegistry) {
     register(
         registry,
         "cu_call",
@@ -552,8 +552,8 @@ mod tests {
 
     #[test]
     fn test_register_tools() {
-        let mut registry = ToolRegistry::new();
-        register_tools(&mut registry);
+        let registry = ToolRegistry::new();
+        register_tools(&registry);
 
         assert_eq!(registry.count(), 13);
 

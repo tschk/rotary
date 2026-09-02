@@ -10,13 +10,13 @@ mod turn;
 pub use tool_types::*;
 
 use crate::compaction::{
-    apply_compaction, apply_compaction_result, compact_messages_semantically, estimate_messages,
-    CompactionConfig,
+    apply_compaction_result, compact_messages_semantically, estimate_messages, project_compact,
+    CompactionConfig, CompactionResult, RavenArchive,
 };
 use crate::cost::{PricingRegistry, SessionCost, TokenUsage};
 use crate::guardrails::{
-    check_empty_turn, recover_empty_turn, schedule_tool_calls, GuardrailConfig, GuardrailDecision,
-    RecoveryAction, SelfHealingRetry, ToolGuardrails,
+    check_empty_turn, recover_empty_turn, recover_stuck_tool, schedule_tool_calls, GuardrailConfig,
+    GuardrailDecision, RecoveryAction, SelfHealingRetry, ToolGuardrails,
 };
 use crate::hooks::HookRegistry;
 use crate::mode::{self, Profile, Scope};
@@ -263,6 +263,7 @@ struct PromptFingerprint {
     system: Option<String>,
     tools: Vec<serde_json::Value>,
     messages: Vec<Message>,
+    credential_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -422,6 +423,15 @@ pub struct Agent {
     hunk_log: Arc<RwLock<crate::hashline::HunkLog>>,
     shadow_git: Option<crate::shadow_git::ShadowGit>,
     worktree_claim: Option<crate::permissions::WorktreeClaim>,
+    pub exec: Arc<crate::tools::exec::ExecRegistry>,
+    pub subtasks: Arc<RwLock<Vec<crate::subtask::Subtask>>>,
+    pub evidence: Arc<RwLock<crate::subtask::EvidenceLedger>>,
+    sandbox_retries: Arc<parking_lot::Mutex<Vec<crate::sandbox::EscalateRetry>>>,
+    permission_asks: Arc<parking_lot::Mutex<Vec<PermissionAsk>>>,
+    subtasks_enabled: bool,
+    pub actor_id: String,
+    #[cfg(feature = "mcp")]
+    pub mcp: Option<Arc<crate::mcp::McpRegistry>>,
 }
 
 impl Agent {
@@ -497,6 +507,15 @@ impl Agent {
             hunk_log: Arc::new(RwLock::new(crate::hashline::HunkLog::new())),
             shadow_git: None,
             worktree_claim: None,
+            exec: Arc::new(crate::tools::exec::ExecRegistry::new()),
+            subtasks: Arc::new(RwLock::new(Vec::new())),
+            evidence: Arc::new(RwLock::new(crate::subtask::EvidenceLedger::default())),
+            sandbox_retries: Arc::new(parking_lot::Mutex::new(Vec::new())),
+            permission_asks: Arc::new(parking_lot::Mutex::new(Vec::new())),
+            subtasks_enabled: false,
+            actor_id: "host".into(),
+            #[cfg(feature = "mcp")]
+            mcp: None,
         };
         // Always attach userspace workspace sandbox (path confinement for FS tools).
         agent.ensure_userspace_sandbox();
@@ -570,6 +589,11 @@ impl Agent {
     pub fn set_system_prompt(&mut self, prompt: impl Into<String>) {
         self.base_system_prompt = Some(prompt.into());
         self.refresh_system_prompt();
+    }
+
+    pub fn clear_system_prompt(&mut self) {
+        self.base_system_prompt = None;
+        self.system_prompt = None;
     }
 
     pub fn set_tools(&mut self, tools: ToolRegistry) {
@@ -952,19 +976,75 @@ impl Agent {
         }
     }
 
+    fn flush_tool_side_events(&self) {
+        let retries = std::mem::take(&mut *self.sandbox_retries.lock());
+        for retry in retries {
+            self.emit(Event::RetryReason {
+                retry_reason: retry.retry_reason,
+                layer: format!("{:?}", retry.to),
+            });
+        }
+        let asks = std::mem::take(&mut *self.permission_asks.lock());
+        for ask in asks {
+            self.emit(Event::RequestPermissions {
+                tool: ask.tool,
+                paths: ask.paths,
+            });
+        }
+    }
+
     fn record_message(&self, message: Message) {
         self.session.write().append_message(&message);
         self.messages.write().push(message);
     }
 
     fn request_messages(&self) -> Vec<Message> {
-        let live = self.messages.read().clone();
-        let session = self.session.read();
-        if session.entries.is_empty() || live.len() > session.entries.len() {
-            live
+        let msgs = self.session.read().messages();
+        let tokens = estimate_messages(&msgs);
+        if tokens >= self.auto_compact_threshold() {
+            project_compact(&msgs, &self.compaction_config()).messages
         } else {
-            session.messages()
+            msgs
         }
+    }
+
+    pub fn session_handle(&self) -> Arc<RwLock<crate::session::Session>> {
+        Arc::clone(&self.session)
+    }
+
+    pub fn append_message(&self, message: Message) {
+        self.record_message(message);
+    }
+
+    pub fn complete_subtask(
+        &self,
+        claim: crate::subtask::SubtaskClaim,
+        host: crate::subtask::HostAdjudication,
+    ) -> crate::subtask::ClaimOutcome {
+        crate::subtask::claim_complete(
+            &mut self.subtasks.write(),
+            &mut self.evidence.write(),
+            claim,
+            host,
+        )
+    }
+
+    pub fn add_subtask(&self, task: crate::subtask::Subtask) {
+        self.subtasks.write().push(task);
+    }
+
+    pub fn enable_subtasks(&mut self) {
+        crate::tools::register_complete_subtask_tool(&self.tools);
+        self.allow_extra_tools(["complete_subtask"]);
+        self.subtasks_enabled = true;
+    }
+
+    #[cfg(feature = "mcp")]
+    pub fn attach_mcp(&mut self, registry: crate::mcp::McpRegistry) {
+        let mcp = Arc::new(registry);
+        crate::tools::register_mcp_proxy_tools(&self.tools, Arc::clone(&mcp));
+        self.allow_extra_tools(["tool_search", "use_capability"]);
+        self.mcp = Some(mcp);
     }
 
     pub fn retry_sandbox_deny(
@@ -981,7 +1061,7 @@ impl Agent {
     }
 
     pub fn write_stdin(&self, process_id: &str, data: &[u8]) -> Result<usize, String> {
-        let n = data.len();
+        let n = self.exec.write_stdin(process_id, data)?;
         self.emit(Event::ProcessStdin {
             process_id: process_id.to_string(),
             bytes: n,
@@ -1041,6 +1121,11 @@ impl Agent {
     }
 
     pub fn context_window(&self) -> usize {
+        if let Some(binding) = &self.model_binding {
+            if binding.context_window > 0 {
+                return binding.context_window;
+            }
+        }
         let model = self
             .provider
             .as_ref()
@@ -1097,12 +1182,7 @@ impl Agent {
             auto_compact_at,
         });
         if tokens >= auto_compact_at {
-            if let Err(error) = self
-                .compact_semantically("auto-compact before prompt", provider.as_ref())
-                .await
-            {
-                warn!("automatic context compaction failed: {error}");
-            }
+            self.compact("auto-compact before prompt");
         }
 
         let redactor = crate::secrets::Redactor::new();
@@ -1490,7 +1570,7 @@ impl Agent {
                         }
                         PlanDecision::Reject(reason) => {
                             info!("plan rejected: {reason}");
-                            self.messages.write().push(Message::user(format!(
+                            self.record_message(Message::user(format!(
                                 "The plan was rejected: {reason}. Do not run it."
                             )));
                             self.emit_turn_end(
@@ -1503,7 +1583,7 @@ impl Agent {
                         }
                         PlanDecision::Revise(guidance) => {
                             info!("plan revision requested: {guidance}");
-                            self.messages.write().push(Message::user(format!(
+                            self.record_message(Message::user(format!(
                                 "Do not run that plan. Revise it: {guidance}"
                             )));
                             self.emit_turn_end(
@@ -1521,6 +1601,7 @@ impl Agent {
             }
 
             let results = self.execute_tools_parallel(&tool_calls, &ctx).await;
+            self.flush_tool_side_events();
             if let Some(updates) = &ctx.todo_updates {
                 for update in std::mem::take(&mut *updates.lock()) {
                     self.emit(Event::TodoUpdated { todos: update });
@@ -1531,9 +1612,7 @@ impl Agent {
                 {
                     tool_error_seen |= result.is_error;
                 }
-                self.messages
-                    .write()
-                    .push(Message::tool(&result.id, &result.content));
+                self.record_message(Message::tool(&result.id, &result.content));
             }
             if let Some(scope) = pending_scope.lock().take() {
                 self.set_scope(scope);
@@ -1546,7 +1625,30 @@ impl Agent {
             let mut stopped: Option<(String, String)> = None;
             if let Some(rails) = guardrails.as_mut() {
                 for (call, result) in tool_calls.iter().zip(results.iter()) {
-                    match rails.observe(&call.name, &call.arguments, result.is_error) {
+                    let decision = rails.observe(&call.name, &call.arguments, result.is_error);
+                    if rails.identical_call_count >= 1 {
+                        match recover_stuck_tool(
+                            rails.identical_call_count,
+                            rails.config.same_tool_failure_halt_after,
+                        ) {
+                            RecoveryAction::Retry => {
+                                self.emit(Event::RetryReason {
+                                    retry_reason: "stuck_tool".into(),
+                                    layer: "tool".into(),
+                                });
+                            }
+                            RecoveryAction::Halt(reason) => {
+                                self.emit(Event::RetryReason {
+                                    retry_reason: reason.clone(),
+                                    layer: "tool".into(),
+                                });
+                                stopped = Some((call.name.clone(), reason));
+                                break;
+                            }
+                            RecoveryAction::Prefill(_) | RecoveryAction::Nudge(_) => {}
+                        }
+                    }
+                    match decision {
                         GuardrailDecision::Proceed => {}
                         GuardrailDecision::Warn(reason) => {
                             warn!("guardrail warning on '{}': {reason}", call.name);
@@ -1554,9 +1656,9 @@ impl Agent {
                                 tool: call.name.clone(),
                                 reason: reason.clone(),
                             });
-                            self.messages
-                                .write()
-                                .push(Message::user(format!("Guardrail warning: {reason}")));
+                            self.record_message(Message::user(format!(
+                                "Guardrail warning: {reason}"
+                            )));
                         }
                         GuardrailDecision::Stop(reason) => {
                             warn!("guardrail stop on '{}': {reason}", call.name);
@@ -1571,9 +1673,7 @@ impl Agent {
                     tool,
                     reason: reason.clone(),
                 });
-                self.messages
-                    .write()
-                    .push(Message::user(format!("Stopped by guardrail: {reason}")));
+                self.record_message(Message::user(format!("Stopped by guardrail: {reason}")));
                 self.emit_turn_end(
                     iteration,
                     last_finish_reason.as_deref(),
@@ -1601,7 +1701,7 @@ impl Agent {
                             max_attempts: healer.max_attempts,
                             errors,
                         });
-                        self.messages.write().push(Message::user(message));
+                        self.record_message(Message::user(message));
                     }
                 }
             }
@@ -1845,6 +1945,12 @@ impl Agent {
             ),
         };
         if decision == Decision::Ask {
+            if let Some(asks) = &ctx.permission_asks {
+                asks.lock().push(PermissionAsk {
+                    tool: resolved_name.clone(),
+                    paths: paths_from_args(&call.arguments),
+                });
+            }
             let ask_call = ToolCall {
                 id: call.id.clone(),
                 name: resolved_name.clone(),
@@ -1911,22 +2017,46 @@ impl Agent {
 
     pub fn compact(&self, reason: &str) {
         info!("compacting context: {reason}");
-        if self.message_count() <= 2 {
+        let source = {
+            let session = self.session.read();
+            if session.entries.is_empty() {
+                self.messages.read().clone()
+            } else {
+                session.messages()
+            }
+        };
+        if source.len() <= 2 {
             return;
         }
-        let before_tokens = self.context_tokens();
+        let before_tokens = estimate_messages(&source)
+            + self
+                .system_prompt
+                .as_deref()
+                .map(crate::compaction::estimate_tokens)
+                .unwrap_or(0);
+        let proj = project_compact(&source, &self.compaction_config());
+        if proj.archived.is_empty() && proj.step == crate::compaction::ProjectionStep::None {
+            return;
+        }
+        if !proj.archived.is_empty() {
+            let archive = RavenArchive::from_turns(&proj.archived);
+            let path = self.workspace_root.join(".rx4").join("raven.jsonl");
+            if let Err(error) = archive.write_to(&path) {
+                warn!("failed to write raven archive: {error}");
+            }
+        }
         self.emit(Event::CompactionStart {
             reason: reason.to_string(),
             before_tokens,
         });
-        let result = {
-            let mut msgs = self.messages.write();
-            let result = apply_compaction(&mut msgs, &self.compaction_config());
-            if !result.summary.is_empty() {
-                msgs.push(Message::system(format!("[compact reason: {reason}]")));
-            }
-            result
+        let result = CompactionResult {
+            summary: proj.summary.clone(),
+            removed_count: proj.archived.len(),
+            removed_tokens: estimate_messages(&proj.archived),
+            remaining_tokens: proj.remaining_tokens,
+            markers_preserved: Vec::new(),
         };
+        *self.messages.write() = proj.messages;
         self.emit(Event::CompactionEnd {
             reason: reason.to_string(),
             result,
@@ -1942,6 +2072,14 @@ impl Agent {
         tool_ctx.versions = self.file_versions.clone();
         tool_ctx.hunk_log = Some(Arc::clone(&self.hunk_log));
         tool_ctx.worktree_claim = self.worktree_claim.clone();
+        tool_ctx.sandbox_layer = crate::sandbox::SandboxLayer::Userspace;
+        tool_ctx.sandbox_retries = Some(Arc::clone(&self.sandbox_retries));
+        tool_ctx.exec = Some(Arc::clone(&self.exec));
+        tool_ctx.subtasks = Some(Arc::clone(&self.subtasks));
+        tool_ctx.evidence = Some(Arc::clone(&self.evidence));
+        tool_ctx.allow_complete_subtask = self.subtasks_enabled;
+        tool_ctx.actor_id = self.actor_id.clone();
+        tool_ctx.permission_asks = Some(Arc::clone(&self.permission_asks));
         #[cfg(feature = "ipc")]
         {
             tool_ctx.lsp = Some(Arc::clone(&self.lsp));
@@ -1995,10 +2133,15 @@ impl Agent {
             return;
         }
         let previous = self.previous_prompt_fingerprint.as_ref();
+        let credential_id = self
+            .model_binding
+            .as_ref()
+            .map(|binding| binding.credential_id.clone())
+            .filter(|id| !id.is_empty());
         let first_divergence = previous.and_then(|previous| {
             if previous.system != *system {
                 Some(CacheDivergence::SystemPrompt)
-            } else if previous.tools != tools {
+            } else if previous.tools != tools || previous.credential_id != credential_id {
                 Some(CacheDivergence::Tools)
             } else {
                 let first = previous
@@ -2033,6 +2176,11 @@ impl Agent {
             system: system.clone(),
             tools: tools.to_vec(),
             messages: messages.to_vec(),
+            credential_id: self
+                .model_binding
+                .as_ref()
+                .map(|binding| binding.credential_id.clone())
+                .filter(|id| !id.is_empty()),
         });
     }
 
@@ -2126,7 +2274,7 @@ impl Agent {
         })
     }
 
-    async fn compact_semantically(
+    pub async fn compact_semantically(
         &self,
         reason: &str,
         provider: &dyn Provider,
@@ -2177,6 +2325,22 @@ fn tool_source(name: &str) -> ToolSource {
         return ToolSource::ComputerUse;
     }
     ToolSource::Builtin
+}
+
+fn paths_from_args(args: &str) -> Vec<String> {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(args) else {
+        return Vec::new();
+    };
+    if let Some(path) = value.get("path").and_then(|v| v.as_str()) {
+        return vec![path.to_string()];
+    }
+    if let Some(paths) = value.get("paths").and_then(|v| v.as_array()) {
+        return paths
+            .iter()
+            .filter_map(|v| v.as_str().map(str::to_string))
+            .collect();
+    }
+    Vec::new()
 }
 
 fn redact_tool_call(call: &ToolCall) -> ToolCall {
@@ -2252,7 +2416,7 @@ mod tests {
     #[tokio::test]
     async fn parallel_read_tools_run_concurrently() {
         PARALLEL_DELAY_CALLS.store(0, Ordering::SeqCst);
-        let mut registry = ToolRegistry::new();
+        let registry = ToolRegistry::new();
         registry.register(delay_read_tool("a"));
         registry.register(delay_read_tool("b"));
         let mut agent = Agent::new();
@@ -2314,7 +2478,7 @@ mod tests {
     async fn cache_not_used_for_write_effect() {
         CACHE_READ_CALLS.store(0, Ordering::SeqCst);
         CACHE_WRITE_CALLS.store(0, Ordering::SeqCst);
-        let mut registry = ToolRegistry::new();
+        let registry = ToolRegistry::new();
         registry.register(
             ToolDefinition::new_boxed(
                 "r",
@@ -2372,24 +2536,29 @@ mod tests {
 
     #[test]
     fn compact_uses_token_aware_compaction() {
+        let dir = tempfile::tempdir().unwrap();
         let mut agent = Agent::new();
+        agent.set_workspace_root(dir.path());
         agent.auto_compact_after = 50;
-        {
-            let mut msgs = agent.messages.write();
-            msgs.push(Message::system("sys"));
-            for i in 0..20 {
-                msgs.push(Message::user(
-                    format!("old message {i} ",) + &"x".repeat(80),
-                ));
-                msgs.push(Message::assistant("reply".repeat(40)));
-            }
-            msgs.push(Message::user("recent tail"));
+        agent.record_message(Message::system("sys"));
+        for i in 0..20 {
+            agent.record_message(Message::user(
+                format!("old message {i} ",) + &"x".repeat(80),
+            ));
+            agent.record_message(Message::assistant("reply".repeat(40)));
         }
+        agent.record_message(Message::user("recent tail"));
         agent.compact("test");
         let msgs = agent.messages.read();
         assert!(msgs.len() < 42);
-        assert!(msgs.iter().any(|m| m.content.contains("context compacted")));
         assert!(msgs.iter().any(|m| m.content.contains("recent tail")));
+        assert!(msgs
+            .iter()
+            .any(|m| m.role == Role::System && m.content == "sys"));
+        let raven = dir.path().join(".rx4").join("raven.jsonl");
+        assert!(raven.exists(), "raven archive was not written");
+        let on_disk = std::fs::read_to_string(&raven).unwrap();
+        assert!(!on_disk.is_empty());
     }
 
     #[test]
@@ -2415,12 +2584,13 @@ mod tests {
 
     #[test]
     fn compaction_emits_lifecycle() {
+        let dir = tempfile::tempdir().unwrap();
         let mut agent = Agent::new();
+        agent.set_workspace_root(dir.path());
         agent.auto_compact_after = 50;
-        agent
-            .messages
-            .write()
-            .extend((0..10).map(|_| Message::user("x".repeat(100))));
+        for _ in 0..10 {
+            agent.record_message(Message::user("x".repeat(100)));
+        }
         let events = Arc::new(parking_lot::Mutex::new(Vec::new()));
         let received = Arc::clone(&events);
         agent.subscribe(move |event| {
@@ -2549,7 +2719,7 @@ mod tests {
 
     #[tokio::test]
     async fn tool_result_id_matches_call_id() {
-        let mut tools = ToolRegistry::new();
+        let tools = ToolRegistry::new();
         tools.register(
             ToolDefinition::new_boxed(
                 "echo_id",
@@ -2617,7 +2787,7 @@ mod tests {
 
     #[cfg(feature = "providers")]
     struct SteeringProvider {
-        handle: Arc<RwLock<Vec<Message>>>,
+        session: Arc<RwLock<crate::session::Session>>,
         calls: Arc<parking_lot::Mutex<Vec<Vec<String>>>>,
     }
 
@@ -2647,8 +2817,7 @@ mod tests {
                 calls.len() == 1
             };
             if first {
-                // Host steers mid-turn through the shared handle.
-                self.handle.write().push(Message::user("steer"));
+                self.session.write().append_message(&Message::user("steer"));
                 Ok(Box::new(futures::stream::iter([
                     Ok(crate::provider::StreamEvent::ToolCall(ToolCall {
                         id: "call_1".into(),
@@ -2668,7 +2837,7 @@ mod tests {
     #[cfg(feature = "providers")]
     #[tokio::test]
     async fn handle_append_is_seen_mid_turn() {
-        let mut registry = ToolRegistry::new();
+        let registry = ToolRegistry::new();
         registry.register(
             ToolDefinition::new_boxed(
                 "noop",
@@ -2683,7 +2852,7 @@ mod tests {
         agent.set_policy(Policy::full_access());
         let calls = Arc::new(parking_lot::Mutex::new(Vec::new()));
         agent.set_provider(Arc::new(SteeringProvider {
-            handle: agent.messages_handle(),
+            session: agent.session_handle(),
             calls: Arc::clone(&calls),
         }));
         agent.prompt("hello").await.unwrap();
@@ -2756,7 +2925,7 @@ mod tests {
     ) {
         let tool_runs = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let runs = Arc::clone(&tool_runs);
-        let mut registry = ToolRegistry::new();
+        let registry = ToolRegistry::new();
         registry.register(
             ToolDefinition::new_boxed(
                 "flaky",
@@ -2796,6 +2965,11 @@ mod tests {
                 Event::SelfHealing { attempt, .. } => format!("heal:{attempt}"),
                 Event::PlanProposed(p) => format!("plan_proposed:{}", p.calls.len()),
                 Event::PlanDecided { decision } => format!("plan_decided:{decision:?}"),
+                Event::RetryReason { retry_reason, .. } => format!("retry:{retry_reason}"),
+                Event::RequestPermissions { tool, .. } => format!("perms:{tool}"),
+                Event::ProcessStdin { process_id, bytes } => {
+                    format!("stdin:{process_id}:{bytes}")
+                }
                 _ => return,
             };
             sink.lock().push(label);
@@ -3023,6 +3197,19 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "mcp")]
+    #[test]
+    fn attach_mcp_registers_stable_proxy_tools() {
+        let mut agent = Agent::new();
+        agent.attach_mcp(crate::mcp::McpRegistry::new());
+        let names = agent.tools.names();
+        assert!(names.contains(&"tool_search".to_string()));
+        assert!(names.contains(&"use_capability".to_string()));
+        assert!(agent
+            .extra_allowed_tools()
+            .contains(&"tool_search".to_string()));
+    }
+
     #[test]
     fn plan_wipe_clears_planning_tokens() {
         let mut messages = vec![
@@ -3033,6 +3220,170 @@ mod tests {
         wipe_planning_tokens(&mut messages);
         assert_eq!(messages.len(), 2);
         assert_eq!(messages[1].content, "go");
+    }
+
+    #[test]
+    fn provider_request_ignores_live_vec_mutation() {
+        let agent = Agent::new();
+        agent.record_message(Message::user("hello"));
+        agent.record_message(Message::assistant("hi"));
+        let before = agent.request_messages();
+        agent.messages.write().clear();
+        agent
+            .messages
+            .write()
+            .push(Message::user("MUTATED IN MEMORY"));
+        let after = agent.request_messages();
+        assert_eq!(before, after);
+        assert_eq!(after[0].content, "hello");
+        assert_eq!(after[1].content, "hi");
+        assert_eq!(after.len(), 2);
+    }
+
+    #[test]
+    fn model_binding_sets_context_window() {
+        let mut agent = Agent::new();
+        agent.set_model_binding(ModelBinding::new("cred-1", "bound-model", 4096));
+        assert_eq!(agent.model, "bound-model");
+        assert_eq!(agent.context_window(), 4096);
+        assert_eq!(
+            agent
+                .model_binding
+                .as_ref()
+                .map(|b| b.credential_id.as_str()),
+            Some("cred-1")
+        );
+    }
+
+    #[test]
+    fn write_stdin_reaches_exec_session() {
+        let agent = Agent::new();
+        assert!(agent.write_stdin("missing", b"x").is_err());
+        let proc = agent.exec.spawn("cat", &[]).expect("spawn cat");
+        let n = agent
+            .write_stdin(&proc.process_id, b"hello\n")
+            .expect("write");
+        assert_eq!(n, 6);
+        agent.exec.kill(&proc.process_id).ok();
+    }
+
+    #[test]
+    fn complete_subtask_is_host_adjudicated() {
+        let agent = Agent::new();
+        agent.add_subtask(crate::subtask::Subtask {
+            id: "parent".into(),
+            parent_id: None,
+            status: crate::subtask::SubtaskStatus::Open,
+        });
+        agent.add_subtask(crate::subtask::Subtask {
+            id: "child".into(),
+            parent_id: Some("parent".into()),
+            status: crate::subtask::SubtaskStatus::Open,
+        });
+        let child_claim = crate::subtask::SubtaskClaim {
+            actor_id: "child".into(),
+            target_id: "parent".into(),
+            evidence: crate::subtask::Evidence {
+                claim_id: "c".into(),
+                actor_id: "child".into(),
+                note: "no".into(),
+            },
+        };
+        assert_eq!(
+            agent.complete_subtask(child_claim, crate::subtask::HostAdjudication::Accept),
+            crate::subtask::ClaimOutcome::RejectedChildMarkedParent
+        );
+        let parent_claim = crate::subtask::SubtaskClaim {
+            actor_id: "parent".into(),
+            target_id: "child".into(),
+            evidence: crate::subtask::Evidence {
+                claim_id: "p".into(),
+                actor_id: "parent".into(),
+                note: "done".into(),
+            },
+        };
+        assert_eq!(
+            agent.complete_subtask(parent_claim, crate::subtask::HostAdjudication::Accept),
+            crate::subtask::ClaimOutcome::Recorded
+        );
+    }
+
+    #[test]
+    fn retry_sandbox_deny_emits_retry_reason() {
+        let mut agent = Agent::new();
+        let events = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let received = Arc::clone(&events);
+        agent.subscribe(move |event| {
+            received.lock().push(event.clone());
+        });
+        let deny = crate::sandbox::SandboxError::PathDenied("/etc/passwd".into());
+        let layer = agent
+            .retry_sandbox_deny(crate::sandbox::SandboxLayer::Userspace, &deny)
+            .expect("escalate");
+        assert_eq!(layer, crate::sandbox::SandboxLayer::NestedFs);
+        assert!(events.lock().iter().any(|event| matches!(
+            event,
+            Event::RetryReason { retry_reason, .. } if retry_reason.contains("escalate")
+        )));
+        assert!(agent
+            .retry_sandbox_deny(crate::sandbox::SandboxLayer::GitReadOnly, &deny)
+            .is_err());
+    }
+
+    #[cfg(feature = "providers")]
+    struct AskAuthorizer;
+
+    #[cfg(feature = "providers")]
+    impl crate::permissions::Authorizer for AskAuthorizer {
+        fn authorize(
+            &self,
+            _policy: &Policy,
+            _tool_name: &str,
+            _arguments: &str,
+            _approver: Option<&dyn crate::permissions::Approver>,
+            _workspace_root: Option<&std::path::Path>,
+        ) -> crate::permissions::Decision {
+            crate::permissions::Decision::Ask
+        }
+    }
+
+    #[cfg(feature = "providers")]
+    #[tokio::test]
+    async fn authorize_ask_emits_request_permissions() {
+        let (mut agent, _, _) = looping_agent(1);
+        agent.set_authorizer(Arc::new(AskAuthorizer));
+        let seen = event_sink(&mut agent);
+        agent.prompt("go").await.unwrap();
+        assert!(
+            seen.lock().iter().any(|l| l == "perms:flaky"),
+            "Ask path did not emit RequestPermissions: {:?}",
+            seen.lock()
+        );
+    }
+
+    #[cfg(feature = "providers")]
+    #[tokio::test]
+    async fn stuck_tool_retries_then_halts() {
+        let (mut agent, _, _) = looping_agent(usize::MAX);
+        agent.set_guardrails(GuardrailConfig {
+            warnings_enabled: false,
+            hard_stop_enabled: false,
+            same_tool_failure_halt_after: 3,
+            ..GuardrailConfig::default()
+        });
+        let seen = event_sink(&mut agent);
+        agent.prompt("go").await.unwrap();
+        let labels = seen.lock().clone();
+        assert!(
+            labels.iter().any(|l| l == "retry:stuck_tool"),
+            "missing stuck-tool retry: {labels:?}"
+        );
+        assert!(
+            labels
+                .iter()
+                .any(|l| l.starts_with("retry:stuck tool") || l == "stop:flaky"),
+            "missing stuck-tool halt: {labels:?}"
+        );
     }
 }
 

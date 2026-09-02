@@ -116,9 +116,10 @@ pub mod marketplace;
 
 pub use agent::{
     normalize_tool_name, wipe_planning_tokens, Agent, AgentBudget, CacheAudit, CacheDivergence,
-    Event, GateResult, MemoryRecall, QualityGateConfig, SemanticEmbedder, SemanticRecallConfig,
-    ToolCall, ToolContext, ToolDefinition, ToolEffect, ToolErrorKind, ToolExecuteBox,
-    ToolExecuteFn, ToolExecutor, ToolFuture, ToolRegistry, ToolResult, TurnEndMetadata,
+    Event, GateResult, MemoryRecall, PermissionAsk, QualityGateConfig, SemanticEmbedder,
+    SemanticRecallConfig, ToolCall, ToolContext, ToolDefinition, ToolEffect, ToolErrorKind,
+    ToolExecuteBox, ToolExecuteFn, ToolExecutor, ToolFuture, ToolRegistry, ToolResult,
+    TurnEndMetadata,
 };
 #[cfg(feature = "autoresearch")]
 pub use autoresearch::{
@@ -250,7 +251,12 @@ pub use subtask::{
 pub use todo::{TodoConfig, TodoItem, TodoState, TodoStatus};
 #[cfg(feature = "autoresearch")]
 pub use tools::register_autoresearch_tools;
-pub use tools::{register_apply_patch_tool, register_builtin_tools, register_spawn_agent_tool};
+#[cfg(feature = "mcp")]
+pub use tools::register_mcp_proxy_tools;
+pub use tools::{
+    register_apply_patch_tool, register_builtin_tools, register_complete_subtask_tool,
+    register_spawn_agent_tool,
+};
 #[cfg(feature = "work-pack")]
 pub use work_pack::{WorkPack, WorkPackError};
 

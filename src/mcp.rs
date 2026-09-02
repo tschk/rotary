@@ -940,7 +940,13 @@ impl McpRegistry {
 
     pub fn tool_list_identity(&self) -> String {
         use sha2::{Digest, Sha256};
-        let bytes = serde_json::to_vec(&Self::stable_surface()).unwrap_or_default();
+        let mut servers: Vec<String> = self.servers.keys().cloned().collect();
+        servers.sort();
+        let payload = serde_json::json!({
+            "tools": self.tool_names(),
+            "servers": servers,
+        });
+        let bytes = serde_json::to_vec(&payload).unwrap_or_default();
         Sha256::digest(bytes)
             .iter()
             .map(|b| format!("{b:02x}"))
@@ -1114,6 +1120,9 @@ mod tests {
         let other = McpRegistry::new();
         other_register_same(&mut registry);
         assert_eq!(registry.tool_list_identity(), first);
+        let mut different = McpRegistry::new();
+        different.register_tools_for_test("git", &["status"]);
+        assert_ne!(different.tool_list_identity(), first);
         let _ = other;
     }
 

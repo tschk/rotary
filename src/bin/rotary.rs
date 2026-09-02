@@ -256,12 +256,12 @@ fn build_agent(model: Option<&str>, scope: Option<&str>, full_access: bool) -> A
     // The CLI is a host/consumer: it may opt into explicit local metadata,
     // but rx4 itself does not provide or impose a model catalog.
     agent.set_model_registry(load_model_registry());
-    let mut tools = ToolRegistry::new();
-    register_builtin_tools(&mut tools);
+    let tools = ToolRegistry::new();
+    register_builtin_tools(&tools);
 
     #[cfg(feature = "computer-use")]
     {
-        computer_use::register_tools(&mut tools);
+        computer_use::register_tools(&tools);
     }
 
     agent.set_tools(tools);
@@ -903,12 +903,12 @@ fn load_model_registry() -> rx4::ModelRegistry {
 }
 
 fn run_tools() {
-    let mut tools = ToolRegistry::new();
-    register_builtin_tools(&mut tools);
+    let tools = ToolRegistry::new();
+    register_builtin_tools(&tools);
 
     #[cfg(feature = "computer-use")]
     {
-        computer_use::register_tools(&mut tools);
+        computer_use::register_tools(&tools);
     }
 
     let mut defs = tools.definitions();

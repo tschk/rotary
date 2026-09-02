@@ -272,23 +272,73 @@ fn resolve_working_dir(
 }
 
 #[cfg(feature = "builtin-tools")]
+fn wrap_std_command(mut c: std::process::Command, working_dir: &std::path::Path) -> Command {
+    c.current_dir(working_dir);
+    c.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut tc = Command::from(c);
+    tc.kill_on_drop(true);
+    tc
+}
+
+#[cfg(feature = "builtin-tools")]
+pub(crate) fn escalate_os_sandbox_once(
+    os: &crate::sandbox::OsSandboxRunner,
+    layer: crate::sandbox::SandboxLayer,
+    deny: &crate::sandbox::SandboxError,
+    retries: Option<&parking_lot::Mutex<Vec<crate::sandbox::EscalateRetry>>>,
+) -> Result<
+    (
+        crate::sandbox::OsSandboxRunner,
+        crate::sandbox::SandboxLayer,
+    ),
+    crate::sandbox::SandboxError,
+> {
+    let retry = crate::sandbox::escalate_on_deny(layer, deny)?;
+    if let Some(buf) = retries {
+        buf.lock().push(retry.clone());
+    }
+    let runner = crate::sandbox::apply_layer_to_runner(os, retry.to)?;
+    Ok((runner, retry.to))
+}
+
+#[cfg(feature = "builtin-tools")]
+fn build_os_command(
+    os: &crate::sandbox::OsSandboxRunner,
+    command: &str,
+    working_dir: &std::path::Path,
+    layer: crate::sandbox::SandboxLayer,
+    retries: Option<&parking_lot::Mutex<Vec<crate::sandbox::EscalateRetry>>>,
+) -> Result<Command, String> {
+    match os.command("bash", &["-c", command]) {
+        Ok(c) => Ok(wrap_std_command(c, working_dir)),
+        Err(deny) => {
+            let (escalated, _) =
+                escalate_os_sandbox_once(os, layer, &deny, retries).map_err(|e| e.to_string())?;
+            match escalated.command("bash", &["-c", command]) {
+                Ok(c) => Ok(wrap_std_command(c, working_dir)),
+                Err(e) => Err(e.to_string()),
+            }
+        }
+    }
+}
+
+#[cfg(feature = "builtin-tools")]
 fn build_command(
     ctx: &Arc<ToolContext>,
     command: &str,
     working_dir: &std::path::Path,
+    os_override: Option<&crate::sandbox::OsSandboxRunner>,
 ) -> Result<Command, String> {
-    if let Some(os) = ctx.os_sandbox.as_ref() {
+    let os = os_override.or(ctx.os_sandbox.as_deref());
+    if let Some(os) = os {
         // Wrap bash -c under seatbelt/bwrap; convert std Command → tokio.
-        match os.command("bash", &["-c", command]) {
-            Ok(mut c) => {
-                c.current_dir(working_dir);
-                c.stdout(Stdio::piped()).stderr(Stdio::piped());
-                let mut tc = Command::from(c);
-                tc.kill_on_drop(true);
-                Ok(tc)
-            }
-            Err(e) => Err(e.to_string()),
-        }
+        build_os_command(
+            os,
+            command,
+            working_dir,
+            ctx.sandbox_layer,
+            ctx.sandbox_retries.as_deref(),
+        )
     } else if cfg!(target_os = "windows") {
         // SECURITY: The `bash` tool is explicitly designed to execute arbitrary shell commands
         // from the LLM. Command injection via operators is an intended feature.
@@ -442,10 +492,13 @@ pub(crate) fn exec_bash(ctx: Arc<ToolContext>, args: String) -> ToolFuture {
 
         let timeout = Duration::from_secs(timeout_secs);
         // Seatbelt flake: empty + signal death (-1 / 134 ABRT / 137 KILL).
-        // Retry once; still dead → fail-closed (do not return ok + exit -1).
+        // Escalate once on deny/flake; still dead → fail-closed.
         let mut last_flake = None;
+        let mut layer = ctx.sandbox_layer;
+        let mut runner = ctx.os_sandbox.clone();
+        let mut escalated = false;
         for attempt in 0..2 {
-            let mut cmd = match build_command(&ctx, &command, &working_dir) {
+            let mut cmd = match build_command(&ctx, &command, &working_dir, runner.as_deref()) {
                 Ok(c) => c,
                 Err(e) => return ToolResult::err("bash", e),
             };
@@ -462,6 +515,34 @@ pub(crate) fn exec_bash(ctx: Arc<ToolContext>, args: String) -> ToolFuture {
                 && is_sandbox_signal_flake(&stdout_buf, &stderr_buf, exit_code)
             {
                 last_flake = Some(exit_code);
+                if !escalated {
+                    if let Some(os) = runner.as_ref() {
+                        let deny = crate::sandbox::SandboxError::CommandDenied(format!(
+                            "sandbox flake exit {exit_code}"
+                        ));
+                        match escalate_os_sandbox_once(
+                            os,
+                            layer,
+                            &deny,
+                            ctx.sandbox_retries.as_deref(),
+                        ) {
+                            Ok((next, next_layer)) => {
+                                runner = Some(Arc::new(next));
+                                layer = next_layer;
+                                escalated = true;
+                                continue;
+                            }
+                            Err(_) => {
+                                return ToolResult::err(
+                                    "bash",
+                                    format!(
+                                        "OS sandbox aborted the process (exit {exit_code}, no output); refuse fail-open"
+                                    ),
+                                );
+                            }
+                        }
+                    }
+                }
                 if attempt == 0 {
                     continue;
                 }
@@ -848,4 +929,38 @@ fn stdlib_find(root: &std::path::Path, pattern: &str) -> Result<String, String> 
     } else {
         out.join("\n")
     })
+}
+
+#[cfg(all(test, feature = "builtin-tools"))]
+mod escalate_tests {
+    use super::*;
+    use crate::sandbox::{OsSandbox, OsSandboxConfig, OsSandboxRunner, SandboxError, SandboxLayer};
+    use parking_lot::Mutex;
+    use std::path::PathBuf;
+
+    #[test]
+    fn deny_then_escalate_once_then_fail_closed() {
+        let deny = SandboxError::PathDenied("/etc/passwd".into());
+        let retries = Mutex::new(Vec::new());
+        let runner = OsSandboxRunner::new(OsSandboxConfig::new(
+            OsSandbox::UserspaceOnly,
+            PathBuf::from("/workspace"),
+        ))
+        .expect("userspace runner");
+        let first =
+            escalate_os_sandbox_once(&runner, SandboxLayer::Userspace, &deny, Some(&retries));
+        assert_eq!(retries.lock().len(), 1);
+        assert!(
+            first
+                .as_ref()
+                .map(|(_, layer)| *layer == SandboxLayer::NestedFs)
+                .unwrap_or(true),
+            "escalate once or fail closed after the attempt: {first:?}"
+        );
+        let err =
+            escalate_os_sandbox_once(&runner, SandboxLayer::GitReadOnly, &deny, Some(&retries))
+                .expect_err("fail closed");
+        assert_eq!(err, deny);
+        assert_eq!(retries.lock().len(), 1);
+    }
 }

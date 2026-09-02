@@ -119,7 +119,7 @@ async fn execute_cancel_subagent(
     }
 }
 
-pub fn register_builtin_tools(registry: &mut ToolRegistry) {
+pub fn register_builtin_tools(registry: &ToolRegistry) {
     let tools: &[(&str, &str, &str, crate::agent::ToolExecuteFn, ToolEffect)] = &[
         (
             "read",
@@ -241,7 +241,7 @@ pub fn register_builtin_tools(registry: &mut ToolRegistry) {
     }
 }
 
-pub fn register_apply_patch_tool(registry: &mut ToolRegistry) {
+pub fn register_apply_patch_tool(registry: &ToolRegistry) {
     registry.register(
         ToolDefinition::new_fn(
             "apply_patch",
@@ -257,17 +257,14 @@ pub fn register_apply_patch_tool(registry: &mut ToolRegistry) {
 /// default coding loadout so ordinary prompts retain a small, stable prefix.
 #[cfg(feature = "autoresearch")]
 pub fn register_autoresearch_tools(
-    registry: &mut ToolRegistry,
+    registry: &ToolRegistry,
     handle: crate::autoresearch::AutoresearchHandle,
 ) {
     crate::autoresearch::register_tools(registry, handle);
 }
 
 /// Register spawn_agent backed by a host-owned SubagentManager.
-pub fn register_spawn_agent_tool(
-    registry: &mut ToolRegistry,
-    manager: Arc<Mutex<SubagentManager>>,
-) {
+pub fn register_spawn_agent_tool(registry: &ToolRegistry, manager: Arc<Mutex<SubagentManager>>) {
     let spawn_manager = Arc::clone(&manager);
     registry.register(
         ToolDefinition::new_boxed(
@@ -308,6 +305,127 @@ pub fn register_spawn_agent_tool(
     );
 }
 
+pub fn register_complete_subtask_tool(registry: &ToolRegistry) {
+    registry.register(
+        ToolDefinition::new_boxed(
+            "complete_subtask",
+            "Host-adjudicated subtask completion. Children cannot mark a parent complete.",
+            r#"{"type":"object","properties":{"actor_id":{"type":"string"},"target_id":{"type":"string"},"claim_id":{"type":"string"},"note":{"type":"string"},"adjudication":{"type":"string"}},"required":["target_id"]}"#,
+            Box::new(|ctx, args| Box::pin(async move { execute_complete_subtask(ctx, args) })),
+        )
+        .with_effect(ToolEffect::Write),
+    );
+}
+
+fn execute_complete_subtask(ctx: Arc<ToolContext>, args: String) -> ToolResult {
+    if !ctx.allow_complete_subtask {
+        return ToolResult::err("complete_subtask", "child cannot mark parent complete");
+    }
+    let Some(tasks) = ctx.subtasks.clone() else {
+        return ToolResult::err("complete_subtask", "subtasks are not enabled");
+    };
+    let Some(ledger) = ctx.evidence.clone() else {
+        return ToolResult::err("complete_subtask", "evidence ledger is not enabled");
+    };
+    let target_id = match crate::tools::common::parse_str_field(&args, "target_id") {
+        Some(id) if !id.is_empty() => id,
+        _ => return ToolResult::err("complete_subtask", "target_id required"),
+    };
+    let actor_id = crate::tools::common::parse_str_field(&args, "actor_id")
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| ctx.actor_id.clone());
+    let claim_id = crate::tools::common::parse_str_field(&args, "claim_id")
+        .unwrap_or_else(|| format!("{actor_id}->{target_id}"));
+    let note = crate::tools::common::parse_str_field(&args, "note").unwrap_or_default();
+    let host = match crate::tools::common::parse_str_field(&args, "adjudication")
+        .unwrap_or_else(|| "accept".into())
+        .as_str()
+    {
+        "reject" => crate::subtask::HostAdjudication::Reject,
+        _ => crate::subtask::HostAdjudication::Accept,
+    };
+    let claim = crate::subtask::SubtaskClaim {
+        actor_id,
+        target_id,
+        evidence: crate::subtask::Evidence {
+            claim_id,
+            actor_id: ctx.actor_id.clone(),
+            note,
+        },
+    };
+    let outcome =
+        crate::subtask::claim_complete(&mut tasks.write(), &mut ledger.write(), claim, host);
+    match outcome {
+        crate::subtask::ClaimOutcome::Recorded => ToolResult::ok(
+            "complete_subtask",
+            serde_json::json!({"status": "recorded"}).to_string(),
+        ),
+        crate::subtask::ClaimOutcome::RejectedChildMarkedParent => {
+            ToolResult::err("complete_subtask", "child cannot mark parent complete")
+        }
+        crate::subtask::ClaimOutcome::RejectedHost => {
+            ToolResult::err("complete_subtask", "host rejected the claim")
+        }
+        crate::subtask::ClaimOutcome::RejectedUnknown => {
+            ToolResult::err("complete_subtask", "unknown subtask")
+        }
+    }
+}
+
+#[cfg(feature = "mcp")]
+pub fn register_mcp_proxy_tools(registry: &ToolRegistry, mcp: Arc<crate::mcp::McpRegistry>) {
+    let search = Arc::clone(&mcp);
+    registry.register(
+        ToolDefinition::new_boxed(
+            "tool_search",
+            "Search MCP capabilities without injecting child schemas into the prefix.",
+            r#"{"type":"object","properties":{"query":{"type":"string"}},"required":["query"]}"#,
+            Box::new(move |_ctx, args| {
+                let mcp = Arc::clone(&search);
+                Box::pin(async move {
+                    let query =
+                        crate::tools::common::parse_str_field(&args, "query").unwrap_or_default();
+                    let found = mcp.tool_search(&query);
+                    ToolResult::ok(
+                        "tool_search",
+                        serde_json::to_string(&found).unwrap_or_else(|_| "[]".into()),
+                    )
+                })
+            }),
+        )
+        .with_effect(ToolEffect::Read),
+    );
+    let invoke = Arc::clone(&mcp);
+    registry.register(
+        ToolDefinition::new_boxed(
+            "use_capability",
+            "Invoke a discovered MCP capability by name.",
+            r#"{"type":"object","properties":{"name":{"type":"string"},"arguments":{"type":"object"}},"required":["name"]}"#,
+            Box::new(move |_ctx, args| {
+                let mcp = Arc::clone(&invoke);
+                Box::pin(async move {
+                    let name = match crate::tools::common::parse_str_field(&args, "name") {
+                        Some(n) if !n.is_empty() => n,
+                        _ => return ToolResult::err("use_capability", "name required"),
+                    };
+                    let arguments = serde_json::from_str::<serde_json::Value>(&args)
+                        .ok()
+                        .and_then(|v| v.get("arguments").cloned())
+                        .unwrap_or(serde_json::json!({}));
+                    match mcp.use_capability(&name, &arguments).await {
+                        Ok(value) => ToolResult::ok(
+                            "use_capability",
+                            value.to_string(),
+                        ),
+                        Err(e) => ToolResult::err("use_capability", e.to_string()),
+                    }
+                })
+            }),
+        )
+        .with_effect(ToolEffect::Network),
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::extended;
@@ -323,8 +441,8 @@ mod tests {
 
     #[test]
     fn test_register_builtin_tools() {
-        let mut registry = ToolRegistry::new();
-        super::register_builtin_tools(&mut registry);
+        let registry = ToolRegistry::new();
+        super::register_builtin_tools(&registry);
 
         let expected_tools = vec![
             "read",
@@ -352,8 +470,7 @@ mod tests {
             assert!(
                 defs.iter()
                     .any(|d| d.get("name").unwrap().as_str().unwrap() == tool),
-                "Missing tool: {}",
-                tool
+                "Missing tool: {tool}"
             );
         }
     }
@@ -580,10 +697,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_register_spawn_agent_tool_registers_expected_tools() {
-        let mut registry = ToolRegistry::new();
+        let registry = ToolRegistry::new();
         let manager = Arc::new(Mutex::new(SubagentManager::new()));
 
-        register_spawn_agent_tool(&mut registry, manager);
+        register_spawn_agent_tool(&registry, manager);
 
         let definitions = registry.definitions();
         let tool_names: Vec<&str> = definitions
@@ -601,8 +718,8 @@ mod tests {
     async fn host_subagent_tools_share_lifecycle_state() {
         let tmp = TempDir::new().unwrap();
         let manager = Arc::new(Mutex::new(SubagentManager::new()));
-        let mut registry = ToolRegistry::new();
-        register_spawn_agent_tool(&mut registry, Arc::clone(&manager));
+        let registry = ToolRegistry::new();
+        register_spawn_agent_tool(&registry, Arc::clone(&manager));
         let ctx = Arc::new(ToolContext::new(tmp.path()));
 
         let spawned = registry

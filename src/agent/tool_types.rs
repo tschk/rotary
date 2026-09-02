@@ -145,6 +145,20 @@ pub struct ToolContext {
     pub versions: Option<Arc<parking_lot::RwLock<crate::snapshot::FileVersionGuard>>>,
     pub hunk_log: Option<Arc<parking_lot::RwLock<crate::hashline::HunkLog>>>,
     pub worktree_claim: Option<crate::permissions::WorktreeClaim>,
+    pub sandbox_layer: crate::sandbox::SandboxLayer,
+    pub sandbox_retries: Option<Arc<parking_lot::Mutex<Vec<crate::sandbox::EscalateRetry>>>>,
+    pub exec: Option<Arc<crate::tools::exec::ExecRegistry>>,
+    pub subtasks: Option<Arc<parking_lot::RwLock<Vec<crate::subtask::Subtask>>>>,
+    pub evidence: Option<Arc<parking_lot::RwLock<crate::subtask::EvidenceLedger>>>,
+    pub allow_complete_subtask: bool,
+    pub actor_id: String,
+    pub permission_asks: Option<Arc<parking_lot::Mutex<Vec<PermissionAsk>>>>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct PermissionAsk {
+    pub tool: String,
+    pub paths: Vec<String>,
 }
 
 impl ToolContext {
@@ -170,6 +184,14 @@ impl ToolContext {
             versions: None,
             hunk_log: None,
             worktree_claim: None,
+            sandbox_layer: crate::sandbox::SandboxLayer::Userspace,
+            sandbox_retries: None,
+            exec: None,
+            subtasks: None,
+            evidence: None,
+            allow_complete_subtask: false,
+            actor_id: "host".into(),
+            permission_asks: None,
         }
     }
 
@@ -281,7 +303,7 @@ impl ToolRegistry {
         }
     }
 
-    pub fn register(&mut self, tool: ToolDefinition) {
+    pub fn register(&self, tool: ToolDefinition) {
         info!("registered tool: {}", tool.name);
         self.tools.insert(tool.name.clone(), tool);
     }
@@ -371,7 +393,7 @@ mod tests {
 
     #[test]
     fn definitions_are_stable_and_fingerprinted() {
-        let mut registry = ToolRegistry::new();
+        let registry = ToolRegistry::new();
         registry.register(ToolDefinition::new_fn("zeta", "z", "{}", noop));
         registry.register(ToolDefinition::new_fn("alpha", "a", "{}", noop));
         let definitions = registry.definitions();

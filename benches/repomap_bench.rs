@@ -77,7 +77,7 @@ fn bench_repomap(c: &mut Criterion) {
                 kind: "def".to_string(),
             });
         }
-        index.insert(format!("path_{}", i), symbols);
+        index.insert(format!("path_{i}"), symbols);
     }
 
     c.bench_function("repomap_original", |b| {
