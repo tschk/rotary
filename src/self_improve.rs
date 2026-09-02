@@ -66,3 +66,35 @@ impl SelfImprove {
             .map_err(|e| SelfImproveError::Invalid(e.to_string()))?
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use uuid::Uuid;
+    use zkr::MemoryDb;
+
+    #[tokio::test]
+    async fn test_self_improve_record_lessons_and_augment() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let tmp = tempfile::tempdir()?;
+        let db = MemoryDb::open(tmp.path().join("self_improve.db"))?;
+        let tenant_id = TenantId::new(Uuid::new_v4())?;
+        let person_id = PersonId::new(Uuid::new_v4())?;
+
+        let self_improve = SelfImprove::new(db, tenant_id, person_id);
+
+        self_improve
+            .record("context 1", "action 1", "outcome 1", "lesson 1")
+            .await?;
+
+        let lessons = self_improve.lessons("context", 10).await?;
+        assert_eq!(lessons.len(), 1);
+        assert!(lessons[0].contains("lesson 1"));
+
+        let augmented = self_improve.augment("context", "base prompt").await?;
+        assert!(augmented.contains("base prompt"));
+        assert!(augmented.contains("lesson 1"));
+
+        Ok(())
+    }
+}
