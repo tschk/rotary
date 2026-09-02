@@ -243,6 +243,13 @@ mod tests {
     }
 
     #[test]
+    fn estimate_cost_bogus_model_returns_zero() {
+        let registry = PricingRegistry::new();
+        let cost = registry.estimate_cost("bogus", 1_000_000, 500_000);
+        assert_eq!(cost, 0.0);
+    }
+
+    #[test]
     fn estimate_cost_detailed_includes_cache() {
         let registry = PricingRegistry::new();
         let usage = TokenUsage {
