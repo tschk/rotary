@@ -446,11 +446,29 @@ mod tests {
     #[test]
     fn append_and_fork() {
         let mut s = Session::new("s1", "test");
-        s.append(Role::User, "hello");
-        s.append(Role::Assistant, "hi");
-        let forked = s.fork(1);
-        assert_eq!(forked.entries.len(), 1);
-        assert_eq!(forked.entries[0].content, "hello");
+        let id1 = s.append(Role::System, "sys");
+        let id2 = s.append(Role::User, "hello");
+        let id3 = s.append(Role::Assistant, "hi");
+
+        // Forking from an intermediate entry
+        let forked1 = s.fork(id2);
+        assert_eq!(forked1.id, "s1-fork");
+        assert_eq!(forked1.name, "test (fork)");
+        assert_eq!(forked1.next_id, s.next_id);
+        assert_eq!(forked1.entries.len(), 2);
+        assert_eq!(forked1.entries[0].id, id1);
+        assert_eq!(forked1.entries[0].content, "sys");
+        assert_eq!(forked1.entries[1].id, id2);
+        assert_eq!(forked1.entries[1].content, "hello");
+
+        // Forking from a non-existent entry ID copies all entries
+        let forked2 = s.fork(999);
+        assert_eq!(forked2.id, "s1-fork");
+        assert_eq!(forked2.name, "test (fork)");
+        assert_eq!(forked2.next_id, s.next_id);
+        assert_eq!(forked2.entries.len(), 3);
+        assert_eq!(forked2.entries[2].id, id3);
+        assert_eq!(forked2.entries[2].content, "hi");
     }
 
     #[test]
