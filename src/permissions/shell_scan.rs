@@ -217,6 +217,43 @@ fn is_bare_word(inner: &str) -> bool {
         .all(|c| c.is_ascii_alphanumeric() || "_@%+=:,./-".contains(c))
 }
 
+fn process_hex_escape(chars: &[char], i: usize, next: char, out: &mut String) -> usize {
+    let max = match next {
+        'x' => 2,
+        'u' => 4,
+        _ => 8,
+    };
+    let mut digits = String::new();
+    let mut j = i + 2;
+    while j < chars.len() && digits.len() < max && chars[j].is_ascii_hexdigit() {
+        digits.push(chars[j]);
+        j += 1;
+    }
+    let exact = next == 'x' || digits.len() == max;
+    match u32::from_str_radix(&digits, 16).ok().filter(|_| exact) {
+        Some(code) if !digits.is_empty() => {
+            out.push(char::from_u32(code).unwrap_or('\u{fffd}'));
+            j
+        }
+        _ => {
+            out.push(next);
+            i + 2
+        }
+    }
+}
+
+fn process_octal_escape(chars: &[char], i: usize, out: &mut String) -> usize {
+    let mut digits = String::new();
+    let mut j = i + 1;
+    while j < chars.len() && digits.len() < 3 && ('0'..='7').contains(&chars[j]) {
+        digits.push(chars[j]);
+        j += 1;
+    }
+    let code = u32::from_str_radix(&digits, 8).unwrap_or(0);
+    out.push(char::from_u32(code).unwrap_or('\u{fffd}'));
+    j
+}
+
 fn decode_ansi_c(value: &str) -> String {
     let chars: Vec<char> = value.chars().collect();
     let mut out = String::new();
@@ -230,39 +267,10 @@ fn decode_ansi_c(value: &str) -> String {
         let next = chars[i + 1];
         match next {
             'x' | 'u' | 'U' => {
-                let max = match next {
-                    'x' => 2,
-                    'u' => 4,
-                    _ => 8,
-                };
-                let mut digits = String::new();
-                let mut j = i + 2;
-                while j < chars.len() && digits.len() < max && chars[j].is_ascii_hexdigit() {
-                    digits.push(chars[j]);
-                    j += 1;
-                }
-                let exact = next == 'x' || digits.len() == max;
-                match u32::from_str_radix(&digits, 16).ok().filter(|_| exact) {
-                    Some(code) if !digits.is_empty() => {
-                        out.push(char::from_u32(code).unwrap_or('\u{fffd}'));
-                        i = j;
-                    }
-                    _ => {
-                        out.push(next);
-                        i += 2;
-                    }
-                }
+                i = process_hex_escape(&chars, i, next, &mut out);
             }
             '0'..='7' => {
-                let mut digits = String::new();
-                let mut j = i + 1;
-                while j < chars.len() && digits.len() < 3 && ('0'..='7').contains(&chars[j]) {
-                    digits.push(chars[j]);
-                    j += 1;
-                }
-                let code = u32::from_str_radix(&digits, 8).unwrap_or(0);
-                out.push(char::from_u32(code).unwrap_or('\u{fffd}'));
-                i = j;
+                i = process_octal_escape(&chars, i, &mut out);
             }
             'a' => {
                 out.push('\u{7}');
