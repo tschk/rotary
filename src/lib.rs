@@ -291,6 +291,6 @@ mod tests {
 
     #[test]
     fn test_version() {
-        assert!(!VERSION.is_empty(), "VERSION should not be empty");
+        assert!(VERSION.contains('.'), "VERSION should be a semver string");
     }
 }

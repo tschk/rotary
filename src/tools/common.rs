@@ -264,7 +264,6 @@ mod tests {
 
     #[cfg(feature = "computer-use")]
     #[test]
-    #[cfg(feature = "computer-use")]
     fn test_resolve_write_path() {
         let dir = tempfile::tempdir().unwrap();
         let ws = dir.path();
