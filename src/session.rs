@@ -1,5 +1,6 @@
 //! Session: conversation tree with fork/merge/persist (JSONL).
 
+use crate::agent::ToolCall;
 use crate::provider::{Message, Role};
 use crate::todo::TodoState;
 use serde::{Deserialize, Serialize};
@@ -53,6 +54,10 @@ pub struct Entry {
     pub parent_id: Option<u64>,
     pub role: Role,
     pub content: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_calls: Vec<ToolCall>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -86,6 +91,23 @@ impl Session {
             parent_id: parent,
             role,
             content: content.into(),
+            tool_call_id: None,
+            tool_calls: Vec::new(),
+        });
+        id
+    }
+
+    pub fn append_message(&mut self, message: &Message) -> u64 {
+        let id = self.next_id;
+        self.next_id += 1;
+        let parent = self.entries.last().map(|e| e.id);
+        self.entries.push(Entry {
+            id,
+            parent_id: parent,
+            role: message.role,
+            content: message.content.clone(),
+            tool_call_id: message.tool_call_id.clone(),
+            tool_calls: message.tool_calls.clone(),
         });
         id
     }
@@ -93,12 +115,7 @@ impl Session {
     pub fn fork(&self, from_entry: u64) -> Self {
         let mut forked = Self::new(format!("{}-fork", self.id), format!("{} (fork)", self.name));
         for entry in &self.entries {
-            forked.entries.push(Entry {
-                id: entry.id,
-                parent_id: entry.parent_id,
-                role: entry.role,
-                content: entry.content.clone(),
-            });
+            forked.entries.push(entry.clone());
             if entry.id == from_entry {
                 break;
             }
@@ -266,6 +283,8 @@ impl Session {
                         parent_id: parent,
                         role,
                         content: text,
+                        tool_call_id: None,
+                        tool_calls: Vec::new(),
                     });
                 } else {
                     session.append(role, text);
@@ -278,8 +297,30 @@ impl Session {
     pub fn messages(&self) -> Vec<Message> {
         self.entries
             .iter()
-            .map(|e| Message::new(e.role, e.content.clone()))
+            .map(|e| Message {
+                role: e.role,
+                content: e.content.clone(),
+                tool_call_id: e.tool_call_id.clone(),
+                tool_calls: e.tool_calls.clone(),
+            })
             .collect()
+    }
+
+    pub fn serialize_provider_request(
+        &self,
+        system: &Option<String>,
+        tools: &[serde_json::Value],
+    ) -> Vec<u8> {
+        serde_json::to_vec(&(system, tools, self.messages())).unwrap_or_default()
+    }
+
+    pub fn replay_provider_request(
+        path: &std::path::Path,
+        system: &Option<String>,
+        tools: &[serde_json::Value],
+    ) -> std::io::Result<Vec<u8>> {
+        let session = Self::load_jsonl(path)?;
+        Ok(session.serialize_provider_request(system, tools))
     }
 
     /// Persists this session into a SQLite database at `path`.
@@ -392,6 +433,8 @@ impl Session {
                     parent_id: row.get::<_, Option<i64>>(1)?.map(|p| p as u64),
                     role,
                     content: row.get(3)?,
+                    tool_call_id: None,
+                    tool_calls: Vec::new(),
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -464,5 +507,26 @@ mod tests {
         assert_eq!(loaded.entries[0].content, "hello");
         assert_eq!(loaded.entries[1].role, Role::Assistant);
         assert_eq!(loaded.next_id, s.next_id);
+    }
+
+    #[test]
+    fn request_rebuilds_from_session_log_not_live_vec() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut session = Session::new("log", "invariant");
+        session.append(Role::System, "sys");
+        session.append(Role::User, "hello");
+        session.append(Role::Assistant, "hi");
+        let path = session.save_jsonl(dir.path()).unwrap();
+        let system = Some("sys".to_string());
+        let tools = vec![serde_json::json!({"name": "read"})];
+        let from_live_before = session.serialize_provider_request(&system, &tools);
+        let mut live = session.messages();
+        live[1].content = "MUTATED IN MEMORY".to_string();
+        let from_replay = Session::replay_provider_request(&path, &system, &tools).unwrap();
+        assert_eq!(from_live_before, from_replay);
+        assert_ne!(
+            serde_json::to_vec(&(&system, &tools, &live)).unwrap(),
+            from_replay
+        );
     }
 }

@@ -29,6 +29,8 @@ pub mod autoresearch_controller;
 pub mod avo;
 #[cfg(feature = "skills")]
 pub mod background_review;
+pub mod capsule;
+pub mod cassette;
 pub mod compaction;
 pub mod config;
 pub mod context;
@@ -78,6 +80,7 @@ pub mod slash;
 #[cfg(feature = "sse")]
 pub mod sse;
 pub mod subagent;
+pub mod subtask;
 pub mod todo;
 pub mod tools;
 #[cfg(feature = "work-pack")]
@@ -110,10 +113,10 @@ pub mod lsp;
 pub mod marketplace;
 
 pub use agent::{
-    normalize_tool_name, Agent, AgentBudget, CacheAudit, CacheDivergence, Event, GateResult,
-    MemoryRecall, QualityGateConfig, SemanticEmbedder, SemanticRecallConfig, ToolCall, ToolContext,
-    ToolDefinition, ToolEffect, ToolErrorKind, ToolExecuteBox, ToolExecuteFn, ToolExecutor,
-    ToolFuture, ToolRegistry, ToolResult, TurnEndMetadata,
+    normalize_tool_name, wipe_planning_tokens, Agent, AgentBudget, CacheAudit, CacheDivergence,
+    Event, GateResult, MemoryRecall, QualityGateConfig, SemanticEmbedder, SemanticRecallConfig,
+    ToolCall, ToolContext, ToolDefinition, ToolEffect, ToolErrorKind, ToolExecuteBox,
+    ToolExecuteFn, ToolExecutor, ToolFuture, ToolRegistry, ToolResult, TurnEndMetadata,
 };
 #[cfg(feature = "autoresearch")]
 pub use autoresearch::{
@@ -137,9 +140,12 @@ pub use avo::{
 pub use background_review::{
     BackgroundReviewConfig, BackgroundReviewer, ReviewResult, ReviewSignal,
 };
+pub use capsule::ContextCapsule;
+pub use cassette::{detect_divergence, CassetteTurn, Divergence, ReplayProvider};
 pub use compaction::{
-    apply_compaction, compact_messages, compact_messages_semantically, CompactionConfig,
-    CompactionMarker, CompactionResult,
+    apply_compaction, compact_messages, compact_messages_semantically, project_compact,
+    prune_messages, CompactionConfig, CompactionMarker, CompactionResult, PrefixShape,
+    ProjectionResult, ProjectionStep, RavenArchive,
 };
 pub use context::{compose_system_prompt, load_project_instructions, ProjectInstructions};
 pub use cost::{CostEntry, ModelPricing, PricingRegistry, SessionCost, TokenUsage};
@@ -162,7 +168,8 @@ pub use graph_memory::{
     SemanticRecall,
 };
 pub use guardrails::{
-    classify_tool, GuardrailConfig, GuardrailDecision, SelfHealingRetry, ToolClass, ToolGuardrails,
+    classify_tool, recover_empty_turn, recover_stuck_tool, GuardrailConfig, GuardrailDecision,
+    RecoveryAction, SelfHealingRetry, ToolClass, ToolGuardrails,
 };
 pub use hashline::{
     apply as apply_hashline, format_read as format_hashline_read, tag_for as hashline_tag_for,
@@ -189,8 +196,8 @@ pub use permissions::{
     shell_ast, shell_command_allowed, shell_command_matches_all, shell_command_matches_any,
     shell_rule_matches, shell_segments, shell_simples, AlwaysAllow, AlwaysApprovePlan, AlwaysDeny,
     ApprovalRequest, Approver, AsyncApprover, Authorizer, ChannelApprover, ChannelAsyncApprover,
-    ChannelPlanApprover, Decision, PermissionMode, PlanApprover, PlanDecision, PlanProposal,
-    Policy, PolicyAuthorizer, ShellNode, ShellSimple,
+    ChannelPlanApprover, Decision, GuardianAuthorizer, PermissionMode, PlanApprover, PlanDecision,
+    PlanProposal, Policy, PolicyAuthorizer, ShellNode, ShellSimple, WritePathSchedule,
 };
 pub use prewalk::{is_mutating_call, Prewalk};
 pub use prompt_cache::{
@@ -207,8 +214,8 @@ pub use routing::{
     AgentRoute, AgentRouter, RoutingConfig, RoutingStats, SmartRouter, TurnComplexity,
 };
 pub use sandbox::{
-    detect_sandbox, OsSandbox, OsSandboxConfig, OsSandboxRunner, SandboxConfig, SandboxError,
-    SandboxManager, SandboxProfile, SandboxViolation,
+    detect_sandbox, escalate_on_deny, OsSandbox, OsSandboxConfig, OsSandboxRunner, SandboxConfig,
+    SandboxError, SandboxLayer, SandboxManager, SandboxProfile, SandboxViolation,
 };
 pub use secrets::{
     filter_env_vars, is_sensitive_env_var, RedactionConfig, Redactor, SecretMatch, SecretPattern,
@@ -228,10 +235,14 @@ pub use subagent::{
     SubagentBudget, SubagentConfig, SubagentError, SubagentEvent, SubagentHandle, SubagentLimits,
     SubagentManager, SubagentResult, SubagentStatus, SubagentSubscriber,
 };
+pub use subtask::{
+    claim_complete, ClaimOutcome, Evidence, EvidenceLedger, HostAdjudication, Subtask,
+    SubtaskClaim, SubtaskStatus,
+};
 pub use todo::{TodoConfig, TodoItem, TodoState, TodoStatus};
 #[cfg(feature = "autoresearch")]
 pub use tools::register_autoresearch_tools;
-pub use tools::{register_builtin_tools, register_spawn_agent_tool};
+pub use tools::{register_apply_patch_tool, register_builtin_tools, register_spawn_agent_tool};
 #[cfg(feature = "work-pack")]
 pub use work_pack::{WorkPack, WorkPackError};
 

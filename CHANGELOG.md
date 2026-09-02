@@ -42,6 +42,17 @@
 ## Unreleased
 
 ### Added
+- Projection compaction: `PrefixShape`, prune-then-fold, verbatim Raven JSONL archive.
+- Session-log provider request reconstruction; live message mutation does not change replay.
+- Sandbox-deny escalate retry with layered SBPL (`.git` re-RO) and `Event::RetryReason`.
+- Bounded tool results with spill locator; model sees the preview.
+- Host-adjudicated `complete_subtask` evidence ledger (claims only go down).
+- Empty-turn / stuck-tool recovery: Prefill, Nudge, Retry, Halt.
+- Stable MCP surface (`tool_search`, `use_capability`) under `mcp`.
+- `ReplayProvider` cassette replay and divergence helper.
+- Unified exec `ProcessStdin` events; optional `apply_patch`; Guardian fail-closed Authorizer.
+- Plan-mode wipe on accept; `WritePathSchedule`; `ContextCapsule` (zero ambient inheritance).
+- Events: `RetryReason`, `ProcessStdin`, `RequestPermissions`, `PatchHunk`.
 - Opt-in autoresearch sessions with resumable `.auto/` state, structured
   `METRIC name=value` parsing, correctness checks, and keep/discard decisions.
 - Isolated `AutoresearchController` with detached Git checkpoints, rollback,

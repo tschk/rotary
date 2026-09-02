@@ -127,6 +127,27 @@ impl SandboxProfileGenerator {
         lines.join("\n") + "\n"
     }
 
+    pub fn generate_layered_seatbelt_profile(
+        config: &OsSandboxConfig,
+        layer: crate::sandbox::SandboxLayer,
+    ) -> String {
+        let mut profile = Self::generate_seatbelt_profile(config);
+        if layer >= crate::sandbox::SandboxLayer::NestedFs {
+            profile.push_str("(deny file-write* (subpath \"/\"))\n");
+            profile.push_str(&format!(
+                "(allow file-write* (subpath \"{}\"))\n",
+                config.workspace.display()
+            ));
+            if config.allow_tmp {
+                profile.push_str("(allow file-write* (subpath \"/tmp\"))\n");
+            }
+        }
+        if layer == crate::sandbox::SandboxLayer::GitReadOnly {
+            profile.push_str(&crate::sandbox::git_readonly_sbpl(&config.workspace));
+        }
+        profile
+    }
+
     /// Write the profile to `dir/rx4-sandbox-{uuid}.sb` and return the path.
     pub fn write_profile(&self, dir: &Path) -> Result<PathBuf, SandboxError> {
         let contents = Self::generate_seatbelt_profile(&self.config);
@@ -268,8 +289,15 @@ impl OsSandboxRunner {
                     // Workspace mounted read-write.
                     "--bind".to_string(),
                     workspace.clone(),
-                    workspace,
+                    workspace.clone(),
                 ];
+                let git = self.config.workspace.join(".git");
+                if self.config.extra_ro_paths.iter().any(|p| p == &git) {
+                    let p = git.display().to_string();
+                    v.push("--ro-bind".to_string());
+                    v.push(p.clone());
+                    v.push(p);
+                }
                 for extra in &self.config.extra_ro_paths {
                     let p = extra.display().to_string();
                     v.push("--ro-bind".to_string());

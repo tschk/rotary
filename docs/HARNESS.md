@@ -33,4 +33,5 @@ switches one-way to the smol/apply model.
 
 `rx4::avo` — `P_t`, two-part `f` (incorrect ⇒ 0), commit-if-better, stall
 detect. `scripts/avo-commit-if-better.sh` refuses `main`/`master` and never
-pushes.
+pushes. Subtask completion is host-adjudicated (`rx4::subtask`); claims only
+go down. See [PROJECTION.md](PROJECTION.md).

@@ -58,3 +58,7 @@ flowchart TD
 | `GateResult` | Opt-in workspace quality gate result |
 | `MemoryRecalled` | Semantic graph memories selected for this prompt |
 | `BudgetExceeded` | A host-configured budget stopped the loop |
+| `RetryReason` | Sandbox deny escalated one layer (`retry_reason`, `layer`) |
+| `ProcessStdin` | Bytes written to a unified exec session (`process_id`) |
+| `RequestPermissions` | Engine asks the host to adjudicate extra paths |
+| `PatchHunk` | Streaming apply_patch hunk |

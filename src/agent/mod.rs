@@ -15,7 +15,8 @@ use crate::compaction::{
 };
 use crate::cost::{PricingRegistry, SessionCost, TokenUsage};
 use crate::guardrails::{
-    plan_tool_effect_batches, GuardrailConfig, GuardrailDecision, SelfHealingRetry, ToolGuardrails,
+    check_empty_turn, plan_tool_effect_batches, recover_empty_turn, GuardrailConfig,
+    GuardrailDecision, RecoveryAction, SelfHealingRetry, ToolGuardrails,
 };
 use crate::hooks::HookRegistry;
 use crate::mode::{self, Profile, Scope};
@@ -137,6 +138,22 @@ pub enum Event {
     BudgetExceeded {
         reason: String,
     },
+    RetryReason {
+        retry_reason: String,
+        layer: String,
+    },
+    ProcessStdin {
+        process_id: String,
+        bytes: usize,
+    },
+    RequestPermissions {
+        tool: String,
+        paths: Vec<String>,
+    },
+    PatchHunk {
+        path: String,
+        hunk: String,
+    },
 }
 
 /// Completion facts emitted in [`Event::TurnEnded`].
@@ -253,6 +270,13 @@ pub enum ToolSource {
     Builtin,
     Mcp { server: String },
     ComputerUse,
+}
+
+pub fn wipe_planning_tokens(messages: &mut Vec<Message>) {
+    messages.retain(|m| {
+        let t = m.content.trim();
+        !t.contains("<planning>") && !t.contains("[planning]") && !t.starts_with("PLAN:")
+    });
 }
 
 pub type Subscriber = Arc<dyn Fn(&Event) + Send + Sync>;
@@ -389,6 +413,8 @@ pub struct Agent {
     cache_audit_enabled: bool,
     previous_prompt_fingerprint: Option<PromptFingerprint>,
     last_gate_workspace_hash: Option<String>,
+    pub session: Arc<RwLock<crate::session::Session>>,
+    pub write_paths: crate::permissions::WritePathSchedule,
 }
 
 impl Agent {
@@ -456,6 +482,8 @@ impl Agent {
             cache_audit_enabled: false,
             previous_prompt_fingerprint: None,
             last_gate_workspace_hash: None,
+            session: Arc::new(RwLock::new(crate::session::Session::new("agent", "agent"))),
+            write_paths: crate::permissions::WritePathSchedule::whole_workspace(),
         };
         // Always attach userspace workspace sandbox (path confinement for FS tools).
         agent.ensure_userspace_sandbox();
@@ -874,6 +902,56 @@ impl Agent {
         }
     }
 
+    fn record_message(&self, message: Message) {
+        self.session.write().append_message(&message);
+        self.messages.write().push(message);
+    }
+
+    fn request_messages(&self) -> Vec<Message> {
+        let session = self.session.read();
+        if session.entries.is_empty() {
+            self.messages.read().clone()
+        } else {
+            session.messages()
+        }
+    }
+
+    pub fn retry_sandbox_deny(
+        &self,
+        layer: crate::sandbox::SandboxLayer,
+        deny: &crate::sandbox::SandboxError,
+    ) -> Result<crate::sandbox::SandboxLayer, crate::sandbox::SandboxError> {
+        let retry = crate::sandbox::escalate_on_deny(layer, deny)?;
+        self.emit(Event::RetryReason {
+            retry_reason: retry.retry_reason,
+            layer: format!("{:?}", retry.to),
+        });
+        Ok(retry.to)
+    }
+
+    pub fn write_stdin(&self, process_id: &str, data: &[u8]) -> Result<usize, String> {
+        let n = data.len();
+        self.emit(Event::ProcessStdin {
+            process_id: process_id.to_string(),
+            bytes: n,
+        });
+        Ok(n)
+    }
+
+    pub fn request_permissions(&self, tool: &str, paths: Vec<String>) {
+        self.emit(Event::RequestPermissions {
+            tool: tool.to_string(),
+            paths,
+        });
+    }
+
+    pub fn emit_patch_hunk(&self, path: &str, hunk: &str) {
+        self.emit(Event::PatchHunk {
+            path: path.to_string(),
+            hunk: hunk.to_string(),
+        });
+    }
+
     pub fn clear_messages(&self) {
         self.messages.write().clear();
     }
@@ -981,7 +1059,7 @@ impl Agent {
 
         let active_skills = self.activate_skills_for_prompt(&safe_text);
 
-        self.messages.write().push(Message::user(safe_text.clone()));
+        self.record_message(Message::user(safe_text.clone()));
         self.emit(Event::AgentStart);
         self.budget_start = Some(Instant::now());
         self.before_prompt_hooks(&safe_text).await;
@@ -1010,6 +1088,7 @@ impl Agent {
         let mut guardrails = self.guardrails.clone().map(ToolGuardrails::new);
         let mut self_healing = self.self_healing.clone();
         let mut plan_approved = false;
+        let mut empty_turns = 0usize;
         // Current providers expose a terminal `Done` marker but not a portable
         // finish reason yet. Keep this optional metadata honest until they do.
         let last_finish_reason: Option<String> = None;
@@ -1023,7 +1102,7 @@ impl Agent {
             }
             self.emit(Event::TurnStart { turn: iteration });
 
-            let messages: Vec<Message> = self.messages.read().clone();
+            let messages: Vec<Message> = self.request_messages();
             let base_system =
                 turn::append_active_skills(self.system_prompt.clone(), active_skills.as_deref());
             #[cfg(feature = "graph-memory")]
@@ -1172,7 +1251,7 @@ impl Agent {
                 content: assistant_content.clone(),
             });
 
-            self.messages.write().push(Message::assistant_with_tools(
+            self.record_message(Message::assistant_with_tools(
                 assistant_content.clone(),
                 tool_calls.clone(),
             ));
@@ -1213,6 +1292,30 @@ impl Agent {
             }
 
             if tool_calls.is_empty() {
+                if check_empty_turn(&assistant_content) {
+                    let action = recover_empty_turn(empty_turns, 3);
+                    empty_turns += 1;
+                    match action {
+                        RecoveryAction::Prefill(text) | RecoveryAction::Nudge(text) => {
+                            self.record_message(Message::user(text));
+                            continue;
+                        }
+                        RecoveryAction::Retry => continue,
+                        RecoveryAction::Halt(reason) => {
+                            self.emit(Event::GuardrailStop {
+                                tool: "turn".into(),
+                                reason,
+                            });
+                            self.emit_turn_end(
+                                iteration,
+                                last_finish_reason.as_deref(),
+                                false,
+                                &assistant_content,
+                            );
+                            break;
+                        }
+                    }
+                }
                 if let Some(result) = self.run_quality_gate().await {
                     let failed = !result.success && !result.skipped_unchanged;
                     let output = result.output.clone();
@@ -1329,7 +1432,11 @@ impl Agent {
                         decision: decision.clone(),
                     });
                     match decision {
-                        PlanDecision::Approve => plan_approved = true,
+                        PlanDecision::Approve => {
+                            plan_approved = true;
+                            let mut msgs = self.messages.write();
+                            wipe_planning_tokens(&mut msgs);
+                        }
                         PlanDecision::Reject(reason) => {
                             info!("plan rejected: {reason}");
                             self.messages.write().push(Message::user(format!(
@@ -1610,7 +1717,15 @@ impl Agent {
                 return (call.clone(), ToolResult::err(&id, reason));
             }
         };
-        let result = Self::run_tool_call(
+        if crate::permissions::is_write_tool(&call.name) {
+            if let Some(path) = crate::tools::common::parse_str_field(&call.arguments, "path") {
+                if !self.write_paths.allows(&ctx.workspace_root, &path) {
+                    let id = call.id.clone();
+                    return (call, ToolResult::err(&id, "write path denied by schedule"));
+                }
+            }
+        }
+        let mut result = Self::run_tool_call(
             self.tools.as_ref(),
             &self.policy,
             self.authorizer.as_deref(),
@@ -1623,6 +1738,16 @@ impl Agent {
             &self.extra_allowed_tools,
         )
         .await;
+        if result.content.len() > crate::tools::spill::DEFAULT_PREVIEW_BYTES {
+            let spill_dir = ctx.workspace_root.join(".rx4").join("spill");
+            if let Ok(spilled) = crate::tools::spill::bound_tool_output(
+                &result.content,
+                crate::tools::spill::DEFAULT_PREVIEW_BYTES,
+                &spill_dir,
+            ) {
+                result.content = spilled.preview;
+            }
+        }
         (call, result)
     }
 
@@ -2814,6 +2939,44 @@ mod tests {
                 .any(|m| m.contains("use the other tool")),
             "the revision guidance never reached the model"
         );
+    }
+
+    #[test]
+    fn event_variants_are_serde_tagged() {
+        let events = vec![
+            Event::RetryReason {
+                retry_reason: "sandbox deny".into(),
+                layer: "NestedFs".into(),
+            },
+            Event::ProcessStdin {
+                process_id: "p1".into(),
+                bytes: 4,
+            },
+            Event::RequestPermissions {
+                tool: "write".into(),
+                paths: vec!["src/lib.rs".into()],
+            },
+            Event::PatchHunk {
+                path: "src/lib.rs".into(),
+                hunk: "@@ -1 +1 @@".into(),
+            },
+        ];
+        for event in events {
+            let json = serde_json::to_value(&event).unwrap();
+            assert!(json.get("type").and_then(|t| t.as_str()).is_some());
+        }
+    }
+
+    #[test]
+    fn plan_wipe_clears_planning_tokens() {
+        let mut messages = vec![
+            Message::system("sys"),
+            Message::assistant("<planning>think</planning>"),
+            Message::user("go"),
+        ];
+        wipe_planning_tokens(&mut messages);
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[1].content, "go");
     }
 }
 

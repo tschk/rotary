@@ -1,9 +1,12 @@
 //! Built-in coding tools: read, write, edit, bash, grep, find, ls + extended tools.
 //! Uses fff for fast indexed file search.
 
+pub mod apply_patch;
 pub(crate) mod common;
+pub mod exec;
 mod extended;
 pub(crate) mod fs;
+pub mod spill;
 
 use crate::agent::{ToolContext, ToolDefinition, ToolEffect, ToolRegistry, ToolResult};
 use crate::subagent::{SubagentConfig, SubagentManager};
@@ -236,6 +239,18 @@ pub fn register_builtin_tools(registry: &mut ToolRegistry) {
         registry
             .register(ToolDefinition::new_fn(*name, *desc, *params, *exec).with_effect(*effect));
     }
+}
+
+pub fn register_apply_patch_tool(registry: &mut ToolRegistry) {
+    registry.register(
+        ToolDefinition::new_fn(
+            "apply_patch",
+            "Optional bulk unified-diff apply. Hashline remains the primary editor.",
+            r#"{"type":"object","properties":{"path":{"type":"string"},"diff":{"type":"string"}},"required":["path","diff"]}"#,
+            apply_patch::exec_apply_patch,
+        )
+        .with_effect(ToolEffect::Write),
+    );
 }
 
 /// Register the opt-in autoresearch tools. They are kept separate from the

@@ -912,6 +912,53 @@ impl McpRegistry {
         names
     }
 
+    pub fn stable_surface() -> Vec<serde_json::Value> {
+        vec![
+            serde_json::json!({
+                "name": "tool_search",
+                "description": "Search MCP capabilities without injecting child schemas into the prefix.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"query": {"type": "string"}},
+                    "required": ["query"]
+                }
+            }),
+            serde_json::json!({
+                "name": "use_capability",
+                "description": "Invoke a discovered MCP capability by name.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string"},
+                        "arguments": {"type": "object"}
+                    },
+                    "required": ["name"]
+                }
+            }),
+        ]
+    }
+
+    pub fn tool_list_identity(&self) -> String {
+        use sha2::{Digest, Sha256};
+        let bytes = serde_json::to_vec(&Self::stable_surface()).unwrap_or_default();
+        Sha256::digest(bytes)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect()
+    }
+
+    pub fn tool_search(&self, query: &str) -> Vec<String> {
+        let q = query.to_ascii_lowercase();
+        self.tool_names()
+            .into_iter()
+            .filter(|name| name.to_ascii_lowercase().contains(&q))
+            .collect()
+    }
+
+    pub async fn use_capability(&self, name: &str, arguments: &Value) -> Result<Value, McpError> {
+        self.call(name, arguments).await
+    }
+
     /// Routes a fully-qualified tool call to the appropriate server.
     pub async fn call(&self, full_name: &str, arguments: &Value) -> Result<Value, McpError> {
         let (server, tool) = self
@@ -1047,6 +1094,31 @@ mod tests {
     fn test_registry_default() {
         let registry = McpRegistry::default();
         assert!(registry.tool_names().is_empty());
+    }
+
+    #[test]
+    fn tool_list_identity_stable_across_turns_when_set_unchanged() {
+        let mut registry = McpRegistry::new();
+        registry.register_tools_for_test("fs", &["read_file", "write_file"]);
+        let first = registry.tool_list_identity();
+        let second = registry.tool_list_identity();
+        assert_eq!(first, second);
+        assert_eq!(McpRegistry::stable_surface().len(), 2);
+        let names: Vec<_> = McpRegistry::stable_surface()
+            .iter()
+            .map(|v| v["name"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(names, vec!["tool_search", "use_capability"]);
+        let found = registry.tool_search("read");
+        assert_eq!(found, vec!["mcp__fs__read_file".to_string()]);
+        let other = McpRegistry::new();
+        other_register_same(&mut registry);
+        assert_eq!(registry.tool_list_identity(), first);
+        let _ = other;
+    }
+
+    fn other_register_same(registry: &mut McpRegistry) {
+        registry.register_tools_for_test("fs", &["read_file", "write_file"]);
     }
 
     #[test]

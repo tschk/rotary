@@ -125,6 +125,8 @@ pub struct SubagentConfig {
     pub task_contract: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_seconds: Option<u64>,
+    #[serde(default)]
+    pub capsule: crate::capsule::ContextCapsule,
 }
 
 fn default_max_steps() -> usize {
@@ -147,6 +149,7 @@ impl Default for SubagentConfig {
             budget: SubagentBudget::default(),
             task_contract: None,
             timeout_seconds: None,
+            capsule: crate::capsule::ContextCapsule::empty(),
         }
     }
 }
@@ -798,11 +801,22 @@ fn build_child_agent(
     if let Some(model) = &config.model {
         agent.set_model(model.clone());
     }
-    if let Some(sys) = &config.system_prompt {
+    let capsule_in_use = config.capsule.system_prompt.is_some()
+        || !config.capsule.allowed_tools.is_empty()
+        || !config.capsule.files.is_empty();
+    if capsule_in_use {
+        if let Some(sys) = &config.capsule.system_prompt {
+            agent.set_system_prompt(sys.clone());
+        }
+    } else if let Some(sys) = &config.system_prompt {
         agent.set_system_prompt(sys.clone());
     }
     agent.max_tool_iterations = config.max_steps.max(1);
-    agent.set_policy(policy_from_config(config));
+    let mut policy = policy_from_config(config);
+    if capsule_in_use && !config.capsule.allowed_tools.is_empty() {
+        policy.allowlist = config.capsule.allowed_tools.clone();
+    }
+    agent.set_policy(policy);
     agent.set_workspace_root(workspace);
     if let Some(tools) = tools {
         agent.tools = tools;

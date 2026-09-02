@@ -9,9 +9,11 @@
 //! Modeled after the grok nono pattern: explicit allow/deny lists, workspace
 //! confinement, read-only profiles, and a violation log.
 
+mod escalate;
 mod os;
 mod userspace;
 
+pub use escalate::*;
 pub use os::*;
 pub use userspace::*;
 
@@ -319,6 +321,17 @@ mod tests {
         assert_eq!(violations.len(), 1);
         assert_eq!(violations[0].kind, ViolationKind::OsEscape);
         assert_eq!(violations[0].path_or_command, "/etc/passwd");
+    }
+
+    #[test]
+    fn layered_seatbelt_marks_git_readonly() {
+        let config = OsSandboxConfig::new(OsSandbox::MacosSeatbelt, workspace());
+        let profile = SandboxProfileGenerator::generate_layered_seatbelt_profile(
+            &config,
+            SandboxLayer::GitReadOnly,
+        );
+        assert!(profile.contains(".git"));
+        assert!(profile.contains("deny file-write*"));
     }
 
     #[test]

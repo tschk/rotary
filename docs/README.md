@@ -18,6 +18,7 @@ flowchart LR
 - [Providers](PROVIDERS.md) — OpenAI / Anthropic / Ollama / custom endpoints.
 - [Computer-use](COMPUTER-USE.md) — Praefectus `cu_*` tools.
 - [Events](EVENTS.md) — agent loop and streaming event types.
+- [Projection](PROJECTION.md) — prune-then-fold, request reconstruction, recovery, MCP surface.
 - [Architecture](ARCHITECTURE.md) — module and agent-loop contracts.
 - [Hosts](HOSTS.md) — embedding, IPC adapter, telekinesis / apollo.
 - [Autoresearch](AUTORESEARCH.md) — host-driven optimization controller.

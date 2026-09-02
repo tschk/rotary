@@ -224,6 +224,57 @@ impl SelfHealingRetry {
     }
 }
 
+/// Empty-turn and stuck-tool recovery. Hosts apply the action; the engine only classifies.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RecoveryAction {
+    Prefill(String),
+    Nudge(String),
+    Retry,
+    Halt(String),
+}
+
+pub const PREFILL_TEXT: &str = "Continue from where you left off.";
+pub const NUDGE_TEXT: &str =
+    "Your last turn was empty. Answer with progress, a question, or a tool call.";
+
+/// Empty assistant turns escalate Prefill → Nudge → Retry → Halt.
+pub fn recover_empty_turn(empty_count: usize, max_empty: usize) -> RecoveryAction {
+    if max_empty == 0 || empty_count >= max_empty {
+        return RecoveryAction::Halt(format!(
+            "empty turn limit reached ({empty_count}/{max_empty})"
+        ));
+    }
+    match empty_count {
+        0 => RecoveryAction::Prefill(PREFILL_TEXT.to_string()),
+        1 => RecoveryAction::Nudge(NUDGE_TEXT.to_string()),
+        n if n + 1 < max_empty => RecoveryAction::Retry,
+        _ => RecoveryAction::Halt(format!(
+            "empty turn limit reached ({empty_count}/{max_empty})"
+        )),
+    }
+}
+
+/// Stuck identical tool calls escalate Nudge → Retry → Halt.
+pub fn recover_stuck_tool(repeat_count: usize, halt_after: usize) -> RecoveryAction {
+    if halt_after == 0 || repeat_count >= halt_after {
+        return RecoveryAction::Halt(format!(
+            "stuck tool repeated {repeat_count} times (halt after {halt_after})"
+        ));
+    }
+    if repeat_count == 0 {
+        return RecoveryAction::Nudge(
+            "The same tool call is repeating. Change arguments or stop.".to_string(),
+        );
+    }
+    if repeat_count + 1 < halt_after {
+        RecoveryAction::Retry
+    } else {
+        RecoveryAction::Halt(format!(
+            "stuck tool repeated {repeat_count} times (halt after {halt_after})"
+        ))
+    }
+}
+
 pub fn check_empty_turn(assistant_content: &str) -> bool {
     assistant_content.trim().is_empty()
 }
@@ -777,5 +828,36 @@ mod tests {
         assert!(should_stop(1, 1, 0, 1));
         assert!(should_stop(0, 1, 1, 1));
         assert!(should_stop(1, 1, 1, 1));
+    }
+
+    #[test]
+    fn recover_empty_turn_prefill_then_nudge_then_halt() {
+        assert_eq!(
+            recover_empty_turn(0, 3),
+            RecoveryAction::Prefill(PREFILL_TEXT.to_string())
+        );
+        assert_eq!(
+            recover_empty_turn(1, 3),
+            RecoveryAction::Nudge(NUDGE_TEXT.to_string())
+        );
+        assert_eq!(
+            recover_empty_turn(2, 3),
+            RecoveryAction::Halt("empty turn limit reached (2/3)".to_string())
+        );
+        assert!(matches!(recover_empty_turn(0, 0), RecoveryAction::Halt(_)));
+    }
+
+    #[test]
+    fn recover_empty_turn_retry_before_halt() {
+        assert_eq!(recover_empty_turn(2, 5), RecoveryAction::Retry);
+        assert!(matches!(recover_empty_turn(4, 5), RecoveryAction::Halt(_)));
+    }
+
+    #[test]
+    fn recover_stuck_tool_nudge_retry_halt() {
+        assert!(matches!(recover_stuck_tool(0, 3), RecoveryAction::Nudge(_)));
+        assert_eq!(recover_stuck_tool(1, 3), RecoveryAction::Retry);
+        assert!(matches!(recover_stuck_tool(2, 3), RecoveryAction::Halt(_)));
+        assert!(matches!(recover_stuck_tool(0, 0), RecoveryAction::Halt(_)));
     }
 }
