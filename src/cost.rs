@@ -266,6 +266,13 @@ mod tests {
     }
 
     #[test]
+    fn estimate_cost_bogus_model_returns_zero() {
+        let registry = PricingRegistry::new();
+        let cost = registry.estimate_cost("bogus", 1_000_000, 500_000);
+        assert_eq!(cost, 0.0);
+    }
+
+    #[test]
     fn estimate_cost_detailed_includes_cache() {
         let registry = PricingRegistry::new();
         let usage = TokenUsage {
@@ -413,5 +420,19 @@ mod tests {
         );
         assert_eq!(session.total_cost(), 0.0);
         assert_eq!(session.turn_count(), 1);
+    }
+
+    #[test]
+    fn estimate_cost_bogus_model() {
+        let registry = PricingRegistry::new();
+        let cost = registry.estimate_cost("bogus", 1_000_000, 500_000);
+        assert_eq!(cost, 0.0);
+    }
+
+    #[test]
+    fn estimate_cost_empty_registry_fallback() {
+        let registry = PricingRegistry::default();
+        let cost = registry.estimate_cost("gpt-4o", 1_000_000, 500_000);
+        assert_eq!(cost, 0.0);
     }
 }
