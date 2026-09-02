@@ -182,24 +182,7 @@ fn unwrap_to_executable(words: &[String]) -> Option<&[String]> {
     }
     let exe = basename(&words[0]);
     let args = &words[1..];
-    let next = match exe.as_str() {
-        "command" | "nohup" | "builtin" => Some(option_command(args, 0, &[])),
-        "exec" => Some(option_command(args, 0, EXEC_OPTS)),
-        "sudo" => Some(option_command(args, 0, SUDO_OPTS)),
-        "nice" => Some(option_command(args, 0, NICE_OPTS)),
-        "time" => Some(option_command(args, 0, TIME_OPTS)),
-        "stdbuf" => Some(option_command(args, 0, STDBUF_OPTS)),
-        "xargs" => Some(option_command(args, 0, XARGS_OPTS)),
-        "timeout" => Some(option_command(args, 0, TIMEOUT_OPTS) + 1),
-        "env" => {
-            let mut next = option_command(args, 0, ENV_OPTS);
-            while next < args.len() && is_assignment(&args[next]) {
-                next += 1;
-            }
-            Some(next)
-        }
-        _ => None,
-    };
+    let next = wrapper_command_offset(exe.as_str(), args);
     match next {
         None => Some(words),
         Some(next) if next < args.len() => unwrap_to_executable(&args[next..]),
@@ -234,6 +217,43 @@ fn is_bare_word(inner: &str) -> bool {
         .all(|c| c.is_ascii_alphanumeric() || "_@%+=:,./-".contains(c))
 }
 
+fn process_hex_escape(chars: &[char], i: usize, next: char, out: &mut String) -> usize {
+    let max = match next {
+        'x' => 2,
+        'u' => 4,
+        _ => 8,
+    };
+    let mut digits = String::new();
+    let mut j = i + 2;
+    while j < chars.len() && digits.len() < max && chars[j].is_ascii_hexdigit() {
+        digits.push(chars[j]);
+        j += 1;
+    }
+    let exact = next == 'x' || digits.len() == max;
+    match u32::from_str_radix(&digits, 16).ok().filter(|_| exact) {
+        Some(code) if !digits.is_empty() => {
+            out.push(char::from_u32(code).unwrap_or('\u{fffd}'));
+            j
+        }
+        _ => {
+            out.push(next);
+            i + 2
+        }
+    }
+}
+
+fn process_octal_escape(chars: &[char], i: usize, out: &mut String) -> usize {
+    let mut digits = String::new();
+    let mut j = i + 1;
+    while j < chars.len() && digits.len() < 3 && ('0'..='7').contains(&chars[j]) {
+        digits.push(chars[j]);
+        j += 1;
+    }
+    let code = u32::from_str_radix(&digits, 8).unwrap_or(0);
+    out.push(char::from_u32(code).unwrap_or('\u{fffd}'));
+    j
+}
+
 fn decode_ansi_c(value: &str) -> String {
     let chars: Vec<char> = value.chars().collect();
     let mut out = String::new();
@@ -247,39 +267,10 @@ fn decode_ansi_c(value: &str) -> String {
         let next = chars[i + 1];
         match next {
             'x' | 'u' | 'U' => {
-                let max = match next {
-                    'x' => 2,
-                    'u' => 4,
-                    _ => 8,
-                };
-                let mut digits = String::new();
-                let mut j = i + 2;
-                while j < chars.len() && digits.len() < max && chars[j].is_ascii_hexdigit() {
-                    digits.push(chars[j]);
-                    j += 1;
-                }
-                let exact = next == 'x' || digits.len() == max;
-                match u32::from_str_radix(&digits, 16).ok().filter(|_| exact) {
-                    Some(code) if !digits.is_empty() => {
-                        out.push(char::from_u32(code).unwrap_or('\u{fffd}'));
-                        i = j;
-                    }
-                    _ => {
-                        out.push(next);
-                        i += 2;
-                    }
-                }
+                i = process_hex_escape(&chars, i, next, &mut out);
             }
             '0'..='7' => {
-                let mut digits = String::new();
-                let mut j = i + 1;
-                while j < chars.len() && digits.len() < 3 && ('0'..='7').contains(&chars[j]) {
-                    digits.push(chars[j]);
-                    j += 1;
-                }
-                let code = u32::from_str_radix(&digits, 8).unwrap_or(0);
-                out.push(char::from_u32(code).unwrap_or('\u{fffd}'));
-                i = j;
+                i = process_octal_escape(&chars, i, &mut out);
             }
             'a' => {
                 out.push('\u{7}');
@@ -804,6 +795,27 @@ fn option_command(words: &[String], start: usize, value_options: &[&str]) -> usi
     i
 }
 
+fn wrapper_command_offset(executable: &str, args: &[String]) -> Option<usize> {
+    match executable {
+        "command" | "nohup" | "builtin" => Some(option_command(args, 0, &[])),
+        "exec" => Some(option_command(args, 0, EXEC_OPTS)),
+        "sudo" => Some(option_command(args, 0, SUDO_OPTS)),
+        "nice" => Some(option_command(args, 0, NICE_OPTS)),
+        "time" => Some(option_command(args, 0, TIME_OPTS)),
+        "stdbuf" => Some(option_command(args, 0, STDBUF_OPTS)),
+        "xargs" => Some(option_command(args, 0, XARGS_OPTS)),
+        "timeout" => Some(option_command(args, 0, TIMEOUT_OPTS) + 1),
+        "env" => {
+            let mut next = option_command(args, 0, ENV_OPTS);
+            while next < args.len() && is_assignment(&args[next]) {
+                next += 1;
+            }
+            Some(next)
+        }
+        _ => None,
+    }
+}
+
 fn split_string_payload(args: &[String], split: usize) -> (Option<String>, Vec<String>) {
     let arg = &args[split];
     let compact = arg.starts_with("-S") && arg.chars().count() > 2;
@@ -937,74 +949,55 @@ pub fn segment_consumes_shell_stdin(words: &[String]) -> bool {
     }
     let executable = basename(&words[start]);
     let args: Vec<String> = words[start + 1..].to_vec();
+
     if SHELLS.contains(&executable.as_str()) {
-        let mut i = 0;
-        while i < args.len() {
-            let arg = &args[i];
-            if is_short_c_flag(arg) {
-                return false;
-            }
-            if arg == "-s" {
-                return true;
-            }
-            if SHELL_SCRIPT_OPTS.contains(&arg.as_str()) {
-                i += 2;
-                continue;
-            }
-            if arg == "--" {
-                return match args.get(i + 1) {
-                    None => true,
-                    Some(next) => STDIN_SCRIPTS.contains(&next.as_str()),
-                };
-            }
-            if !arg.starts_with('-') || arg == "-" {
-                return STDIN_SCRIPTS.contains(&arg.as_str());
-            }
-            i += 1;
-        }
-        return true;
+        return shell_consumes_stdin(&args);
     }
-    match executable.as_str() {
-        "env" => {
-            if let Some(split) = env_split_words(&args) {
-                return segment_consumes_shell_stdin(&split);
-            }
-            let mut next = option_command(&args, 0, ENV_OPTS);
-            while next < args.len() && is_assignment(&args[next]) {
-                next += 1;
-            }
-            segment_consumes_shell_stdin(&args[next.min(args.len())..])
+
+    if executable == "env" {
+        if let Some(split) = env_split_words(&args) {
+            return segment_consumes_shell_stdin(&split);
         }
-        "command" | "nohup" => {
-            let next = option_command(&args, 0, &[]);
-            segment_consumes_shell_stdin(&args[next.min(args.len())..])
-        }
-        "exec" => {
-            let next = option_command(&args, 0, EXEC_OPTS);
-            segment_consumes_shell_stdin(&args[next.min(args.len())..])
-        }
-        "sudo" => {
-            let next = option_command(&args, 0, SUDO_OPTS);
-            segment_consumes_shell_stdin(&args[next.min(args.len())..])
-        }
-        "nice" => {
-            let next = option_command(&args, 0, NICE_OPTS);
-            segment_consumes_shell_stdin(&args[next.min(args.len())..])
-        }
-        "timeout" => {
-            let next = option_command(&args, 0, TIMEOUT_OPTS) + 1;
-            segment_consumes_shell_stdin(&args[next.min(args.len())..])
-        }
-        "time" => {
-            let next = option_command(&args, 0, TIME_OPTS);
-            segment_consumes_shell_stdin(&args[next.min(args.len())..])
-        }
-        "stdbuf" => {
-            let next = option_command(&args, 0, STDBUF_OPTS);
-            segment_consumes_shell_stdin(&args[next.min(args.len())..])
-        }
-        _ => false,
     }
+
+    // Ignore `builtin` and `xargs` to preserve exact original behavior.
+    if matches!(executable.as_str(), "builtin" | "xargs") {
+        return false;
+    }
+
+    if let Some(next) = wrapper_command_offset(executable.as_str(), &args) {
+        return segment_consumes_shell_stdin(&args[next.min(args.len())..]);
+    }
+
+    false
+}
+
+fn shell_consumes_stdin(args: &[String]) -> bool {
+    let mut i = 0;
+    while i < args.len() {
+        let arg = &args[i];
+        if is_short_c_flag(arg) {
+            return false;
+        }
+        if arg == "-s" {
+            return true;
+        }
+        if SHELL_SCRIPT_OPTS.contains(&arg.as_str()) {
+            i += 2;
+            continue;
+        }
+        if arg == "--" {
+            return match args.get(i + 1) {
+                None => true,
+                Some(next) => STDIN_SCRIPTS.contains(&next.as_str()),
+            };
+        }
+        if !arg.starts_with('-') || arg == "-" {
+            return STDIN_SCRIPTS.contains(&arg.as_str());
+        }
+        i += 1;
+    }
+    true
 }
 
 fn is_short_c_flag(arg: &str) -> bool {
@@ -1071,30 +1064,38 @@ fn literal_producer_payload(words: &[String]) -> Option<String> {
         args.remove(0);
     }
     if executable == "echo" {
-        let mut decode_escapes = false;
-        while args.first().is_some_and(|a| {
-            a.len() > 1 && a.starts_with('-') && a[1..].chars().all(|c| "neE".contains(c))
-        }) {
-            for option in args[0][1..].chars() {
-                if option == 'e' {
-                    decode_escapes = true;
-                }
-                if option == 'E' {
-                    decode_escapes = false;
-                }
-            }
-            args.remove(0);
-        }
-        let payload = args.join(" ");
-        return Some(if decode_escapes {
-            decode_ansi_c(&payload)
-        } else {
-            payload
-        });
+        return handle_echo_payload(args);
     }
     if executable != "printf" || args.is_empty() {
         return None;
     }
+    handle_printf_payload(&args)
+}
+
+fn handle_echo_payload(mut args: Vec<String>) -> Option<String> {
+    let mut decode_escapes = false;
+    while args.first().is_some_and(|a| {
+        a.len() > 1 && a.starts_with('-') && a[1..].chars().all(|c| "neE".contains(c))
+    }) {
+        for option in args[0][1..].chars() {
+            if option == 'e' {
+                decode_escapes = true;
+            }
+            if option == 'E' {
+                decode_escapes = false;
+            }
+        }
+        args.remove(0);
+    }
+    let payload = args.join(" ");
+    Some(if decode_escapes {
+        decode_ansi_c(&payload)
+    } else {
+        payload
+    })
+}
+
+fn handle_printf_payload(args: &[String]) -> Option<String> {
     let format = decode_ansi_c(&args[0]);
     let values = &args[1..];
     let mut value_index = 0usize;
@@ -1268,23 +1269,14 @@ fn executable_index(words: &[String], offset: usize) -> Option<usize> {
     }
     let executable = basename(&words[start]);
     let args: Vec<String> = words[start + 1..].to_vec();
+
+    // We intentionally ignore `builtin` and `xargs` in executable_index because it wasn't
+    // supported here before. So we check for them and skip using the wrapper offset.
     let next = match executable.as_str() {
-        "command" | "nohup" => Some(option_command(&args, 0, &[])),
-        "exec" => Some(option_command(&args, 0, EXEC_OPTS)),
-        "env" => {
-            let mut next = option_command(&args, 0, ENV_OPTS);
-            while next < args.len() && is_assignment(&args[next]) {
-                next += 1;
-            }
-            Some(next)
-        }
-        "sudo" => Some(option_command(&args, 0, SUDO_OPTS)),
-        "nice" => Some(option_command(&args, 0, NICE_OPTS)),
-        "timeout" => Some(option_command(&args, 0, TIMEOUT_OPTS) + 1),
-        "time" => Some(option_command(&args, 0, TIME_OPTS)),
-        "stdbuf" => Some(option_command(&args, 0, STDBUF_OPTS)),
-        _ => None,
+        "builtin" | "xargs" => None,
+        _ => wrapper_command_offset(executable.as_str(), &args),
     };
+
     match next {
         None => Some(offset + start),
         Some(next) if next <= args.len() => {

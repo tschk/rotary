@@ -24,6 +24,15 @@ impl DreamConsolidator {
     /// Consolidate the graph in place.
     pub fn consolidate(&self, graph: &mut GraphMemory) -> ConsolidationResult {
         let mut result = ConsolidationResult::default();
+
+        self.prune_edges(graph, &mut result);
+        self.merge_nodes(graph, &mut result);
+        self.infer_edges(graph, &mut result);
+
+        result
+    }
+
+    fn prune_edges(&self, graph: &mut GraphMemory, result: &mut ConsolidationResult) {
         let confidence_threshold = 0.3;
         let pruned: Vec<(String, String, EdgeRelation)> = graph
             .edges
@@ -35,7 +44,9 @@ impl DreamConsolidator {
         for (s, t, r) in &pruned {
             graph.remove_edge(s, t, r);
         }
+    }
 
+    fn merge_nodes(&self, graph: &mut GraphMemory, result: &mut ConsolidationResult) {
         let mut by_label: HashMap<String, Vec<String>> = HashMap::new();
         let labels: Vec<(String, String, NodeType)> = graph
             .nodes
@@ -83,7 +94,9 @@ impl DreamConsolidator {
                 result.merged_count += 1;
             }
         }
+    }
 
+    fn infer_edges(&self, graph: &mut GraphMemory, result: &mut ConsolidationResult) {
         let nodes: Vec<String> = graph.nodes.keys().cloned().collect();
         // Cap new-edge inference to avoid O(n²) blowup on large graphs.
         const MAX_CONSOLIDATION_NODES: usize = 2_000;
@@ -114,6 +127,5 @@ impl DreamConsolidator {
                 }
             }
         }
-        result
     }
 }
