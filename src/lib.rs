@@ -116,10 +116,10 @@ pub mod marketplace;
 
 pub use agent::{
     is_planning_content, normalize_tool_name, wipe_planning_tokens, Agent, AgentBudget, CacheAudit,
-    CacheDivergence, Event, GateResult, MemoryRecall, PermissionAsk, QualityGateConfig,
-    SemanticEmbedder, SemanticRecallConfig, ToolCall, ToolContext, ToolDefinition, ToolEffect,
-    ToolErrorKind, ToolExecuteBox, ToolExecuteFn, ToolExecutor, ToolFuture, ToolRegistry,
-    ToolResult, TurnEndMetadata,
+    CacheDivergence, Event, GateResult, MemoryRecall, PatchHunkNotice, PermissionAsk,
+    QualityGateConfig, SemanticEmbedder, SemanticRecallConfig, ToolCall, ToolContext,
+    ToolDefinition, ToolEffect, ToolErrorKind, ToolExecuteBox, ToolExecuteFn, ToolExecutor,
+    ToolFuture, ToolRegistry, ToolResult, TurnEndMetadata,
 };
 #[cfg(feature = "autoresearch")]
 pub use autoresearch::{

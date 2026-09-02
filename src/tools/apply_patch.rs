@@ -108,7 +108,10 @@ pub(crate) fn exec_apply_patch(ctx: Arc<ToolContext>, args: String) -> ToolFutur
                 Ok(()) => {
                     if let Some(buf) = &ctx.patch_hunks {
                         for hunk in hunk_bodies(diff) {
-                            buf.lock().push((path.to_string(), hunk));
+                            buf.lock().push(crate::agent::PatchHunkNotice {
+                                path: path.to_string(),
+                                hunk,
+                            });
                         }
                     }
                     ToolResult::ok("apply_patch", format!("patched {}", full.display()))
@@ -153,9 +156,9 @@ mod tests {
         assert!(!result.is_error);
         let queued = hunks.lock();
         assert_eq!(queued.len(), 1);
-        assert_eq!(queued[0].0, "f.txt");
-        assert!(queued[0].1.starts_with("@@ -1,3 +1,3 @@"));
-        assert!(queued[0].1.contains("-beta"));
-        assert!(queued[0].1.contains("+delta"));
+        assert_eq!(queued[0].path, "f.txt");
+        assert!(queued[0].hunk.starts_with("@@ -1,3 +1,3 @@"));
+        assert!(queued[0].hunk.contains("-beta"));
+        assert!(queued[0].hunk.contains("+delta"));
     }
 }

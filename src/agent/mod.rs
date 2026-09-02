@@ -430,7 +430,7 @@ pub struct Agent {
     pub evidence: Arc<RwLock<crate::subtask::EvidenceLedger>>,
     sandbox_retries: Arc<parking_lot::Mutex<Vec<crate::sandbox::EscalateRetry>>>,
     permission_asks: Arc<parking_lot::Mutex<Vec<PermissionAsk>>>,
-    patch_hunks: Arc<parking_lot::Mutex<Vec<(String, String)>>>,
+    patch_hunks: Arc<parking_lot::Mutex<Vec<PatchHunkNotice>>>,
     subtasks_enabled: bool,
     pub actor_id: String,
     #[cfg(feature = "mcp")]
@@ -996,8 +996,11 @@ impl Agent {
             });
         }
         let hunks = std::mem::take(&mut *self.patch_hunks.lock());
-        for (path, hunk) in hunks {
-            self.emit(Event::PatchHunk { path, hunk });
+        for hunk in hunks {
+            self.emit(Event::PatchHunk {
+                path: hunk.path,
+                hunk: hunk.hunk,
+            });
         }
     }
 

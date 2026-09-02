@@ -153,13 +153,19 @@ pub struct ToolContext {
     pub allow_complete_subtask: bool,
     pub actor_id: String,
     pub permission_asks: Option<Arc<parking_lot::Mutex<Vec<PermissionAsk>>>>,
-    pub patch_hunks: Option<Arc<parking_lot::Mutex<Vec<(String, String)>>>>,
+    pub patch_hunks: Option<Arc<parking_lot::Mutex<Vec<PatchHunkNotice>>>>,
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct PermissionAsk {
     pub tool: String,
     pub paths: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct PatchHunkNotice {
+    pub path: String,
+    pub hunk: String,
 }
 
 impl ToolContext {
