@@ -434,8 +434,11 @@ impl WritePathSchedule {
     }
 }
 
+pub type GuardianReview =
+    std::sync::Arc<dyn Fn(&ToolCall) -> Result<Decision, String> + Send + Sync>;
+
 pub struct GuardianAuthorizer {
-    review: Option<std::sync::Arc<dyn Fn(&ToolCall) -> Result<Decision, String> + Send + Sync>>,
+    review: Option<GuardianReview>,
 }
 
 impl GuardianAuthorizer {
