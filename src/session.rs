@@ -230,9 +230,7 @@ impl Session {
             .file_stem()
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_else(|| "imported".into());
-        let mut id = fallback_id.clone();
-        let mut name = fallback_id;
-        let mut session = Self::new(id.clone(), name.clone());
+        let mut session = Self::new(fallback_id.clone(), fallback_id);
         for line in content.lines() {
             if line.trim().is_empty() {
                 continue;
@@ -240,76 +238,84 @@ impl Session {
             let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
                 continue;
             };
-            let ty = v.get("type").and_then(|t| t.as_str()).unwrap_or("");
-            if ty == "session_meta" {
-                if let Some(s) = v.get("id").and_then(|x| x.as_str()) {
-                    // Validate imported ID before accepting it.
-                    if let Err(e) = crate::tools::common::validate_identifier(s) {
-                        tracing::warn!("rejecting malicious session id '{s}': {e}");
-                        continue;
-                    }
-                    id = s.to_string();
-                    session.id = id.clone();
-                }
-                if let Some(s) = v.get("name").and_then(|x| x.as_str()) {
-                    name = s.to_string();
-                    session.name = name.clone();
-                }
-                continue;
-            }
-            if ty == "session_todos" {
-                if let Some(todos) = v.get("todos") {
-                    if let Ok(todos) = serde_json::from_value(todos.clone()) {
-                        session.todos = todos;
-                    }
-                }
-                continue;
-            }
-            // Accept typed message lines or bare role/content lines.
-            if ty == "message" || v.get("role").is_some() {
-                let role_str = v.get("role").and_then(|r| r.as_str()).unwrap_or("user");
-                let role = match role_str {
-                    "assistant" => Role::Assistant,
-                    "system" => Role::System,
-                    "tool" => Role::Tool,
-                    _ => Role::User,
-                };
-                let text = v
-                    .get("content")
-                    .and_then(|c| c.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                let tool_call_id = v
-                    .get("tool_call_id")
-                    .and_then(|x| x.as_str())
-                    .map(str::to_string);
-                let tool_calls = v
-                    .get("tool_calls")
-                    .and_then(|x| serde_json::from_value(x.clone()).ok())
-                    .unwrap_or_default();
-                if let Some(eid) = v.get("id").and_then(|x| x.as_u64()) {
-                    let parent = v.get("parent_id").and_then(|x| x.as_u64());
-                    if eid >= session.next_id {
-                        session.next_id = eid + 1;
-                    }
-                    session.entries.push(Entry {
-                        id: eid,
-                        parent_id: parent,
-                        role,
-                        content: text,
-                        tool_call_id,
-                        tool_calls,
-                    });
-                } else {
-                    session.append(role, text);
-                    if let Some(entry) = session.entries.last_mut() {
-                        entry.tool_call_id = tool_call_id;
-                        entry.tool_calls = tool_calls;
-                    }
-                }
-            }
+            session.process_codex_line(&v);
         }
         Ok(session)
+    }
+
+    fn process_codex_line(&mut self, v: &serde_json::Value) {
+        let ty = v.get("type").and_then(|t| t.as_str()).unwrap_or("");
+        if ty == "session_meta" {
+            self.process_session_meta(v);
+        } else if ty == "session_todos" {
+            self.process_session_todos(v);
+        } else if ty == "message" || v.get("role").is_some() {
+            self.process_message(v);
+        }
+    }
+
+    fn process_session_meta(&mut self, v: &serde_json::Value) {
+        if let Some(s) = v.get("id").and_then(|x| x.as_str()) {
+            if let Err(e) = crate::tools::common::validate_identifier(s) {
+                tracing::warn!("rejecting malicious session id '{s}': {e}");
+            } else {
+                self.id = s.to_string();
+            }
+        }
+        if let Some(s) = v.get("name").and_then(|x| x.as_str()) {
+            self.name = s.to_string();
+        }
+    }
+
+    fn process_session_todos(&mut self, v: &serde_json::Value) {
+        if let Some(todos) = v.get("todos") {
+            if let Ok(todos) = serde_json::from_value(todos.clone()) {
+                self.todos = todos;
+            }
+        }
+    }
+
+    fn process_message(&mut self, v: &serde_json::Value) {
+        let role_str = v.get("role").and_then(|r| r.as_str()).unwrap_or("user");
+        let role = match role_str {
+            "assistant" => Role::Assistant,
+            "system" => Role::System,
+            "tool" => Role::Tool,
+            _ => Role::User,
+        };
+        let text = v
+            .get("content")
+            .and_then(|c| c.as_str())
+            .unwrap_or("")
+            .to_string();
+        let tool_call_id = v
+            .get("tool_call_id")
+            .and_then(|x| x.as_str())
+            .map(str::to_string);
+        let tool_calls = v
+            .get("tool_calls")
+            .and_then(|x| serde_json::from_value(x.clone()).ok())
+            .unwrap_or_default();
+        if let Some(eid) = v.get("id").and_then(|x| x.as_u64()) {
+            let parent = v.get("parent_id").and_then(|x| x.as_u64());
+            if eid >= self.next_id {
+                self.next_id = eid + 1;
+            }
+            self.entries.push(Entry {
+                id: eid,
+                parent_id: parent,
+                role,
+                content: text,
+                tool_call_id,
+                tool_calls,
+            });
+        } else {
+            self.append(role, text);
+            if let Some(entry) = self.entries.last_mut() {
+                entry.tool_call_id = tool_call_id;
+                entry.tool_calls = tool_calls;
+            }
+        }
     }
 
     pub fn messages(&self) -> Vec<Message> {
@@ -486,13 +492,89 @@ mod tests {
     use super::*;
 
     #[test]
+    fn jsonl_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = Session::new("test_jsonl_session", "jsonl-test");
+        s.append(Role::User, "hello");
+        let secret = format!("sk-{}", "a".repeat(48));
+        s.append(Role::Assistant, format!("data: {}", secret));
+
+        let path = s.save_jsonl(dir.path()).unwrap();
+
+        let on_disk = std::fs::read_to_string(&path).unwrap();
+        assert!(!on_disk.contains(&secret));
+        assert!(on_disk.contains("[REDACTED:api-key]"));
+
+        let loaded = Session::load_jsonl(&path).unwrap();
+        assert_eq!(loaded.id, "test_jsonl_session");
+        assert_eq!(loaded.entries.len(), 2);
+        assert_eq!(loaded.entries[0].content, "hello");
+        assert_eq!(loaded.entries[1].content, "data: [REDACTED:api-key]");
+        assert!(loaded.todos.items.is_empty());
+    }
+
+    #[test]
+    fn save_jsonl_invalid_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Session::new("../invalid", "test");
+        let err = s.save_jsonl(dir.path()).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+    }
+
+    #[test]
     fn append_and_fork() {
         let mut s = Session::new("s1", "test");
-        s.append(Role::User, "hello");
-        s.append(Role::Assistant, "hi");
-        let forked = s.fork(1);
-        assert_eq!(forked.entries.len(), 1);
-        assert_eq!(forked.entries[0].content, "hello");
+        let id1 = s.append(Role::System, "sys");
+        let id2 = s.append(Role::User, "hello");
+        let id3 = s.append(Role::Assistant, "hi");
+
+        // Forking from an intermediate entry
+        let forked1 = s.fork(id2);
+        assert_eq!(forked1.id, "s1-fork");
+        assert_eq!(forked1.name, "test (fork)");
+        assert_eq!(forked1.next_id, s.next_id);
+        assert_eq!(forked1.entries.len(), 2);
+        assert_eq!(forked1.entries[0].id, id1);
+        assert_eq!(forked1.entries[0].content, "sys");
+        assert_eq!(forked1.entries[1].id, id2);
+        assert_eq!(forked1.entries[1].content, "hello");
+
+        // Forking from a non-existent entry ID copies all entries
+        let forked2 = s.fork(999);
+        assert_eq!(forked2.id, "s1-fork");
+        assert_eq!(forked2.name, "test (fork)");
+        assert_eq!(forked2.next_id, s.next_id);
+        assert_eq!(forked2.entries.len(), 3);
+        assert_eq!(forked2.entries[2].id, id3);
+        assert_eq!(forked2.entries[2].content, "hi");
+    }
+
+    #[test]
+    fn load_jsonl_recovers_from_malformed_lines() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("malformed.jsonl");
+
+        let valid_entry = serde_json::json!({
+            "id": 1,
+            "parent_id": null,
+            "role": "user",
+            "content": "valid message"
+        });
+
+        let content = format!(
+            "\n\n{}\nmalformed json\n{}\n{}\n",
+            "{}", // empty object
+            valid_entry,
+            serde_json::json!({"type": "session_todos", "todos": {"items": []}})
+        );
+
+        std::fs::write(&path, content).unwrap();
+
+        let loaded = Session::load_jsonl(&path).unwrap();
+        assert_eq!(loaded.id, "malformed");
+        assert_eq!(loaded.entries.len(), 1);
+        assert_eq!(loaded.entries[0].content, "valid message");
+        assert!(loaded.todos.items.is_empty());
     }
 
     #[test]
@@ -523,6 +605,34 @@ mod tests {
         assert!(!on_disk.contains(&secret));
         assert!(on_disk.contains("[REDACTED:api-key]"));
         assert!(s.entries[0].content.contains(&secret));
+    }
+
+    #[test]
+    fn merge_sessions() {
+        let mut s1 = Session::new("s1", "base");
+        s1.append(Role::User, "q1");
+        s1.append(Role::Assistant, "a1");
+
+        let mut s2 = Session::new("s2", "branch");
+        s2.append(Role::User, "q2");
+        s2.append(Role::Assistant, "a2");
+        s2.append(Role::User, "q3");
+
+        let merged_count = s1.merge(&s2);
+
+        assert_eq!(merged_count, 3);
+        assert_eq!(s1.entries.len(), 5);
+        assert_eq!(s1.entries[0].content, "q1");
+        assert_eq!(s1.entries[1].content, "a1");
+        assert_eq!(s1.entries[2].content, "q2");
+        assert_eq!(s1.entries[3].content, "a2");
+        assert_eq!(s1.entries[4].content, "q3");
+
+        // Assert IDs are sequential in the target session
+        assert_eq!(s1.entries[2].id, 3);
+        assert_eq!(s1.entries[3].id, 4);
+        assert_eq!(s1.entries[4].id, 5);
+        assert_eq!(s1.next_id, 6);
     }
 
     #[cfg(feature = "sqlite-sessions")]

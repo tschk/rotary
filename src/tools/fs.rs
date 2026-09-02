@@ -462,6 +462,80 @@ pub(crate) fn exec_bash(_ctx: Arc<ToolContext>, _args: String) -> ToolFuture {
 }
 
 #[cfg(feature = "builtin-tools")]
+fn validate_bash_sandbox(ctx: &ToolContext, command: &str) -> Result<(), String> {
+    // Fail closed: policy requires OS sandbox but runner unavailable.
+    if ctx.os_sandbox_required && ctx.os_sandbox.is_none() {
+        return Err("OS sandbox required but unavailable — shell execution blocked".to_string());
+    }
+
+    if let Some(sb) = ctx.sandbox.as_ref() {
+        if let Err(e) = sb.validate_command(command) {
+            return Err(e.to_string());
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(feature = "builtin-tools")]
+async fn run_bash_with_retry(
+    ctx: Arc<ToolContext>,
+    command: String,
+    working_dir: std::path::PathBuf,
+    timeout: Duration,
+) -> Result<String, String> {
+    // Seatbelt flake: empty + signal death (-1 / 134 ABRT / 137 KILL).
+    // Escalate once on deny/flake; still dead → fail-closed.
+    let mut last_flake = None;
+    let mut layer = ctx.sandbox_layer;
+    let mut runner = ctx.os_sandbox.clone();
+    let mut escalated = false;
+    for attempt in 0..2 {
+        let mut cmd = build_command(&ctx, &command, &working_dir, runner.as_deref())?;
+        let child = cmd.spawn().map_err(|e| format!("failed to execute: {e}"))?;
+        let (stdout_buf, stderr_buf, exit_code) =
+            wait_and_drain(ctx.clone(), child, timeout).await?;
+        if ctx.os_sandbox.is_some() && is_sandbox_signal_flake(&stdout_buf, &stderr_buf, exit_code)
+        {
+            last_flake = Some(exit_code);
+            if !escalated {
+                if let Some(os) = runner.as_ref() {
+                    let deny = crate::sandbox::SandboxError::CommandDenied(format!(
+                        "sandbox flake exit {exit_code}"
+                    ));
+                    match escalate_os_sandbox_once(os, layer, &deny, ctx.sandbox_retries.as_deref())
+                    {
+                        Ok((next, next_layer)) => {
+                            runner = Some(Arc::new(next));
+                            layer = next_layer;
+                            escalated = true;
+                            continue;
+                        }
+                        Err(_) => {
+                            return Err(format!(
+                                "OS sandbox aborted the process (exit {exit_code}, no output); refuse fail-open"
+                            ));
+                        }
+                    }
+                }
+            }
+            if attempt == 0 {
+                continue;
+            }
+            return Err(format!(
+                "OS sandbox aborted the process (exit {exit_code}, no output); refuse fail-open"
+            ));
+        }
+        let result = format_output(stdout_buf, stderr_buf, exit_code);
+        return Ok(result);
+    }
+    Err(format!(
+        "OS sandbox aborted the process (exit {}, no output); refuse fail-open",
+        last_flake.unwrap_or(-1)
+    ))
+}
+
+#[cfg(feature = "builtin-tools")]
 pub(crate) fn exec_bash(ctx: Arc<ToolContext>, args: String) -> ToolFuture {
     Box::pin(async move {
         let command = match parse_str_field(&args, "command") {
@@ -471,18 +545,8 @@ pub(crate) fn exec_bash(ctx: Arc<ToolContext>, args: String) -> ToolFuture {
         let cwd = parse_str_field(&args, "cwd");
         let timeout_secs = parse_num_field(&args, "timeout").unwrap_or(120);
 
-        // Fail closed: policy requires OS sandbox but runner unavailable.
-        if ctx.os_sandbox_required && ctx.os_sandbox.is_none() {
-            return ToolResult::err(
-                "bash",
-                "OS sandbox required but unavailable — shell execution blocked",
-            );
-        }
-
-        if let Some(sb) = ctx.sandbox.as_ref() {
-            if let Err(e) = sb.validate_command(&command) {
-                return ToolResult::err("bash", e.to_string());
-            }
+        if let Err(e) = validate_bash_sandbox(&ctx, &command) {
+            return ToolResult::err("bash", e);
         }
 
         let working_dir = match resolve_working_dir(&ctx, cwd) {
@@ -491,78 +555,10 @@ pub(crate) fn exec_bash(ctx: Arc<ToolContext>, args: String) -> ToolFuture {
         };
 
         let timeout = Duration::from_secs(timeout_secs);
-        // Seatbelt flake: empty + signal death (-1 / 134 ABRT / 137 KILL).
-        // Escalate once on deny/flake; still dead → fail-closed.
-        let mut last_flake = None;
-        let mut layer = ctx.sandbox_layer;
-        let mut runner = ctx.os_sandbox.clone();
-        let mut escalated = false;
-        for attempt in 0..2 {
-            let mut cmd = match build_command(&ctx, &command, &working_dir, runner.as_deref()) {
-                Ok(c) => c,
-                Err(e) => return ToolResult::err("bash", e),
-            };
-            let child = match cmd.spawn() {
-                Ok(c) => c,
-                Err(e) => return ToolResult::err("bash", format!("failed to execute: {e}")),
-            };
-            let (stdout_buf, stderr_buf, exit_code) =
-                match wait_and_drain(ctx.clone(), child, timeout).await {
-                    Ok(res) => res,
-                    Err(msg) => return ToolResult::err("bash", msg),
-                };
-            if ctx.os_sandbox.is_some()
-                && is_sandbox_signal_flake(&stdout_buf, &stderr_buf, exit_code)
-            {
-                last_flake = Some(exit_code);
-                if !escalated {
-                    if let Some(os) = runner.as_ref() {
-                        let deny = crate::sandbox::SandboxError::CommandDenied(format!(
-                            "sandbox flake exit {exit_code}"
-                        ));
-                        match escalate_os_sandbox_once(
-                            os,
-                            layer,
-                            &deny,
-                            ctx.sandbox_retries.as_deref(),
-                        ) {
-                            Ok((next, next_layer)) => {
-                                runner = Some(Arc::new(next));
-                                layer = next_layer;
-                                escalated = true;
-                                continue;
-                            }
-                            Err(_) => {
-                                return ToolResult::err(
-                                    "bash",
-                                    format!(
-                                        "OS sandbox aborted the process (exit {exit_code}, no output); refuse fail-open"
-                                    ),
-                                );
-                            }
-                        }
-                    }
-                }
-                if attempt == 0 {
-                    continue;
-                }
-                return ToolResult::err(
-                    "bash",
-                    format!(
-                        "OS sandbox aborted the process (exit {exit_code}, no output); refuse fail-open"
-                    ),
-                );
-            }
-            let result = format_output(stdout_buf, stderr_buf, exit_code);
-            return ToolResult::ok("bash", result);
+        match run_bash_with_retry(ctx, command, working_dir, timeout).await {
+            Ok(result) => ToolResult::ok("bash", result),
+            Err(e) => ToolResult::err("bash", e),
         }
-        ToolResult::err(
-            "bash",
-            format!(
-                "OS sandbox aborted the process (exit {}, no output); refuse fail-open",
-                last_flake.unwrap_or(-1)
-            ),
-        )
     })
 }
 
@@ -589,45 +585,7 @@ pub(crate) fn exec_grep(ctx: Arc<ToolContext>, args: String) -> ToolFuture {
                 } else {
                     full
                 };
-                let shared = crate::search::picker_for(root)?;
-                let guard = shared.read().map_err(|e| e.to_string())?;
-                let picker = guard.as_ref().ok_or("picker missing")?;
-                let query = fff_search::parse_grep_query(&pattern);
-                let options = fff_search::GrepSearchOptions {
-                    before_context: context,
-                    after_context: context,
-                    page_limit: 100,
-                    ..Default::default()
-                };
-                let grep_result = picker.grep(&query, &options);
-
-                let mut out = String::new();
-                for m in &grep_result.matches {
-                    let file = &grep_result.files[m.file_index];
-                    let path = file.absolute_path(picker, &picker.base_path);
-                    let path_str = path.to_string_lossy();
-                    for (i, line) in m.context_before.iter().enumerate() {
-                        let num = m.line_number as usize - m.context_before.len() + i;
-                        out.push_str(&format!("  {num:>6}\t{path_str}\t{line}\n"));
-                    }
-                    out.push_str(&format!(
-                        "> {line_number:>6}\t{path_str}\t{line_content}\n",
-                        line_number = m.line_number,
-                        line_content = m.line_content
-                    ));
-                    for (i, line) in m.context_after.iter().enumerate() {
-                        let num = m.line_number as usize + 1 + i;
-                        out.push_str(&format!("  {num:>6}\t{path_str}\t{line}\n"));
-                    }
-                    if context > 0 && !m.context_after.is_empty() {
-                        out.push_str("  ---\n");
-                    }
-                }
-                Ok::<_, String>(if out.is_empty() {
-                    "(no matches)".to_string()
-                } else {
-                    out
-                })
+                fff_grep(root, &pattern, context)
             })
             .await
             .unwrap_or_else(|e| Err(format!("search task failed: {e}")));
@@ -819,6 +777,49 @@ fn walk_files(root: &std::path::Path, out: &mut Vec<std::path::PathBuf>, max: us
             out.push(path);
         }
     }
+}
+
+#[cfg(all(feature = "builtin-tools", feature = "fff"))]
+fn fff_grep(root: std::path::PathBuf, pattern: &str, context: usize) -> Result<String, String> {
+    let shared = crate::search::picker_for(root)?;
+    let guard = shared.read().map_err(|e| e.to_string())?;
+    let picker = guard.as_ref().ok_or("picker missing")?;
+    let query = fff_search::parse_grep_query(pattern);
+    let options = fff_search::GrepSearchOptions {
+        before_context: context,
+        after_context: context,
+        page_limit: 100,
+        ..Default::default()
+    };
+    let grep_result = picker.grep(&query, &options);
+
+    let mut out = String::new();
+    for m in &grep_result.matches {
+        let file = &grep_result.files[m.file_index];
+        let path = file.absolute_path(picker, &picker.base_path);
+        let path_str = path.to_string_lossy();
+        for (i, line) in m.context_before.iter().enumerate() {
+            let num = m.line_number as usize - m.context_before.len() + i;
+            out.push_str(&format!("  {num:>6}\t{path_str}\t{line}\n"));
+        }
+        out.push_str(&format!(
+            "> {line_number:>6}\t{path_str}\t{line_content}\n",
+            line_number = m.line_number,
+            line_content = m.line_content
+        ));
+        for (i, line) in m.context_after.iter().enumerate() {
+            let num = m.line_number as usize + 1 + i;
+            out.push_str(&format!("  {num:>6}\t{path_str}\t{line}\n"));
+        }
+        if context > 0 && !m.context_after.is_empty() {
+            out.push_str("  ---\n");
+        }
+    }
+    Ok(if out.is_empty() {
+        "(no matches)".to_string()
+    } else {
+        out
+    })
 }
 
 #[cfg(all(feature = "builtin-tools", not(feature = "fff")))]

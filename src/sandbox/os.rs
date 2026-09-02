@@ -234,98 +234,97 @@ impl OsSandboxRunner {
         &self.config
     }
 
+    fn wrap_macos_seatbelt(&self, cmd: &str, args: &[&str]) -> Vec<String> {
+        let profile = self
+            .profile_path
+            .as_ref()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| "/tmp/rx4-sandbox.sb".to_string());
+        let mut v: Vec<String> = vec![
+            "sandbox-exec".to_string(),
+            "-f".to_string(),
+            profile,
+            "--".to_string(),
+            cmd.to_string(),
+        ];
+        v.extend(args.iter().map(|a| a.to_string()));
+        v
+    }
+
+    fn wrap_linux_bubblewrap(&self, cmd: &str, args: &[&str]) -> Vec<String> {
+        let workspace = self.config.workspace.display().to_string();
+        // Private-by-default: mount only essential system paths + workspace.
+        // Do NOT bind host root — that would expose all of /home, /root, etc.
+        let mut v: Vec<String> = vec![
+            "bwrap".to_string(),
+            // Essential runtime directories read-only.
+            "--ro-bind".to_string(),
+            "/usr".to_string(),
+            "/usr".to_string(),
+            "--ro-bind".to_string(),
+            "/lib".to_string(),
+            "/lib".to_string(),
+            "--ro-bind".to_string(),
+            "/lib64".to_string(),
+            "/lib64".to_string(),
+            "--ro-bind".to_string(),
+            "/bin".to_string(),
+            "/bin".to_string(),
+            "--ro-bind".to_string(),
+            "/sbin".to_string(),
+            "/sbin".to_string(),
+            "--ro-bind".to_string(),
+            "/etc".to_string(),
+            "/etc".to_string(),
+            // Device and process filesystems.
+            "--dev".to_string(),
+            "/dev".to_string(),
+            "--proc".to_string(),
+            "/proc".to_string(),
+            // Temp storage.
+            "--tmpfs".to_string(),
+            "/tmp".to_string(),
+            // Workspace mounted read-write.
+            "--bind".to_string(),
+            workspace.clone(),
+            workspace,
+        ];
+        for extra in &self.config.extra_ro_paths {
+            let p = extra.display().to_string();
+            v.push("--ro-bind".to_string());
+            v.push(p.clone());
+            v.push(p);
+        }
+        v.push("--unshare-all".to_string());
+        if self.config.allow_network {
+            v.push("--share-net".to_string());
+        }
+        v.push("--clearenv".to_string());
+        for name in &self.config.env_whitelist {
+            if let Ok(value) = std::env::var(name) {
+                v.push("--setenv".to_string());
+                v.push(name.clone());
+                v.push(value);
+            }
+        }
+        v.push("--".to_string());
+        v.push(cmd.to_string());
+        v.extend(args.iter().map(|a| a.to_string()));
+        v
+    }
+
+    fn wrap_userspace_only(&self, cmd: &str, args: &[&str]) -> Vec<String> {
+        let mut v: Vec<String> = vec![cmd.to_string()];
+        v.extend(args.iter().map(|a| a.to_string()));
+        v
+    }
+
     /// Return the full command vector with the sandbox wrapper prepended.
     pub fn wrap_command(&self, cmd: &str, args: &[&str]) -> Vec<String> {
         match self.config.mode {
-            OsSandbox::MacosSeatbelt => {
-                let profile = self
-                    .profile_path
-                    .as_ref()
-                    .map(|p| p.display().to_string())
-                    .unwrap_or_else(|| "/tmp/rx4-sandbox.sb".to_string());
-                let mut v: Vec<String> = vec![
-                    "sandbox-exec".to_string(),
-                    "-f".to_string(),
-                    profile,
-                    "--".to_string(),
-                    cmd.to_string(),
-                ];
-                v.extend(args.iter().map(|a| a.to_string()));
-                v
-            }
-            OsSandbox::LinuxBubblewrap => {
-                let workspace = self.config.workspace.display().to_string();
-                // Private-by-default: mount only essential system paths + workspace.
-                // Do NOT bind host root — that would expose all of /home, /root, etc.
-                let mut v: Vec<String> = vec![
-                    "bwrap".to_string(),
-                    // Essential runtime directories read-only.
-                    "--ro-bind".to_string(),
-                    "/usr".to_string(),
-                    "/usr".to_string(),
-                    "--ro-bind".to_string(),
-                    "/lib".to_string(),
-                    "/lib".to_string(),
-                    "--ro-bind".to_string(),
-                    "/lib64".to_string(),
-                    "/lib64".to_string(),
-                    "--ro-bind".to_string(),
-                    "/bin".to_string(),
-                    "/bin".to_string(),
-                    "--ro-bind".to_string(),
-                    "/sbin".to_string(),
-                    "/sbin".to_string(),
-                    "--ro-bind".to_string(),
-                    "/etc".to_string(),
-                    "/etc".to_string(),
-                    // Device and process filesystems.
-                    "--dev".to_string(),
-                    "/dev".to_string(),
-                    "--proc".to_string(),
-                    "/proc".to_string(),
-                    // Temp storage.
-                    "--tmpfs".to_string(),
-                    "/tmp".to_string(),
-                    // Workspace mounted read-write.
-                    "--bind".to_string(),
-                    workspace.clone(),
-                    workspace.clone(),
-                ];
-                let git = self.config.workspace.join(".git");
-                if self.config.extra_ro_paths.iter().any(|p| p == &git) {
-                    let p = git.display().to_string();
-                    v.push("--ro-bind".to_string());
-                    v.push(p.clone());
-                    v.push(p);
-                }
-                for extra in &self.config.extra_ro_paths {
-                    let p = extra.display().to_string();
-                    v.push("--ro-bind".to_string());
-                    v.push(p.clone());
-                    v.push(p);
-                }
-                v.push("--unshare-all".to_string());
-                if self.config.allow_network {
-                    v.push("--share-net".to_string());
-                }
-                v.push("--clearenv".to_string());
-                for name in &self.config.env_whitelist {
-                    if let Ok(value) = std::env::var(name) {
-                        v.push("--setenv".to_string());
-                        v.push(name.clone());
-                        v.push(value);
-                    }
-                }
-                v.push("--".to_string());
-                v.push(cmd.to_string());
-                v.extend(args.iter().map(|a| a.to_string()));
-                v
-            }
-            OsSandbox::UserspaceOnly => {
-                let mut v: Vec<String> = vec![cmd.to_string()];
-                v.extend(args.iter().map(|a| a.to_string()));
-                v
-            }
+            OsSandbox::MacosSeatbelt => self.wrap_macos_seatbelt(cmd, args),
+            OsSandbox::LinuxBubblewrap => self.wrap_linux_bubblewrap(cmd, args),
+            OsSandbox::UserspaceOnly => self.wrap_userspace_only(cmd, args),
         }
     }
 
