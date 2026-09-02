@@ -1236,7 +1236,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn explore_defaults_depth_one_without_parent_transcript() {
         let c = SubagentConfig::explore("scout");
         assert_eq!(c.limits.max_depth, Some(0));
