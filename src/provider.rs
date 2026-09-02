@@ -742,6 +742,7 @@ mod tests {
     use super::ProviderError;
     #[cfg(feature = "providers")]
     use super::*;
+    use super::{Message, Role};
 
     #[test]
     fn transient_errors_are_retryable() {
@@ -749,6 +750,40 @@ mod tests {
         assert!(ProviderError::Api("429 busy".into()).is_transient());
         assert!(ProviderError::Api("503 unavailable".into()).is_transient());
         assert!(!ProviderError::Api("401 unauthorized".into()).is_transient());
+    }
+
+    #[test]
+    fn message_factory_methods_test_edge_cases() {
+        let user = Message::user("hello");
+        assert_eq!(user.role, Role::User);
+        assert_eq!(user.content, "hello");
+        assert_eq!(user.tool_call_id, None);
+        assert!(user.tool_calls.is_empty());
+
+        let system = Message::system("sys_hello");
+        assert_eq!(system.role, Role::System);
+        assert_eq!(system.content, "sys_hello");
+        assert_eq!(system.tool_call_id, None);
+        assert!(system.tool_calls.is_empty());
+
+        let tool = Message::tool("call_1", "result");
+        assert_eq!(tool.role, Role::Tool);
+        assert_eq!(tool.content, "result");
+        assert_eq!(tool.tool_call_id, Some("call_1".to_string()));
+        assert!(tool.tool_calls.is_empty());
+
+        let assistant = Message::assistant_with_tools(
+            "thinking",
+            vec![crate::agent::ToolCall {
+                id: "call_1".into(),
+                name: "read".into(),
+                arguments: "{}".into(),
+            }],
+        );
+        assert_eq!(assistant.role, Role::Assistant);
+        assert_eq!(assistant.content, "thinking");
+        assert_eq!(assistant.tool_call_id, None);
+        assert_eq!(assistant.tool_calls.len(), 1);
     }
 
     #[cfg(feature = "providers")]
