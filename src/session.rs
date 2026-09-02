@@ -102,6 +102,14 @@ impl Session {
             .retain(|entry| !crate::agent::is_planning_content(&entry.content));
     }
 
+    pub fn replace_messages(&mut self, messages: &[Message]) {
+        self.entries.clear();
+        self.next_id = 1;
+        for message in messages {
+            self.append_message(message);
+        }
+    }
+
     pub fn append_message(&mut self, message: &Message) -> u64 {
         let id = self.next_id;
         self.next_id += 1;
@@ -670,6 +678,17 @@ mod tests {
         assert_eq!(loaded.entries[1].tool_calls[0].id, "c1");
         assert_eq!(loaded.entries[2].tool_call_id.as_deref(), Some("c1"));
         assert_eq!(loaded.next_id, s.next_id);
+    }
+
+    #[test]
+    fn replace_messages_rebuilds_entries() {
+        let mut session = Session::new("rep", "rep");
+        session.append(Role::User, "old");
+        session.replace_messages(&[Message::system("sys"), Message::user("kept")]);
+        let texts: Vec<_> = session.messages().into_iter().map(|m| m.content).collect();
+        assert_eq!(texts, vec!["sys".to_string(), "kept".to_string()]);
+        assert_eq!(session.entries[0].id, 1);
+        assert_eq!(session.next_id, 3);
     }
 
     #[test]

@@ -1468,7 +1468,7 @@ impl Agent {
                     let output = result.output.clone();
                     self.emit(Event::GateResult(result));
                     if failed {
-                        self.messages.write().push(Message::user(format!(
+                        self.record_message(Message::user(format!(
                             "Quality gate failed. Fix the failure, then continue. Bounded gate output:\n{output}"
                         )));
                         continue;
@@ -2294,11 +2294,16 @@ impl Agent {
         provider: &dyn Provider,
     ) -> Result<(), crate::provider::ProviderError> {
         info!("compacting context: {reason}");
-        if self.message_count() <= 2 {
+        let snapshot = self.session.read().messages();
+        if snapshot.len() <= 2 {
             return Ok(());
         }
-        let before_tokens = self.context_tokens();
-        let snapshot = self.messages.read().clone();
+        let before_tokens = estimate_messages(&snapshot)
+            + self
+                .system_prompt
+                .as_deref()
+                .map(crate::compaction::estimate_tokens)
+                .unwrap_or(0);
         let result = compact_messages_semantically(
             &snapshot,
             &self.compaction_config(),
@@ -2309,13 +2314,13 @@ impl Agent {
         if result.removed_count == 0 {
             return Ok(());
         }
-        {
-            let mut messages = self.messages.write();
-            if !apply_compaction_result(&mut messages, &snapshot, &result) {
-                return Ok(());
-            }
-            messages.push(Message::system(format!("[compact reason: {reason}]")));
+        let mut messages = snapshot.clone();
+        if !apply_compaction_result(&mut messages, &snapshot, &result) {
+            return Ok(());
         }
+        messages.push(Message::system(format!("[compact reason: {reason}]")));
+        self.session.write().replace_messages(&messages);
+        *self.messages.write() = messages;
         self.emit(Event::CompactionStart {
             reason: reason.to_string(),
             before_tokens,
@@ -3280,6 +3285,85 @@ mod tests {
         assert!(!dir.path().join(".rx4").join("raven.jsonl").exists());
     }
 
+    #[cfg(feature = "providers")]
+    struct SummaryProvider;
+
+    #[cfg(feature = "providers")]
+    #[async_trait::async_trait]
+    impl crate::provider::Provider for SummaryProvider {
+        fn id(&self) -> &str {
+            "summary"
+        }
+
+        fn name(&self) -> &str {
+            "summary"
+        }
+
+        async fn stream(
+            &self,
+            _messages: &[Message],
+            _system: &Option<String>,
+            _model: &str,
+            _tools: &[serde_json::Value],
+            _reasoning_effort: Option<&str>,
+        ) -> Result<crate::provider::StreamResult, crate::provider::ProviderError> {
+            Ok(Box::new(futures::stream::iter([Ok(
+                crate::provider::StreamEvent::Delta("checkpoint retained".into()),
+            )])))
+        }
+
+        async fn generate(
+            &self,
+            _messages: &[Message],
+            _system: &Option<String>,
+            _model: &str,
+            _tools: &[serde_json::Value],
+        ) -> Result<String, crate::provider::ProviderError> {
+            Ok("checkpoint retained".into())
+        }
+    }
+
+    #[cfg(feature = "providers")]
+    #[tokio::test]
+    async fn compact_semantically_updates_session_and_live_vec() {
+        let mut agent = Agent::new();
+        agent.auto_compact_after = 50;
+        agent.record_message(Message::system("sys"));
+        for i in 0..12 {
+            agent.record_message(Message::user(format!("old message {i} ") + &"x".repeat(80)));
+            agent.record_message(Message::assistant("reply".repeat(40)));
+        }
+        agent.record_message(Message::user("recent tail"));
+        agent.messages.write().clear();
+        agent.messages.write().push(Message::user("LIVE VEC ONLY"));
+        agent
+            .compact_semantically("test", &SummaryProvider)
+            .await
+            .unwrap();
+        let from_session = agent.session.read().messages();
+        assert_eq!(from_session, *agent.messages.read());
+        assert!(
+            from_session
+                .iter()
+                .any(|m| m.content.contains("recent tail")),
+            "session lost the tail: {from_session:?}"
+        );
+        assert!(
+            from_session
+                .iter()
+                .any(|m| m.content.contains("context compacted")
+                    || m.content.contains("compact reason")),
+            "session was not compacted: {from_session:?}"
+        );
+        assert!(
+            agent
+                .request_messages()
+                .iter()
+                .all(|m| m.content != "LIVE VEC ONLY"),
+            "live vec was used as the compact source"
+        );
+    }
+
     #[test]
     fn provider_request_ignores_live_vec_mutation() {
         let agent = Agent::new();
@@ -3594,6 +3678,75 @@ mod tests {
         );
         let patched = std::fs::read_to_string(dir.path().join("f.txt")).unwrap();
         assert_eq!(patched, "alpha\ndelta\ngamma\n");
+    }
+
+    #[cfg(feature = "providers")]
+    struct TextThenDoneProvider {
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+        seen: Arc<parking_lot::Mutex<Vec<Vec<String>>>>,
+    }
+
+    #[cfg(feature = "providers")]
+    #[async_trait::async_trait]
+    impl crate::provider::Provider for TextThenDoneProvider {
+        fn id(&self) -> &str {
+            "text-then-done"
+        }
+
+        fn name(&self) -> &str {
+            "text-then-done"
+        }
+
+        async fn stream(
+            &self,
+            messages: &[Message],
+            _system: &Option<String>,
+            _model: &str,
+            _tools: &[serde_json::Value],
+            _reasoning_effort: Option<&str>,
+        ) -> Result<crate::provider::StreamResult, crate::provider::ProviderError> {
+            self.seen
+                .lock()
+                .push(messages.iter().map(|m| m.content.clone()).collect());
+            let n = self.calls.fetch_add(1, Ordering::SeqCst);
+            if n >= 1 {
+                return Ok(Box::new(futures::stream::iter([Ok(
+                    crate::provider::StreamEvent::Done,
+                )])));
+            }
+            Ok(Box::new(futures::stream::iter([
+                Ok(crate::provider::StreamEvent::Delta("finished".into())),
+                Ok(crate::provider::StreamEvent::Done),
+            ])))
+        }
+    }
+
+    #[cfg(feature = "providers")]
+    #[tokio::test]
+    async fn quality_gate_failure_reaches_the_session() {
+        let seen = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let mut agent = Agent::new();
+        agent.set_quality_gate(QualityGateConfig::new("false"));
+        agent.set_provider(Arc::new(TextThenDoneProvider {
+            calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            seen: Arc::clone(&seen),
+        }));
+        agent.prompt("go").await.unwrap();
+        assert!(
+            agent
+                .request_messages()
+                .iter()
+                .any(|m| m.content.contains("Quality gate failed")),
+            "gate failure stayed on the live vec: {:?}",
+            agent.request_messages()
+        );
+        let calls = seen.lock();
+        assert!(
+            calls
+                .get(1)
+                .is_some_and(|msgs| msgs.iter().any(|m| m.contains("Quality gate failed"))),
+            "next provider request missed the gate failure: {calls:?}"
+        );
     }
 }
 
