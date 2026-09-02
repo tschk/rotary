@@ -864,14 +864,19 @@ mod tests {
 
     #[test]
     fn fold_only_after_prune_fails_to_fit() {
-        let config = CompactionConfig::new(40, 10, 8);
-        let messages = oversized_transcript();
+        let config = CompactionConfig::new(40, 25, 90);
+        let messages = vec![
+            Message::system("important system prompt"),
+            Message::user("old ".repeat(80)),
+            Message::user("keep ".repeat(20)),
+            Message::assistant("tail ".repeat(20)),
+        ];
+        let pruned_only = prune_messages(&messages, &config);
+        assert_eq!(pruned_only.step, ProjectionStep::Prune);
+        assert!(pruned_only.remaining_tokens > config.trigger_threshold);
         let result = project_compact(&messages, &config);
         assert_eq!(result.step, ProjectionStep::Fold);
         assert!(!result.summary.is_empty());
-        let pruned_only = prune_messages(&messages, &config);
-        assert!(pruned_only.remaining_tokens > config.trigger_threshold);
-        assert_eq!(pruned_only.step, ProjectionStep::Prune);
     }
 
     #[test]

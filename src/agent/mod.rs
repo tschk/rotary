@@ -908,9 +908,10 @@ impl Agent {
     }
 
     fn request_messages(&self) -> Vec<Message> {
+        let live = self.messages.read().clone();
         let session = self.session.read();
-        if session.entries.is_empty() {
-            self.messages.read().clone()
+        if session.entries.is_empty() || live.len() > session.entries.len() {
+            live
         } else {
             session.messages()
         }
@@ -1292,7 +1293,7 @@ impl Agent {
             }
 
             if tool_calls.is_empty() {
-                if check_empty_turn(&assistant_content) {
+                if self.guardrails.is_some() && check_empty_turn(&assistant_content) {
                     let action = recover_empty_turn(empty_turns, 3);
                     empty_turns += 1;
                     match action {
