@@ -274,11 +274,13 @@ pub enum ToolSource {
     ComputerUse,
 }
 
+pub fn is_planning_content(content: &str) -> bool {
+    let t = content.trim();
+    t.contains("<planning>") || t.contains("[planning]") || t.starts_with("PLAN:")
+}
+
 pub fn wipe_planning_tokens(messages: &mut Vec<Message>) {
-    messages.retain(|m| {
-        let t = m.content.trim();
-        !t.contains("<planning>") && !t.contains("[planning]") && !t.starts_with("PLAN:")
-    });
+    messages.retain(|m| !is_planning_content(&m.content));
 }
 
 pub type Subscriber = Arc<dyn Fn(&Event) + Send + Sync>;
@@ -428,6 +430,7 @@ pub struct Agent {
     pub evidence: Arc<RwLock<crate::subtask::EvidenceLedger>>,
     sandbox_retries: Arc<parking_lot::Mutex<Vec<crate::sandbox::EscalateRetry>>>,
     permission_asks: Arc<parking_lot::Mutex<Vec<PermissionAsk>>>,
+    patch_hunks: Arc<parking_lot::Mutex<Vec<(String, String)>>>,
     subtasks_enabled: bool,
     pub actor_id: String,
     #[cfg(feature = "mcp")]
@@ -512,6 +515,7 @@ impl Agent {
             evidence: Arc::new(RwLock::new(crate::subtask::EvidenceLedger::default())),
             sandbox_retries: Arc::new(parking_lot::Mutex::new(Vec::new())),
             permission_asks: Arc::new(parking_lot::Mutex::new(Vec::new())),
+            patch_hunks: Arc::new(parking_lot::Mutex::new(Vec::new())),
             subtasks_enabled: false,
             actor_id: "host".into(),
             #[cfg(feature = "mcp")]
@@ -991,6 +995,15 @@ impl Agent {
                 paths: ask.paths,
             });
         }
+        let hunks = std::mem::take(&mut *self.patch_hunks.lock());
+        for (path, hunk) in hunks {
+            self.emit(Event::PatchHunk { path, hunk });
+        }
+    }
+
+    fn wipe_recorded_planning_tokens(&self) {
+        self.session.write().wipe_planning_tokens();
+        wipe_planning_tokens(&mut self.messages.write());
     }
 
     fn record_message(&self, message: Message) {
@@ -1565,8 +1578,7 @@ impl Agent {
                     match decision {
                         PlanDecision::Approve => {
                             plan_approved = true;
-                            let mut msgs = self.messages.write();
-                            wipe_planning_tokens(&mut msgs);
+                            self.wipe_recorded_planning_tokens();
                         }
                         PlanDecision::Reject(reason) => {
                             info!("plan rejected: {reason}");
@@ -1628,14 +1640,20 @@ impl Agent {
                     let decision = rails.observe(&call.name, &call.arguments, result.is_error);
                     if rails.identical_call_count >= 1 {
                         match recover_stuck_tool(
-                            rails.identical_call_count,
+                            rails.identical_call_count.saturating_sub(1),
                             rails.config.same_tool_failure_halt_after,
                         ) {
+                            RecoveryAction::Nudge(text) | RecoveryAction::Prefill(text) => {
+                                self.record_message(Message::user(text));
+                            }
                             RecoveryAction::Retry => {
                                 self.emit(Event::RetryReason {
                                     retry_reason: "stuck_tool".into(),
                                     layer: "tool".into(),
                                 });
+                                self.record_message(Message::user(
+                                    "The same tool call is stuck. Change arguments or retry a different approach.",
+                                ));
                             }
                             RecoveryAction::Halt(reason) => {
                                 self.emit(Event::RetryReason {
@@ -1645,7 +1663,6 @@ impl Agent {
                                 stopped = Some((call.name.clone(), reason));
                                 break;
                             }
-                            RecoveryAction::Prefill(_) | RecoveryAction::Nudge(_) => {}
                         }
                     }
                     match decision {
@@ -2017,14 +2034,7 @@ impl Agent {
 
     pub fn compact(&self, reason: &str) {
         info!("compacting context: {reason}");
-        let source = {
-            let session = self.session.read();
-            if session.entries.is_empty() {
-                self.messages.read().clone()
-            } else {
-                session.messages()
-            }
-        };
+        let source = self.session.read().messages();
         if source.len() <= 2 {
             return;
         }
@@ -2080,6 +2090,7 @@ impl Agent {
         tool_ctx.allow_complete_subtask = self.subtasks_enabled;
         tool_ctx.actor_id = self.actor_id.clone();
         tool_ctx.permission_asks = Some(Arc::clone(&self.permission_asks));
+        tool_ctx.patch_hunks = Some(Arc::clone(&self.patch_hunks));
         #[cfg(feature = "ipc")]
         {
             tool_ctx.lsp = Some(Arc::clone(&self.lsp));
@@ -2970,6 +2981,7 @@ mod tests {
                 Event::ProcessStdin { process_id, bytes } => {
                     format!("stdin:{process_id}:{bytes}")
                 }
+                Event::PatchHunk { path, .. } => format!("hunk:{path}"),
                 _ => return,
             };
             sink.lock().push(label);
@@ -3223,6 +3235,49 @@ mod tests {
     }
 
     #[test]
+    fn plan_wipe_clears_session_not_just_live_vec() {
+        let agent = Agent::new();
+        agent.record_message(Message::system("sys"));
+        agent.record_message(Message::assistant("<planning>think</planning>"));
+        agent.record_message(Message::user("go"));
+        wipe_planning_tokens(&mut agent.messages.write());
+        assert!(agent
+            .request_messages()
+            .iter()
+            .any(|m| is_planning_content(&m.content)));
+        agent.wipe_recorded_planning_tokens();
+        assert!(agent
+            .request_messages()
+            .iter()
+            .all(|m| !is_planning_content(&m.content)));
+        assert_eq!(
+            agent
+                .request_messages()
+                .iter()
+                .map(|m| m.content.as_str())
+                .collect::<Vec<_>>(),
+            vec!["sys", "go"]
+        );
+    }
+
+    #[test]
+    fn compact_empty_session_does_not_use_live_vec() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut agent = Agent::new();
+        agent.set_workspace_root(dir.path());
+        agent.auto_compact_after = 50;
+        for i in 0..20 {
+            agent
+                .messages
+                .write()
+                .push(Message::user(format!("old message {i} ") + &"x".repeat(80)));
+        }
+        agent.compact("test");
+        assert_eq!(agent.messages.read().len(), 20);
+        assert!(!dir.path().join(".rx4").join("raven.jsonl").exists());
+    }
+
+    #[test]
     fn provider_request_ignores_live_vec_mutation() {
         let agent = Agent::new();
         agent.record_message(Message::user("hello"));
@@ -3384,6 +3439,158 @@ mod tests {
                 .any(|l| l.starts_with("retry:stuck tool") || l == "stop:flaky"),
             "missing stuck-tool halt: {labels:?}"
         );
+        let texts = agent
+            .request_messages()
+            .iter()
+            .map(|m| m.content.clone())
+            .collect::<Vec<_>>();
+        assert!(
+            texts
+                .iter()
+                .any(|m| m.contains("The same tool call is repeating")),
+            "nudge never reached the session: {texts:?}"
+        );
+        assert!(
+            texts
+                .iter()
+                .any(|m| m.contains("The same tool call is stuck")),
+            "retry never re-prompted: {texts:?}"
+        );
+    }
+
+    #[cfg(feature = "providers")]
+    struct PlanningRepeatingProvider {
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+        limit: usize,
+    }
+
+    #[cfg(feature = "providers")]
+    #[async_trait::async_trait]
+    impl crate::provider::Provider for PlanningRepeatingProvider {
+        fn id(&self) -> &str {
+            "planning-repeating"
+        }
+
+        fn name(&self) -> &str {
+            "planning-repeating"
+        }
+
+        async fn stream(
+            &self,
+            _messages: &[Message],
+            _system: &Option<String>,
+            _model: &str,
+            _tools: &[serde_json::Value],
+            _reasoning_effort: Option<&str>,
+        ) -> Result<crate::provider::StreamResult, crate::provider::ProviderError> {
+            let n = self.calls.fetch_add(1, Ordering::SeqCst);
+            if n >= self.limit {
+                return Ok(Box::new(futures::stream::iter([Ok(
+                    crate::provider::StreamEvent::Done,
+                )])));
+            }
+            Ok(Box::new(futures::stream::iter([
+                Ok(crate::provider::StreamEvent::Delta(
+                    "<planning>think</planning>".into(),
+                )),
+                Ok(crate::provider::StreamEvent::ToolCall(ToolCall {
+                    id: "call_1".into(),
+                    name: "flaky".into(),
+                    arguments: "{}".into(),
+                })),
+                Ok(crate::provider::StreamEvent::Done),
+            ])))
+        }
+    }
+
+    #[cfg(feature = "providers")]
+    #[tokio::test]
+    async fn approved_plan_wipes_planning_from_session() {
+        let (mut agent, _, _) = looping_agent(1);
+        agent.set_provider(Arc::new(PlanningRepeatingProvider {
+            calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            limit: 1,
+        }));
+        agent.set_plan_approver(Arc::new(crate::permissions::AlwaysApprovePlan));
+        agent.prompt("go").await.unwrap();
+        assert!(
+            agent
+                .request_messages()
+                .iter()
+                .all(|m| !is_planning_content(&m.content)),
+            "planning tokens still in provider request: {:?}",
+            agent.request_messages()
+        );
+    }
+
+    #[cfg(feature = "providers")]
+    struct ApplyPatchProvider {
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    #[cfg(feature = "providers")]
+    #[async_trait::async_trait]
+    impl crate::provider::Provider for ApplyPatchProvider {
+        fn id(&self) -> &str {
+            "apply-patch"
+        }
+
+        fn name(&self) -> &str {
+            "apply-patch"
+        }
+
+        async fn stream(
+            &self,
+            _messages: &[Message],
+            _system: &Option<String>,
+            _model: &str,
+            _tools: &[serde_json::Value],
+            _reasoning_effort: Option<&str>,
+        ) -> Result<crate::provider::StreamResult, crate::provider::ProviderError> {
+            let n = self.calls.fetch_add(1, Ordering::SeqCst);
+            if n >= 1 {
+                return Ok(Box::new(futures::stream::iter([Ok(
+                    crate::provider::StreamEvent::Done,
+                )])));
+            }
+            Ok(Box::new(futures::stream::iter([
+                Ok(crate::provider::StreamEvent::ToolCall(ToolCall {
+                    id: "p1".into(),
+                    name: "apply_patch".into(),
+                    arguments: serde_json::json!({
+                        "path": "f.txt",
+                        "diff": "@@ -1,3 +1,3 @@\n alpha\n-beta\n+delta\n gamma\n"
+                    })
+                    .to_string(),
+                })),
+                Ok(crate::provider::StreamEvent::Done),
+            ])))
+        }
+    }
+
+    #[cfg(feature = "providers")]
+    #[tokio::test]
+    async fn apply_patch_emits_patch_hunk() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("f.txt"), "alpha\nbeta\ngamma\n").unwrap();
+        let registry = ToolRegistry::new();
+        crate::tools::register_apply_patch_tool(&registry);
+        let mut agent = Agent::new();
+        agent.set_workspace_root(dir.path());
+        agent.set_tools(registry);
+        agent.set_policy(Policy::full_access());
+        agent.set_provider(Arc::new(ApplyPatchProvider {
+            calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        }));
+        let seen = event_sink(&mut agent);
+        agent.prompt("go").await.unwrap();
+        assert!(
+            seen.lock().iter().any(|l| l == "hunk:f.txt"),
+            "apply_patch did not emit PatchHunk: {:?}",
+            seen.lock()
+        );
+        let patched = std::fs::read_to_string(dir.path().join("f.txt")).unwrap();
+        assert_eq!(patched, "alpha\ndelta\ngamma\n");
     }
 }
 

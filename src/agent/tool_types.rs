@@ -153,6 +153,7 @@ pub struct ToolContext {
     pub allow_complete_subtask: bool,
     pub actor_id: String,
     pub permission_asks: Option<Arc<parking_lot::Mutex<Vec<PermissionAsk>>>>,
+    pub patch_hunks: Option<Arc<parking_lot::Mutex<Vec<(String, String)>>>>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -192,6 +193,7 @@ impl ToolContext {
             allow_complete_subtask: false,
             actor_id: "host".into(),
             permission_asks: None,
+            patch_hunks: None,
         }
     }
 

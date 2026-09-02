@@ -53,6 +53,26 @@ pub fn apply_unified_diff(source: &str, diff: &str) -> Result<String, String> {
     Ok(out)
 }
 
+fn hunk_bodies(diff: &str) -> Vec<String> {
+    let mut hunks = Vec::new();
+    let mut current: Option<String> = None;
+    for line in diff.lines() {
+        if line.starts_with("@@") {
+            if let Some(hunk) = current.take() {
+                hunks.push(hunk);
+            }
+            current = Some(line.to_string());
+        } else if let Some(hunk) = current.as_mut() {
+            hunk.push('\n');
+            hunk.push_str(line);
+        }
+    }
+    if let Some(hunk) = current {
+        hunks.push(hunk);
+    }
+    hunks
+}
+
 fn parse_hunk_start(header: &str) -> Result<usize, String> {
     let after = header.split("@@").nth(1).unwrap_or("").trim();
     let old = after.split_whitespace().next().unwrap_or("");
@@ -85,7 +105,14 @@ pub(crate) fn exec_apply_patch(ctx: Arc<ToolContext>, args: String) -> ToolFutur
         };
         match apply_unified_diff(&source, diff) {
             Ok(next) => match std::fs::write(&full, next) {
-                Ok(()) => ToolResult::ok("apply_patch", format!("patched {}", full.display())),
+                Ok(()) => {
+                    if let Some(buf) = &ctx.patch_hunks {
+                        for hunk in hunk_bodies(diff) {
+                            buf.lock().push((path.to_string(), hunk));
+                        }
+                    }
+                    ToolResult::ok("apply_patch", format!("patched {}", full.display()))
+                }
                 Err(e) => ToolResult::err("apply_patch", e.to_string()),
             },
             Err(e) => ToolResult::err("apply_patch", e),
@@ -108,5 +135,27 @@ mod tests {
     #[test]
     fn rejects_missing_hunk() {
         assert!(apply_unified_diff("a\n", "not a diff").is_err());
+    }
+
+    #[tokio::test]
+    async fn apply_patch_queues_patch_hunks() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("f.txt"), "alpha\nbeta\ngamma\n").unwrap();
+        let hunks = std::sync::Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let mut ctx = ToolContext::new(dir.path());
+        ctx.patch_hunks = Some(std::sync::Arc::clone(&hunks));
+        let args = serde_json::json!({
+            "path": "f.txt",
+            "diff": "@@ -1,3 +1,3 @@\n alpha\n-beta\n+delta\n gamma\n"
+        })
+        .to_string();
+        let result = exec_apply_patch(std::sync::Arc::new(ctx), args).await;
+        assert!(!result.is_error);
+        let queued = hunks.lock();
+        assert_eq!(queued.len(), 1);
+        assert_eq!(queued[0].0, "f.txt");
+        assert!(queued[0].1.starts_with("@@ -1,3 +1,3 @@"));
+        assert!(queued[0].1.contains("-beta"));
+        assert!(queued[0].1.contains("+delta"));
     }
 }

@@ -97,6 +97,11 @@ impl Session {
         id
     }
 
+    pub fn wipe_planning_tokens(&mut self) {
+        self.entries
+            .retain(|entry| !crate::agent::is_planning_content(&entry.content));
+    }
+
     pub fn append_message(&mut self, message: &Message) -> u64 {
         let id = self.next_id;
         self.next_id += 1;
@@ -665,6 +670,18 @@ mod tests {
         assert_eq!(loaded.entries[1].tool_calls[0].id, "c1");
         assert_eq!(loaded.entries[2].tool_call_id.as_deref(), Some("c1"));
         assert_eq!(loaded.next_id, s.next_id);
+    }
+
+    #[test]
+    fn wipe_planning_tokens_drops_planning_entries() {
+        let mut session = Session::new("wipe", "wipe");
+        session.append(Role::System, "sys");
+        session.append(Role::Assistant, "<planning>think</planning>");
+        session.append(Role::User, "go");
+        session.append(Role::Assistant, "PLAN: do it");
+        session.wipe_planning_tokens();
+        let texts: Vec<_> = session.messages().into_iter().map(|m| m.content).collect();
+        assert_eq!(texts, vec!["sys".to_string(), "go".to_string()]);
     }
 
     #[test]
