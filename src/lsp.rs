@@ -717,11 +717,22 @@ mod tests {
     }
 
     #[test]
+    fn manager_registration_stores_args() {
+        let mut manager = LspManager::new();
+        manager.register("python", "pyright", &["--stdio"]).unwrap();
+        assert_eq!(manager.registered.len(), 1);
+        assert_eq!(manager.registered[0].0, "python");
+        assert_eq!(manager.registered[0].1, "pyright");
+        assert_eq!(manager.registered[0].2, vec!["--stdio".to_string()]);
+    }
+
+    #[test]
     fn manager_duplicate_registration_errors() {
         let mut manager = LspManager::new();
         manager.register("rust", "rust-analyzer", &[]).unwrap();
         let result = manager.register("rust", "rust-analyzer", &[]);
         assert!(matches!(result, Err(LspError::Protocol(_))));
+        assert_eq!(manager.registered.len(), 1);
     }
 
     #[tokio::test]
