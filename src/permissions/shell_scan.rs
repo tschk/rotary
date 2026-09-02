@@ -1064,30 +1064,38 @@ fn literal_producer_payload(words: &[String]) -> Option<String> {
         args.remove(0);
     }
     if executable == "echo" {
-        let mut decode_escapes = false;
-        while args.first().is_some_and(|a| {
-            a.len() > 1 && a.starts_with('-') && a[1..].chars().all(|c| "neE".contains(c))
-        }) {
-            for option in args[0][1..].chars() {
-                if option == 'e' {
-                    decode_escapes = true;
-                }
-                if option == 'E' {
-                    decode_escapes = false;
-                }
-            }
-            args.remove(0);
-        }
-        let payload = args.join(" ");
-        return Some(if decode_escapes {
-            decode_ansi_c(&payload)
-        } else {
-            payload
-        });
+        return handle_echo_payload(args);
     }
     if executable != "printf" || args.is_empty() {
         return None;
     }
+    handle_printf_payload(&args)
+}
+
+fn handle_echo_payload(mut args: Vec<String>) -> Option<String> {
+    let mut decode_escapes = false;
+    while args.first().is_some_and(|a| {
+        a.len() > 1 && a.starts_with('-') && a[1..].chars().all(|c| "neE".contains(c))
+    }) {
+        for option in args[0][1..].chars() {
+            if option == 'e' {
+                decode_escapes = true;
+            }
+            if option == 'E' {
+                decode_escapes = false;
+            }
+        }
+        args.remove(0);
+    }
+    let payload = args.join(" ");
+    Some(if decode_escapes {
+        decode_ansi_c(&payload)
+    } else {
+        payload
+    })
+}
+
+fn handle_printf_payload(args: &[String]) -> Option<String> {
     let format = decode_ansi_c(&args[0]);
     let values = &args[1..];
     let mut value_index = 0usize;
