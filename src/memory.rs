@@ -42,6 +42,20 @@ mod inner {
         pub access_count: i64,
     }
 
+    impl MemoryEntry {
+        fn try_from_row(row: &rusqlite::Row<'_>) -> Result<Self, MemoryError> {
+            Ok(Self {
+                id: row.get(0)?,
+                key: row.get(1)?,
+                content: row.get(2)?,
+                source: row.get(3)?,
+                created: parse_dt(&row.get::<_, String>(4)?)?,
+                accessed: parse_dt(&row.get::<_, String>(5)?)?,
+                access_count: row.get(6)?,
+            })
+        }
+    }
+
     /// SQLite-backed memory store with FTS5 full-text search and hybrid ranking.
     pub struct MemoryStore {
         conn: Mutex<Connection>,
@@ -116,12 +130,7 @@ mod inner {
             let conn = self.conn.lock();
 
             // Sanitize the query to prevent FTS syntax errors or SQL injection.
-            // Split by whitespace, escape inner quotes, and wrap each token in quotes.
-            let sanitized_query = query
-                .split_whitespace()
-                .map(|token| format!("\"{}\"", token.replace('"', "\"\"")))
-                .collect::<Vec<String>>()
-                .join(" ");
+            let sanitized_query = sanitize_query(query);
 
             let mut stmt = conn.prepare(
                 "SELECT m.id, m.key, m.content, m.source, m.created, m.accessed, m.access_count,
@@ -133,52 +142,18 @@ mod inner {
                  LIMIT ?2",
             )?;
 
-            let rows = stmt.query_map(params![sanitized_query, limit as i64], |row| {
-                let id: String = row.get(0)?;
-                let key: String = row.get(1)?;
-                let content: String = row.get(2)?;
-                let source: String = row.get(3)?;
-                let created: String = row.get(4)?;
-                let accessed: String = row.get(5)?;
-                let access_count: i64 = row.get(6)?;
-                let score: f64 = row.get(7)?;
-                Ok((
-                    id,
-                    key,
-                    content,
-                    source,
-                    created,
-                    accessed,
-                    access_count,
-                    score,
-                ))
-            })?;
+            let mut rows = stmt.query(params![sanitized_query, limit as i64])?;
 
-            let mut entries: Vec<(MemoryEntry, f64)> = Vec::new();
-            for row in rows {
-                let (id, key, content, source, created, accessed, access_count, score) = row?;
-                let created = parse_dt(&created)?;
-                let accessed = parse_dt(&accessed)?;
-                let entry = MemoryEntry {
-                    id,
-                    key,
-                    content,
-                    source,
-                    created,
-                    accessed,
-                    access_count,
-                };
-                entries.push((entry, score));
+            let mut scored: Vec<(MemoryEntry, f64)> = Vec::new();
+            while let Some(row) = rows.next()? {
+                let entry = MemoryEntry::try_from_row(row)?;
+                let bm25_score: f64 = row.get(7)?;
+
+                let boost = (1.0_f64 + entry.access_count as f64).ln();
+                let final_score = -bm25_score + boost;
+
+                scored.push((entry, final_score));
             }
-
-            let mut scored: Vec<(MemoryEntry, f64)> = entries
-                .into_iter()
-                .map(|(entry, bm25_score)| {
-                    let boost = (1.0 + entry.access_count as f64).ln();
-                    let final_score = -bm25_score + boost;
-                    (entry, final_score)
-                })
-                .collect();
 
             scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
@@ -196,18 +171,7 @@ mod inner {
 
             let mut rows = stmt.query(params![id])?;
             match rows.next()? {
-                Some(row) => {
-                    let entry = MemoryEntry {
-                        id: row.get(0)?,
-                        key: row.get(1)?,
-                        content: row.get(2)?,
-                        source: row.get(3)?,
-                        created: parse_dt(&row.get::<_, String>(4)?)?,
-                        accessed: parse_dt(&row.get::<_, String>(5)?)?,
-                        access_count: row.get(6)?,
-                    };
-                    Ok(Some(entry))
-                }
+                Some(row) => Ok(Some(MemoryEntry::try_from_row(row)?)),
                 None => Ok(None),
             }
         }
@@ -241,6 +205,14 @@ mod inner {
         DateTime::parse_from_rfc3339(s)
             .map(|dt| dt.with_timezone(&Utc))
             .map_err(|e| MemoryError::Parse(e.to_string()))
+    }
+
+    fn sanitize_query(query: &str) -> String {
+        query
+            .split_whitespace()
+            .map(|token| format!("\"{}\"", token.replace('"', "\"\"")))
+            .collect::<Vec<String>>()
+            .join(" ")
     }
 
     #[cfg(test)]

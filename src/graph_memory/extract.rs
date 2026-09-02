@@ -1,5 +1,5 @@
 use super::graph::*;
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 /// A single turn in an agent conversation.
@@ -41,96 +41,152 @@ impl ConversationExtractor {
         for (i, turn) in conversation.iter().enumerate() {
             let content = turn.content.to_lowercase();
             let loc = format!("turn:{}", i);
-            if content.contains("decided to") || content.contains("we decided") {
-                let label = extract_snippet(&turn.content, "decided");
-                result.push_node(MemoryNode {
-                    id: String::new(),
-                    label,
-                    node_type: NodeType::Decision,
-                    description: turn.content.clone(),
-                    source_file: None,
-                    source_location: Some(loc.clone()),
-                    tags: vec!["decision".to_string()],
-                    created_at: now,
-                });
-            }
-            if content.contains("fixed bug")
-                || content.contains("fixes bug")
-                || content.contains("bug fix")
-            {
-                let bug_label = extract_snippet(&turn.content, "bug");
-                let bug_id = result.push_node(MemoryNode {
-                    id: String::new(),
-                    label: bug_label,
-                    node_type: NodeType::Bug,
-                    description: turn.content.clone(),
-                    source_file: None,
-                    source_location: Some(loc.clone()),
-                    tags: vec!["bug".to_string()],
-                    created_at: now,
-                });
-                let fix_id = result.push_node(MemoryNode {
-                    id: String::new(),
-                    label: format!(
-                        "Fix for {}",
-                        turn.content.chars().take(40).collect::<String>()
-                    ),
-                    node_type: NodeType::Feature,
-                    description: turn.content.clone(),
-                    source_file: None,
-                    source_location: Some(loc.clone()),
-                    tags: vec!["fix".to_string()],
-                    created_at: now,
-                });
-                result.edges.push(MemoryEdge {
-                    source: bug_id,
-                    target: fix_id,
-                    relation: EdgeRelation::FixedBy,
-                    confidence: 0.8,
-                    source_file: None,
-                });
-            }
-            if content.contains("implemented") || content.contains("implements") {
-                let label = extract_snippet(&turn.content, "implemented");
-                result.push_node(MemoryNode {
-                    id: String::new(),
-                    label,
-                    node_type: NodeType::Feature,
-                    description: turn.content.clone(),
-                    source_file: None,
-                    source_location: Some(loc.clone()),
-                    tags: vec!["feature".to_string()],
-                    created_at: now,
-                });
-            }
-            if content.contains("pattern") {
-                let label = extract_snippet(&turn.content, "pattern");
-                result.push_node(MemoryNode {
-                    id: String::new(),
-                    label,
-                    node_type: NodeType::Pattern,
-                    description: turn.content.clone(),
-                    source_file: None,
-                    source_location: Some(loc.clone()),
-                    tags: vec!["pattern".to_string()],
-                    created_at: now,
-                });
-            }
-            if content.contains("concept") || content.contains("idea") {
-                let label = extract_snippet(&turn.content, "concept");
-                result.push_node(MemoryNode {
-                    id: String::new(),
-                    label,
-                    node_type: NodeType::Concept,
-                    description: turn.content.clone(),
-                    source_file: None,
-                    source_location: Some(loc.clone()),
-                    tags: vec!["concept".to_string()],
-                    created_at: now,
-                });
-            }
+
+            self.extract_decision(&content, turn, &loc, now, &mut result);
+            self.extract_bug(&content, turn, &loc, now, &mut result);
+            self.extract_feature(&content, turn, &loc, now, &mut result);
+            self.extract_pattern(&content, turn, &loc, now, &mut result);
+            self.extract_concept(&content, turn, &loc, now, &mut result);
         }
         result
+    }
+
+    fn extract_decision(
+        &self,
+        content: &str,
+        turn: &ConversationTurn,
+        loc: &str,
+        now: DateTime<Utc>,
+        result: &mut ExtractionResult,
+    ) {
+        if content.contains("decided to") || content.contains("we decided") {
+            let label = extract_snippet(&turn.content, "decided");
+            result.push_node(MemoryNode {
+                id: String::new(),
+                label,
+                node_type: NodeType::Decision,
+                description: turn.content.clone(),
+                source_file: None,
+                source_location: Some(loc.to_string()),
+                tags: vec!["decision".to_string()],
+                created_at: now,
+            });
+        }
+    }
+
+    fn extract_bug(
+        &self,
+        content: &str,
+        turn: &ConversationTurn,
+        loc: &str,
+        now: DateTime<Utc>,
+        result: &mut ExtractionResult,
+    ) {
+        if content.contains("fixed bug")
+            || content.contains("fixes bug")
+            || content.contains("bug fix")
+        {
+            let bug_label = extract_snippet(&turn.content, "bug");
+            let bug_id = result.push_node(MemoryNode {
+                id: String::new(),
+                label: bug_label,
+                node_type: NodeType::Bug,
+                description: turn.content.clone(),
+                source_file: None,
+                source_location: Some(loc.to_string()),
+                tags: vec!["bug".to_string()],
+                created_at: now,
+            });
+            let fix_id = result.push_node(MemoryNode {
+                id: String::new(),
+                label: format!(
+                    "Fix for {}",
+                    turn.content.chars().take(40).collect::<String>()
+                ),
+                node_type: NodeType::Feature,
+                description: turn.content.clone(),
+                source_file: None,
+                source_location: Some(loc.to_string()),
+                tags: vec!["fix".to_string()],
+                created_at: now,
+            });
+            result.edges.push(MemoryEdge {
+                source: bug_id,
+                target: fix_id,
+                relation: EdgeRelation::FixedBy,
+                confidence: 0.8,
+                source_file: None,
+            });
+        }
+    }
+
+    fn extract_feature(
+        &self,
+        content: &str,
+        turn: &ConversationTurn,
+        loc: &str,
+        now: DateTime<Utc>,
+        result: &mut ExtractionResult,
+    ) {
+        if content.contains("implemented") || content.contains("implements") {
+            let label = extract_snippet(&turn.content, "implemented");
+            result.push_node(MemoryNode {
+                id: String::new(),
+                label,
+                node_type: NodeType::Feature,
+                description: turn.content.clone(),
+                source_file: None,
+                source_location: Some(loc.to_string()),
+                tags: vec!["feature".to_string()],
+                created_at: now,
+            });
+        }
+    }
+
+    fn extract_pattern(
+        &self,
+        content: &str,
+        turn: &ConversationTurn,
+        loc: &str,
+        now: DateTime<Utc>,
+        result: &mut ExtractionResult,
+    ) {
+        if content.contains("pattern") {
+            let label = extract_snippet(&turn.content, "pattern");
+            result.push_node(MemoryNode {
+                id: String::new(),
+                label,
+                node_type: NodeType::Pattern,
+                description: turn.content.clone(),
+                source_file: None,
+                source_location: Some(loc.to_string()),
+                tags: vec!["pattern".to_string()],
+                created_at: now,
+            });
+        }
+    }
+
+    fn extract_concept(
+        &self,
+        content: &str,
+        turn: &ConversationTurn,
+        loc: &str,
+        now: DateTime<Utc>,
+        result: &mut ExtractionResult,
+    ) {
+        if content.contains("concept") || content.contains("idea") {
+            let label = extract_snippet(&turn.content, "concept");
+            result.push_node(MemoryNode {
+                id: String::new(),
+                label,
+                node_type: NodeType::Concept,
+                description: turn.content.clone(),
+                source_file: None,
+                source_location: Some(loc.to_string()),
+                tags: vec!["concept".to_string()],
+                created_at: now,
+            });
+        }
     }
 }
 

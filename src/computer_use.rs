@@ -19,97 +19,90 @@ fn bridge() -> Result<Arc<ComputerUseBridge>, String> {
 }
 
 pub fn register_tools(registry: &mut ToolRegistry) {
-    register(
-        registry,
-        "cu_call",
-        "Call a Praefectus computer-use method with JSON args.",
-        r#"{"type":"object","properties":{"method":{"type":"string"},"args":{"type":"object"}},"required":["method"]}"#,
-        ToolEffect::Process,
-    );
-    register(
-        registry,
-        "cu_see",
-        "Observe the active UI as a bounded semantic snapshot.",
-        r#"{"type":"object","properties":{"path":{"type":"string"}}}"#,
-        ToolEffect::Write,
-    );
-    register(
-        registry,
-        "cu_image",
-        "Capture the active screen to a workspace path.",
-        r#"{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}"#,
-        ToolEffect::Write,
-    );
-    register(
-        registry,
-        "cu_click",
-        "Invoke a semantic element tag or click freshly observed coordinates.",
-        r#"{"type":"object","properties":{"coords":{"type":"string"},"x":{"type":"integer"},"y":{"type":"integer"},"index":{"type":"integer"},"snapshot":{"type":"string"},"on":{"type":"string"},"button":{"type":"string"},"count":{"type":"integer"}}}"#,
-        ToolEffect::Process,
-    );
-    register(
-        registry,
-        "cu_type",
-        "Type text into the exactly observed focused element.",
-        r#"{"type":"object","properties":{"text":{"type":"string"},"clear":{"type":"boolean"},"return":{"type":"boolean"},"delay_ms":{"type":"integer"}},"required":["text"]}"#,
-        ToolEffect::Process,
-    );
-    register(
-        registry,
-        "cu_hotkey",
-        "Send a hotkey to the exactly observed focused element.",
-        r#"{"type":"object","properties":{"keys":{"type":"string"}},"required":["keys"]}"#,
-        ToolEffect::Process,
-    );
-    register(
-        registry,
-        "cu_scroll",
-        "Scroll the exactly observed focused element.",
-        r#"{"type":"object","properties":{"direction":{"type":"string"},"amount":{"type":"integer"}}}"#,
-        ToolEffect::Process,
-    );
-    register(
-        registry,
-        "cu_window",
-        "List, focus, close, or minimize windows.",
-        r#"{"type":"object","properties":{"action":{"type":"string"},"app":{"type":"string"},"title":{"type":"string"}}}"#,
-        ToolEffect::Process,
-    );
-    register(
-        registry,
-        "cu_app",
-        "List, launch, switch, or quit applications.",
-        r#"{"type":"object","properties":{"action":{"type":"string"},"name":{"type":"string"}}}"#,
-        ToolEffect::Process,
-    );
-    register(
-        registry,
-        "cu_list",
-        "List applications, windows, or screens.",
-        r#"{"type":"object","properties":{"what":{"type":"string"}}}"#,
-        ToolEffect::Read,
-    );
-    register(
-        registry,
-        "cu_open",
-        "Open a path or URL with an optional application.",
-        r#"{"type":"object","properties":{"target":{"type":"string"},"app":{"type":"string"},"no_focus":{"type":"boolean"}},"required":["target"]}"#,
-        ToolEffect::Process,
-    );
-    register(
-        registry,
-        "cu_clipboard",
-        "Read or write the clipboard.",
-        r#"{"type":"object","properties":{"action":{"type":"string"},"text":{"type":"string"}},"required":["action"]}"#,
-        ToolEffect::Process,
-    );
-    register(
-        registry,
-        "cu_doctor",
-        "Report Praefectus computer-use readiness and capabilities.",
-        r#"{"type":"object","properties":{}}"#,
-        ToolEffect::Read,
-    );
+    const TOOLS: &[(&str, &str, &str, ToolEffect)] = &[
+        (
+            "cu_call",
+            "Call a Praefectus computer-use method with JSON args.",
+            r#"{"type":"object","properties":{"method":{"type":"string"},"args":{"type":"object"}},"required":["method"]}"#,
+            ToolEffect::Process,
+        ),
+        (
+            "cu_see",
+            "Observe the active UI as a bounded semantic snapshot.",
+            r#"{"type":"object","properties":{"path":{"type":"string"}}}"#,
+            ToolEffect::Write,
+        ),
+        (
+            "cu_image",
+            "Capture the active screen to a workspace path.",
+            r#"{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}"#,
+            ToolEffect::Write,
+        ),
+        (
+            "cu_click",
+            "Invoke a semantic element tag or click freshly observed coordinates.",
+            r#"{"type":"object","properties":{"coords":{"type":"string"},"x":{"type":"integer"},"y":{"type":"integer"},"index":{"type":"integer"},"snapshot":{"type":"string"},"on":{"type":"string"},"button":{"type":"string"},"count":{"type":"integer"}}}"#,
+            ToolEffect::Process,
+        ),
+        (
+            "cu_type",
+            "Type text into the exactly observed focused element.",
+            r#"{"type":"object","properties":{"text":{"type":"string"},"clear":{"type":"boolean"},"return":{"type":"boolean"},"delay_ms":{"type":"integer"}},"required":["text"]}"#,
+            ToolEffect::Process,
+        ),
+        (
+            "cu_hotkey",
+            "Send a hotkey to the exactly observed focused element.",
+            r#"{"type":"object","properties":{"keys":{"type":"string"}},"required":["keys"]}"#,
+            ToolEffect::Process,
+        ),
+        (
+            "cu_scroll",
+            "Scroll the exactly observed focused element.",
+            r#"{"type":"object","properties":{"direction":{"type":"string"},"amount":{"type":"integer"}}}"#,
+            ToolEffect::Process,
+        ),
+        (
+            "cu_window",
+            "List, focus, close, or minimize windows.",
+            r#"{"type":"object","properties":{"action":{"type":"string"},"app":{"type":"string"},"title":{"type":"string"}}}"#,
+            ToolEffect::Process,
+        ),
+        (
+            "cu_app",
+            "List, launch, switch, or quit applications.",
+            r#"{"type":"object","properties":{"action":{"type":"string"},"name":{"type":"string"}}}"#,
+            ToolEffect::Process,
+        ),
+        (
+            "cu_list",
+            "List applications, windows, or screens.",
+            r#"{"type":"object","properties":{"what":{"type":"string"}}}"#,
+            ToolEffect::Read,
+        ),
+        (
+            "cu_open",
+            "Open a path or URL with an optional application.",
+            r#"{"type":"object","properties":{"target":{"type":"string"},"app":{"type":"string"},"no_focus":{"type":"boolean"}},"required":["target"]}"#,
+            ToolEffect::Process,
+        ),
+        (
+            "cu_clipboard",
+            "Read or write the clipboard.",
+            r#"{"type":"object","properties":{"action":{"type":"string"},"text":{"type":"string"}},"required":["action"]}"#,
+            ToolEffect::Process,
+        ),
+        (
+            "cu_doctor",
+            "Report Praefectus computer-use readiness and capabilities.",
+            r#"{"type":"object","properties":{}}"#,
+            ToolEffect::Read,
+        ),
+    ];
+
+    for (name, description, parameters_json, effect) in TOOLS {
+        register(registry, name, description, parameters_json, *effect);
+    }
     tracing::info!("computer_use: registered Praefectus tools");
 }
 
