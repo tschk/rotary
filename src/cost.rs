@@ -243,6 +243,13 @@ mod tests {
     }
 
     #[test]
+    fn estimate_cost_bogus_model_returns_zero() {
+        let registry = PricingRegistry::new();
+        let cost = registry.estimate_cost("bogus", 1_000_000, 500_000);
+        assert_eq!(cost, 0.0);
+    }
+
+    #[test]
     fn estimate_cost_detailed_includes_cache() {
         let registry = PricingRegistry::new();
         let usage = TokenUsage {
@@ -282,6 +289,46 @@ mod tests {
         assert!((cost - 2.50).abs() < 1e-9);
     }
 
+    #[test]
+    fn estimate_cost_zero_tokens() {
+        let registry = PricingRegistry::new();
+        let cost = registry.estimate_cost("gpt-4o", 0, 0);
+        assert_eq!(cost, 0.0);
+    }
+
+    #[test]
+    fn estimate_cost_detailed_zero_tokens() {
+        let registry = PricingRegistry::new();
+        let usage = TokenUsage::default();
+        let cost = registry.estimate_cost_detailed("claude-3.5-sonnet", &usage);
+        assert_eq!(cost, 0.0);
+    }
+
+    #[test]
+    fn estimate_cost_detailed_all_tokens() {
+        let registry = PricingRegistry::new();
+        let usage = TokenUsage {
+            input_tokens: 1_000_000,
+            output_tokens: 2_000_000,
+            cache_read_tokens: 3_000_000,
+            cache_write_tokens: 4_000_000,
+        };
+        let cost = registry.estimate_cost_detailed("claude-3.5-sonnet", &usage);
+        assert!((cost - 48.9).abs() < 1e-9);
+    }
+
+    #[test]
+    fn estimate_cost_detailed_fractional() {
+        let registry = PricingRegistry::new();
+        let usage = TokenUsage {
+            input_tokens: 100,
+            output_tokens: 200,
+            cache_read_tokens: 300,
+            cache_write_tokens: 400,
+        };
+        let cost = registry.estimate_cost_detailed("claude-3.5-sonnet", &usage);
+        assert!((cost - 0.00489).abs() < 1e-9);
+    }
     #[test]
     fn estimate_cost_detailed_unknown_model_returns_zero() {
         let registry = PricingRegistry::new();
@@ -390,5 +437,19 @@ mod tests {
         );
         assert_eq!(session.total_cost(), 0.0);
         assert_eq!(session.turn_count(), 1);
+    }
+
+    #[test]
+    fn estimate_cost_bogus_model() {
+        let registry = PricingRegistry::new();
+        let cost = registry.estimate_cost("bogus", 1_000_000, 500_000);
+        assert_eq!(cost, 0.0);
+    }
+
+    #[test]
+    fn estimate_cost_empty_registry_fallback() {
+        let registry = PricingRegistry::default();
+        let cost = registry.estimate_cost("gpt-4o", 1_000_000, 500_000);
+        assert_eq!(cost, 0.0);
     }
 }
