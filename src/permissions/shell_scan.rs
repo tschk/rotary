@@ -868,6 +868,22 @@ pub fn shell_pipelines(input: &str) -> Vec<Vec<String>> {
     let mut quote: Option<char> = None;
     let mut i = 0usize;
     let segment = |from: usize, to: usize| -> String { chars[from..to].iter().collect() };
+
+    let add_segment = |start: usize, end: usize, pipeline: &mut Vec<String>| {
+        let s = segment(start, end);
+        if !s.trim().is_empty() {
+            pipeline.push(s.trim().to_string());
+        }
+    };
+
+    let finish_pipeline = |pipeline: &mut Vec<String>, pipelines: &mut Vec<Vec<String>>| {
+        if pipeline.len() > 1 {
+            pipelines.push(std::mem::take(pipeline));
+        } else {
+            pipeline.clear();
+        }
+    };
+
     while i < chars.len() {
         let c = chars[i];
         if c == '\\' {
@@ -887,24 +903,14 @@ pub fn shell_pipelines(input: &str) -> Vec<Vec<String>> {
             continue;
         }
         if (c == '|' || c == '&') && chars.get(i + 1) == Some(&c) {
-            let s = segment(start, i);
-            if !s.trim().is_empty() {
-                pipeline.push(s.trim().to_string());
-            }
-            if pipeline.len() > 1 {
-                pipelines.push(std::mem::take(&mut pipeline));
-            } else {
-                pipeline.clear();
-            }
+            add_segment(start, i, &mut pipeline);
+            finish_pipeline(&mut pipeline, &mut pipelines);
             i += 2;
             start = i;
             continue;
         }
         if c == '|' {
-            let s = segment(start, i);
-            if !s.trim().is_empty() {
-                pipeline.push(s.trim().to_string());
-            }
+            add_segment(start, i, &mut pipeline);
             i += 1;
             if chars.get(i) == Some(&'&') {
                 i += 1;
@@ -913,28 +919,16 @@ pub fn shell_pipelines(input: &str) -> Vec<Vec<String>> {
             continue;
         }
         if c == ';' || c == '\n' || c == '&' {
-            let s = segment(start, i);
-            if !s.trim().is_empty() {
-                pipeline.push(s.trim().to_string());
-            }
-            if pipeline.len() > 1 {
-                pipelines.push(std::mem::take(&mut pipeline));
-            } else {
-                pipeline.clear();
-            }
+            add_segment(start, i, &mut pipeline);
+            finish_pipeline(&mut pipeline, &mut pipelines);
             i += 1;
             start = i;
             continue;
         }
         i += 1;
     }
-    let s = segment(start.min(chars.len()), chars.len());
-    if !s.trim().is_empty() {
-        pipeline.push(s.trim().to_string());
-    }
-    if pipeline.len() > 1 {
-        pipelines.push(pipeline);
-    }
+    add_segment(start.min(chars.len()), chars.len(), &mut pipeline);
+    finish_pipeline(&mut pipeline, &mut pipelines);
     pipelines
 }
 
