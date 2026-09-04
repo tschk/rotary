@@ -22,7 +22,12 @@ impl Agent {
         #[cfg(feature = "skills")]
         {
             if let Some(reg) = &self.skill_registry {
-                let matched = reg.match_prompt(safe_text);
+                let loadout = self.tools.names();
+                let matched: Vec<_> = reg
+                    .match_prompt(safe_text)
+                    .into_iter()
+                    .filter(|skill| skill.matches_loadout(&loadout))
+                    .collect();
                 for skill in &matched {
                     self.emit(Event::SkillActivated {
                         id: skill.id.clone(),

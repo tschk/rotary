@@ -14,7 +14,7 @@ rotary exposes **capabilities, not policy**. Scheduling, enabled flags, and life
 - **Stream-JSON CLI** — `rx4 exec --stream-json` emits NDJSON agent events.
 - **Permission system** — `Policy` + `Approver`; `Policy::default()` and `Agent::new` use `workspace_write` (process tools require approval). `Policy.enable_os_sandbox` enables seatbelt/bwrap as a policy plugin. Hosts receive `Event::ApprovalRequired` with a rich `ApprovalRequest`.
 - **Lifecycle hooks** — pluggable hook registry around the agent loop.
-- **Context compaction** — token-estimate auto-compact via `estimate_messages` + `apply_compaction`.
+- **Context compaction** — token-estimate auto-compact via `estimate_messages` + `apply_compaction`. Projection compaction (`PrefixShape`, prune-then-fold, Raven JSONL archive) keeps the session append-only. See [PROJECTION.md](PROJECTION.md).
 - **Parallel tool batches** — `JoinSet` for Read/Network; Write/Process serial.
 - **Skill engine** (`skills`) — Beta-Binomial confidence; keyword + optional embedding activation. Host opt-in: `Agent::set_skill_registry` injects matching skill instructions into the system prompt each turn.
 - **Background review** (`skills`) — heuristic learning signals. Host opt-in: `Agent::set_skill_engine` runs `BackgroundReviewer` after each `prompt`. (Manual `BackgroundReviewer` still available for custom schedules.)
@@ -29,7 +29,7 @@ rotary exposes **capabilities, not policy**. Scheduling, enabled flags, and life
 - **Context discipline** — tool definitions are serialized in stable name order, and `ToolRegistry::definitions_fingerprint()` lets hosts detect loadout changes that can invalidate a cached prompt prefix.
 - **OS sandbox** — optional seatbelt/bwrap wrap for bash via `Agent::enable_os_sandbox` (userspace `SandboxManager` still separate).
 - **Slash command parsing** — `/command` parsing for host UIs.
-- **Guardrails** — empty turn detection, repeated failure detection, tool-effect batch planning.
+- **Guardrails** — empty turn detection, repeated failure detection, tool-effect batch planning, live-arg reclassify + mutating barrier.
 - **Structured extraction** — JSON contracts for typed tool outputs.
 - **Subagent manager** — optional provider-driven `Agent::prompt` runs with workspace isolation directories.
 - **LSP client** — diagnostics, references, definition via Language Server Protocol.

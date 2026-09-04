@@ -149,14 +149,12 @@ impl ToolGuardrails {
             if self.config.hard_stop_enabled && error_count >= self.config.exact_failure_block_after
             {
                 return GuardrailDecision::Stop(format!(
-                    "Tool '{}' failed {} consecutive times — blocking further attempts.",
-                    tool_name, error_count
+                    "Tool '{tool_name}' failed {error_count} consecutive times — blocking further attempts."
                 ));
             }
             if self.config.warnings_enabled && error_count >= self.config.exact_failure_warn_after {
                 return GuardrailDecision::Warn(format!(
-                    "WARNING: Tool '{}' keeps failing ({} consecutive errors). Try a different approach.",
-                    tool_name, error_count
+                    "WARNING: Tool '{tool_name}' keeps failing ({error_count} consecutive errors). Try a different approach."
                 ));
             }
         }
@@ -224,6 +222,57 @@ impl SelfHealingRetry {
     }
 }
 
+/// Empty-turn and stuck-tool recovery. Hosts apply the action; the engine only classifies.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RecoveryAction {
+    Prefill(String),
+    Nudge(String),
+    Retry,
+    Halt(String),
+}
+
+pub const PREFILL_TEXT: &str = "Continue from where you left off.";
+pub const NUDGE_TEXT: &str =
+    "Your last turn was empty. Answer with progress, a question, or a tool call.";
+
+/// Empty assistant turns escalate Prefill → Nudge → Retry → Halt.
+pub fn recover_empty_turn(empty_count: usize, max_empty: usize) -> RecoveryAction {
+    if max_empty == 0 || empty_count >= max_empty {
+        return RecoveryAction::Halt(format!(
+            "empty turn limit reached ({empty_count}/{max_empty})"
+        ));
+    }
+    match empty_count {
+        0 => RecoveryAction::Prefill(PREFILL_TEXT.to_string()),
+        1 => RecoveryAction::Nudge(NUDGE_TEXT.to_string()),
+        n if n + 1 < max_empty => RecoveryAction::Retry,
+        _ => RecoveryAction::Halt(format!(
+            "empty turn limit reached ({empty_count}/{max_empty})"
+        )),
+    }
+}
+
+/// Stuck identical tool calls escalate Nudge → Retry → Halt.
+pub fn recover_stuck_tool(repeat_count: usize, halt_after: usize) -> RecoveryAction {
+    if halt_after == 0 || repeat_count >= halt_after {
+        return RecoveryAction::Halt(format!(
+            "stuck tool repeated {repeat_count} times (halt after {halt_after})"
+        ));
+    }
+    if repeat_count == 0 {
+        return RecoveryAction::Nudge(
+            "The same tool call is repeating. Change arguments or stop.".to_string(),
+        );
+    }
+    if repeat_count + 1 < halt_after {
+        RecoveryAction::Retry
+    } else {
+        RecoveryAction::Halt(format!(
+            "stuck tool repeated {repeat_count} times (halt after {halt_after})"
+        ))
+    }
+}
+
 pub fn check_empty_turn(assistant_content: &str) -> bool {
     assistant_content.trim().is_empty()
 }
@@ -285,8 +334,7 @@ pub fn should_warn_at_iteration_threshold(current: usize, max: usize) -> bool {
 /// Returns a steering message to inject when approaching the iteration limit.
 pub fn iteration_handoff_steering_text(current: usize, max: usize) -> String {
     format!(
-        "Approaching tool iteration limit ({}/{}). Wrap up the current task and provide a summary of progress so far.",
-        current, max
+        "Approaching tool iteration limit ({current}/{max}). Wrap up the current task and provide a summary of progress so far."
     )
 }
 
@@ -331,6 +379,44 @@ impl Default for AbortSignal {
     fn default() -> Self {
         Self::new()
     }
+}
+
+pub fn reclassify_effect(name: &str, args: &str, registered: ToolEffect) -> ToolEffect {
+    if name == "bash" || name == "exec" || name == "shell" {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(args) {
+            if let Some(cmd) = v.get("command").and_then(|c| c.as_str()) {
+                let first = cmd.split_whitespace().next().unwrap_or("");
+                if matches!(
+                    first,
+                    "cat" | "ls" | "head" | "tail" | "pwd" | "echo" | "rg" | "grep" | "find"
+                ) {
+                    return ToolEffect::Read;
+                }
+                return ToolEffect::Process;
+            }
+        }
+        return ToolEffect::Process;
+    }
+    if is_mutating_name(name) {
+        ToolEffect::Write
+    } else {
+        registered
+    }
+}
+
+fn is_mutating_name(name: &str) -> bool {
+    matches!(
+        name,
+        "write" | "edit" | "hashline_edit" | "apply_patch" | "delete" | "rename" | "move"
+    )
+}
+
+pub fn schedule_tool_calls(calls: &[(String, String, ToolEffect)]) -> Vec<Vec<usize>> {
+    let effects: Vec<ToolEffect> = calls
+        .iter()
+        .map(|(name, args, registered)| reclassify_effect(name, args, *registered))
+        .collect();
+    plan_tool_effect_batches(&effects)
 }
 
 /// Plan tool effect batches — groups indices that can run in parallel.
@@ -777,5 +863,60 @@ mod tests {
         assert!(should_stop(1, 1, 0, 1));
         assert!(should_stop(0, 1, 1, 1));
         assert!(should_stop(1, 1, 1, 1));
+    }
+
+    #[test]
+    fn recover_empty_turn_prefill_then_nudge_then_halt() {
+        assert_eq!(
+            recover_empty_turn(0, 3),
+            RecoveryAction::Prefill(PREFILL_TEXT.to_string())
+        );
+        assert_eq!(
+            recover_empty_turn(1, 3),
+            RecoveryAction::Nudge(NUDGE_TEXT.to_string())
+        );
+        assert_eq!(
+            recover_empty_turn(2, 3),
+            RecoveryAction::Halt("empty turn limit reached (2/3)".to_string())
+        );
+        assert!(matches!(recover_empty_turn(0, 0), RecoveryAction::Halt(_)));
+    }
+
+    #[test]
+    fn recover_empty_turn_retry_before_halt() {
+        assert_eq!(recover_empty_turn(2, 5), RecoveryAction::Retry);
+        assert!(matches!(recover_empty_turn(4, 5), RecoveryAction::Halt(_)));
+    }
+
+    #[test]
+    fn schedule_reclassifies_then_preserves_model_order() {
+        let calls = [
+            (
+                "bash".into(),
+                r#"{"command":"ls"}"#.into(),
+                ToolEffect::Process,
+            ),
+            (
+                "bash".into(),
+                r#"{"command":"pwd"}"#.into(),
+                ToolEffect::Process,
+            ),
+            ("write".into(), r#"{"path":"a"}"#.into(), ToolEffect::Write),
+            ("read".into(), r#"{"path":"b"}"#.into(), ToolEffect::Read),
+        ];
+        let batches = schedule_tool_calls(&calls);
+        assert_eq!(batches, vec![vec![0, 1], vec![2], vec![3]]);
+        assert_eq!(
+            reclassify_effect("bash", r#"{"command":"rm -rf x"}"#, ToolEffect::Read),
+            ToolEffect::Process
+        );
+    }
+
+    #[test]
+    fn recover_stuck_tool_nudge_retry_halt() {
+        assert!(matches!(recover_stuck_tool(0, 3), RecoveryAction::Nudge(_)));
+        assert_eq!(recover_stuck_tool(1, 3), RecoveryAction::Retry);
+        assert!(matches!(recover_stuck_tool(2, 3), RecoveryAction::Halt(_)));
+        assert!(matches!(recover_stuck_tool(0, 0), RecoveryAction::Halt(_)));
     }
 }

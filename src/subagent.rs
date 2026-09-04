@@ -125,6 +125,14 @@ pub struct SubagentConfig {
     pub task_contract: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_seconds: Option<u64>,
+    #[serde(default)]
+    pub capsule: crate::capsule::ContextCapsule,
+    #[serde(default)]
+    pub use_capsule: bool,
+    #[serde(default)]
+    pub merge_parent_transcript: bool,
+    #[serde(default)]
+    pub explore: bool,
 }
 
 fn default_max_steps() -> usize {
@@ -147,6 +155,32 @@ impl Default for SubagentConfig {
             budget: SubagentBudget::default(),
             task_contract: None,
             timeout_seconds: None,
+            capsule: crate::capsule::ContextCapsule::empty(),
+            use_capsule: false,
+            merge_parent_transcript: false,
+            explore: false,
+        }
+    }
+}
+
+impl SubagentConfig {
+    pub fn explore(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            permission_mode: Some(PermissionMode::ReadOnly),
+            allowed_tools: Some(vec![
+                "read".to_string(),
+                "grep".to_string(),
+                "find".to_string(),
+                "ls".to_string(),
+            ]),
+            limits: SubagentLimits {
+                max_depth: Some(0),
+                ..SubagentLimits::default()
+            },
+            merge_parent_transcript: false,
+            explore: true,
+            ..Self::default()
         }
     }
 }
@@ -798,15 +832,37 @@ fn build_child_agent(
     if let Some(model) = &config.model {
         agent.set_model(model.clone());
     }
-    if let Some(sys) = &config.system_prompt {
-        agent.set_system_prompt(sys.clone());
-    }
     agent.max_tool_iterations = config.max_steps.max(1);
-    agent.set_policy(policy_from_config(config));
-    agent.set_workspace_root(workspace);
-    if let Some(tools) = tools {
-        agent.tools = tools;
+    let mut policy = policy_from_config(config);
+    if config.use_capsule {
+        let parent_tools = tools.as_ref().map(|t| t.names()).unwrap_or_default();
+        let merged = config
+            .capsule
+            .merge_parent(config.system_prompt.as_deref(), &parent_tools);
+        if let Some(sys) = &merged.system_prompt {
+            agent.set_system_prompt(sys.clone());
+        } else {
+            agent.clear_system_prompt();
+        }
+        if merged.allowed_tools.is_empty() {
+            agent.tools = Arc::new(ToolRegistry::new());
+        } else if let Some(parent) = tools {
+            agent.tools = parent;
+            policy.allowlist = merged.allowed_tools;
+        } else {
+            agent.tools = Arc::new(ToolRegistry::new());
+            policy.allowlist = merged.allowed_tools;
+        }
+    } else {
+        if let Some(sys) = &config.system_prompt {
+            agent.set_system_prompt(sys.clone());
+        }
+        if let Some(tools) = tools {
+            agent.tools = tools;
+        }
     }
+    agent.set_policy(policy);
+    agent.set_workspace_root(workspace);
     if config.budget.max_cost.is_some()
         || config.budget.max_duration_seconds.is_some()
         || config.timeout_seconds.is_some()
@@ -1191,6 +1247,64 @@ mod tests {
         assert_eq!(handle.status(), SubagentStatus::Cancelled);
         assert_eq!(handle.wait().await.error.as_deref(), Some("cancelled"));
         assert_eq!(mgr.running_count(), 0);
+    }
+
+    #[test]
+    fn explore_defaults_depth_one_without_parent_transcript() {
+        let c = SubagentConfig::explore("scout");
+        assert_eq!(c.limits.max_depth, Some(0));
+        assert!(!c.merge_parent_transcript);
+        assert!(c.explore);
+        assert_eq!(c.permission_mode, Some(PermissionMode::ReadOnly));
+        let mut parent = SubagentManager::new();
+        let parent_handle = parent
+            .spawn(config("parent"), "parent prompt", Path::new("."))
+            .expect("parent");
+        let mut child_cfg = SubagentConfig::explore("scout");
+        child_cfg.parent_id = Some(parent_handle.id().to_string());
+        let child = parent
+            .spawn(child_cfg, "look around", Path::new("."))
+            .expect("child");
+        let result = child.result().expect("result");
+        assert!(!result.output.contains("parent prompt"));
+        assert!(result.output.contains("look around"));
+        let grandchild_cfg = {
+            let mut c = SubagentConfig::explore("too-deep");
+            c.parent_id = Some(child.id().to_string());
+            c
+        };
+        let denied = parent.spawn(grandchild_cfg, "nope", Path::new("."));
+        assert!(denied.is_err());
+    }
+
+    #[cfg(feature = "providers")]
+    #[test]
+    fn empty_capsule_does_not_inherit_parent_tools_or_system() {
+        let tools = ToolRegistry::new();
+        tools.register(crate::agent::ToolDefinition::new_fn(
+            "bash",
+            "shell",
+            "{}",
+            |_, _| Box::pin(async { crate::agent::ToolResult::ok("bash", "ok") }),
+        ));
+        let provider = Arc::new(TestProvider {
+            model: Arc::new(Mutex::new(None)),
+            pending: false,
+        });
+        let config = SubagentConfig {
+            name: "child".into(),
+            system_prompt: Some("PARENT SYSTEM".into()),
+            use_capsule: true,
+            capsule: crate::capsule::ContextCapsule::empty(),
+            ..SubagentConfig::default()
+        };
+        let agent = build_child_agent(provider, Some(Arc::new(tools)), &config, Path::new("."));
+        assert!(
+            agent.system_prompt.is_none(),
+            "empty capsule inherited system: {:?}",
+            agent.system_prompt
+        );
+        assert_eq!(agent.tools.count(), 0);
     }
 
     #[test]

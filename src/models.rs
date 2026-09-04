@@ -199,6 +199,27 @@ impl ModelRegistry {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelBinding {
+    pub credential_id: String,
+    pub model_id: String,
+    pub context_window: usize,
+}
+
+impl ModelBinding {
+    pub fn new(
+        credential_id: impl Into<String>,
+        model_id: impl Into<String>,
+        context_window: usize,
+    ) -> Self {
+        Self {
+            credential_id: credential_id.into(),
+            model_id: model_id.into(),
+            context_window,
+        }
+    }
+}
+
 fn model_key(provider: &str, id: &str) -> String {
     format!("{provider}/{id}")
 }
@@ -286,6 +307,15 @@ mod tests {
             Some("output_limit")
         );
         assert!(registry.compat("openai").is_none());
+    }
+
+    #[test]
+    fn model_binding_is_per_request_not_global() {
+        let a = ModelBinding::new("cred-a", "gpt-4o", 128_000);
+        let b = ModelBinding::new("cred-b", "claude", 200_000);
+        assert_ne!(a.credential_id, b.credential_id);
+        assert_ne!(a.model_id, b.model_id);
+        assert_ne!(a.context_window, b.context_window);
     }
 
     #[test]

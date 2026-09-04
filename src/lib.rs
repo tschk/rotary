@@ -29,6 +29,8 @@ pub mod autoresearch_controller;
 pub mod avo;
 #[cfg(feature = "skills")]
 pub mod background_review;
+pub mod capsule;
+pub mod cassette;
 pub mod compaction;
 pub mod config;
 pub mod context;
@@ -70,14 +72,17 @@ pub mod secrets;
 #[cfg(feature = "zkr-memory")]
 pub mod self_improve;
 pub mod session;
+pub mod shadow_git;
 #[cfg(feature = "skills")]
 pub mod skill_curator;
 #[cfg(feature = "skills")]
 pub mod skill_engine;
 pub mod slash;
+pub mod snapshot;
 #[cfg(feature = "sse")]
 pub mod sse;
 pub mod subagent;
+pub mod subtask;
 pub mod todo;
 pub mod tools;
 #[cfg(feature = "work-pack")]
@@ -110,8 +115,9 @@ pub mod lsp;
 pub mod marketplace;
 
 pub use agent::{
-    normalize_tool_name, Agent, AgentBudget, CacheAudit, CacheDivergence, Event, GateResult,
-    MemoryRecall, QualityGateConfig, SemanticEmbedder, SemanticRecallConfig, ToolCall, ToolContext,
+    is_planning_content, normalize_tool_name, wipe_planning_tokens, Agent, AgentBudget, CacheAudit,
+    CacheDivergence, Event, GateResult, MemoryRecall, PatchHunkNotice, PermissionAsk,
+    QualityGateConfig, SemanticEmbedder, SemanticRecallConfig, ToolCall, ToolContext,
     ToolDefinition, ToolEffect, ToolErrorKind, ToolExecuteBox, ToolExecuteFn, ToolExecutor,
     ToolFuture, ToolRegistry, ToolResult, TurnEndMetadata,
 };
@@ -137,9 +143,12 @@ pub use avo::{
 pub use background_review::{
     BackgroundReviewConfig, BackgroundReviewer, ReviewResult, ReviewSignal,
 };
+pub use capsule::ContextCapsule;
+pub use cassette::{detect_divergence, CassetteTurn, Divergence, ReplayProvider};
 pub use compaction::{
-    apply_compaction, compact_messages, compact_messages_semantically, CompactionConfig,
-    CompactionMarker, CompactionResult,
+    apply_compaction, compact_messages, compact_messages_semantically, project_compact,
+    prune_messages, CompactionConfig, CompactionMarker, CompactionResult, PrefixShape,
+    ProjectionResult, ProjectionStep, RavenArchive,
 };
 pub use context::{compose_system_prompt, load_project_instructions, ProjectInstructions};
 pub use cost::{CostEntry, ModelPricing, PricingRegistry, SessionCost, TokenUsage};
@@ -162,12 +171,15 @@ pub use graph_memory::{
     SemanticRecall,
 };
 pub use guardrails::{
-    classify_tool, GuardrailConfig, GuardrailDecision, SelfHealingRetry, ToolClass, ToolGuardrails,
+    classify_tool, reclassify_effect, recover_empty_turn, recover_stuck_tool, schedule_tool_calls,
+    GuardrailConfig, GuardrailDecision, RecoveryAction, SelfHealingRetry, ToolClass,
+    ToolGuardrails,
 };
 pub use hashline::{
     apply as apply_hashline, format_read as format_hashline_read, tag_for as hashline_tag_for,
-    HashlineError, HashlineSight, ModelFamily as HashlineModelFamily,
-    ParseMode as HashlineParseMode, ReadOptions as HashlineReadOptions, TaggedRead, VisibleSet,
+    HashlineError, HashlineSight, HunkCheckpoint, HunkLog, ModelFamily as HashlineModelFamily,
+    ParseMode as HashlineParseMode, ReadOptions as HashlineReadOptions, RewindError, RewindMode,
+    TaggedRead, VisibleSet,
 };
 pub use hooks::{HookDecision, HookEvent, HookFn, HookRegistry};
 pub use mode::{Profile, Scope};
@@ -176,12 +188,13 @@ pub use model_router::{
     ModelRouter, ModelRouterError, ModelTier, ProactiveMonitor, RouterConfig, SkillSuggestion,
     SubagentModelSelector, TaskTier, TaskType,
 };
-pub use models::{CompatConfig, ModelInfo, ModelRegistry};
+pub use models::{CompatConfig, ModelBinding, ModelInfo, ModelRegistry};
 #[cfg(all(feature = "ipc", feature = "multiagent"))]
 pub use multiagent::CoordinatorEvent;
 #[cfg(feature = "multiagent")]
 pub use multiagent::{
-    AgentProfile, AgentRole, MultiAgentCoordinator, MultiAgentError, TeamResult, TeamTask,
+    AgentProfile, AgentRole, MultiAgentCoordinator, MultiAgentError, SessionRoute, TeamResult,
+    TeamTask, TwoSessionCoordinator,
 };
 pub use permissions::{
     authorize, authorize_with_workspace, command_from_args, is_dangerous_shell_command,
@@ -189,8 +202,9 @@ pub use permissions::{
     shell_ast, shell_command_allowed, shell_command_matches_all, shell_command_matches_any,
     shell_rule_matches, shell_segments, shell_simples, AlwaysAllow, AlwaysApprovePlan, AlwaysDeny,
     ApprovalRequest, Approver, AsyncApprover, Authorizer, ChannelApprover, ChannelAsyncApprover,
-    ChannelPlanApprover, Decision, PermissionMode, PlanApprover, PlanDecision, PlanProposal,
-    Policy, PolicyAuthorizer, ShellNode, ShellSimple,
+    ChannelPlanApprover, Decision, ExecPrefixRule, GuardianAuthorizer, GuardianReview,
+    PermissionMode, PlanApprover, PlanDecision, PlanProposal, Policy, PolicyAuthorizer, ShellNode,
+    ShellSimple, WorktreeAuthorizer, WorktreeClaim, WritePathSchedule,
 };
 pub use prewalk::{is_mutating_call, Prewalk};
 pub use prompt_cache::{
@@ -207,13 +221,14 @@ pub use routing::{
     AgentRoute, AgentRouter, RoutingConfig, RoutingStats, SmartRouter, TurnComplexity,
 };
 pub use sandbox::{
-    detect_sandbox, OsSandbox, OsSandboxConfig, OsSandboxRunner, SandboxConfig, SandboxError,
-    SandboxManager, SandboxProfile, SandboxViolation,
+    detect_sandbox, escalate_on_deny, OsSandbox, OsSandboxConfig, OsSandboxRunner, SandboxConfig,
+    SandboxError, SandboxLayer, SandboxManager, SandboxProfile, SandboxViolation,
 };
 pub use secrets::{
     filter_env_vars, is_sensitive_env_var, RedactionConfig, Redactor, SecretMatch, SecretPattern,
 };
 pub use session::Session;
+pub use shadow_git::{ShadowGit, ShadowGitError};
 #[cfg(feature = "skills")]
 pub use skill_curator::{CuratorConfig, CuratorSuggestion, SkillCurator, SuggestionKind};
 #[cfg(feature = "skills")]
@@ -222,16 +237,26 @@ pub use skill_engine::{
     SkillState,
 };
 pub use slash::{help_text as slash_help_text, parse as parse_slash, Command as SlashCommand};
+pub use snapshot::{FileSnapshot, FileVersionGuard, SnapshotStore};
 #[cfg(feature = "sse")]
 pub use sse::{SseError, SseEvent, SseParser};
 pub use subagent::{
     SubagentBudget, SubagentConfig, SubagentError, SubagentEvent, SubagentHandle, SubagentLimits,
     SubagentManager, SubagentResult, SubagentStatus, SubagentSubscriber,
 };
+pub use subtask::{
+    claim_complete, ClaimOutcome, Evidence, EvidenceLedger, HostAdjudication, Subtask,
+    SubtaskClaim, SubtaskStatus,
+};
 pub use todo::{TodoConfig, TodoItem, TodoState, TodoStatus};
 #[cfg(feature = "autoresearch")]
 pub use tools::register_autoresearch_tools;
-pub use tools::{register_builtin_tools, register_spawn_agent_tool};
+#[cfg(feature = "mcp")]
+pub use tools::register_mcp_proxy_tools;
+pub use tools::{
+    register_apply_patch_tool, register_builtin_tools, register_complete_subtask_tool,
+    register_spawn_agent_tool,
+};
 #[cfg(feature = "work-pack")]
 pub use work_pack::{WorkPack, WorkPackError};
 
@@ -272,6 +297,6 @@ mod tests {
 
     #[test]
     fn test_version() {
-        assert!(!VERSION.is_empty(), "VERSION should not be empty");
+        assert!(VERSION.contains('.'), "VERSION should be a semver string");
     }
 }

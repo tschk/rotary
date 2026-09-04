@@ -27,6 +27,8 @@ pub struct SkillFrontmatter {
     pub trigger_patterns: Option<Vec<String>>,
     pub category: Option<String>,
     pub related_skills: Option<Vec<String>>,
+    #[serde(default)]
+    pub required_tools: Option<Vec<String>>,
 }
 
 /// Errors produced by the skill engine.
@@ -141,6 +143,8 @@ pub struct Skill {
     /// Lifecycle state managed by the curator.
     #[serde(default)]
     pub state: SkillState,
+    #[serde(default)]
+    pub required_tools: Vec<String>,
 }
 
 impl Skill {
@@ -157,6 +161,12 @@ impl Skill {
     /// Recompute confidence with explicit Beta(α, β) prior hyperparameters.
     pub fn recompute_confidence_with_prior(&mut self, prior: ConfidencePrior) {
         self.confidence = prior.mean(self.success_count, self.failure_count);
+    }
+
+    pub fn matches_loadout(&self, available: &[String]) -> bool {
+        self.required_tools
+            .iter()
+            .all(|req| available.iter().any(|a| a == req))
     }
 }
 
@@ -265,6 +275,7 @@ impl SkillEngine {
             source_conversation: Some(tool_sequence),
             pinned: false,
             state: SkillState::Active,
+            required_tools: Vec::new(),
         };
         skill.recompute_confidence();
 
@@ -300,6 +311,7 @@ impl SkillEngine {
             source_conversation: None,
             pinned: false,
             state: SkillState::Active,
+            required_tools: Vec::new(),
         };
         self.skills.insert(id.clone(), skill.clone());
         Ok(skill)
@@ -577,6 +589,7 @@ impl SkillEngine {
             source_conversation: None,
             pinned: false,
             state: SkillState::Active,
+            required_tools: fm.required_tools.take().unwrap_or_default(),
         };
         skill.recompute_confidence();
         Ok(skill)

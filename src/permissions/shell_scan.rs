@@ -1640,4 +1640,12 @@ mod tests {
     fn shell_quote(s: &str) -> String {
         format!("'{}'", s.replace('\'', "'\\''"))
     }
+
+    #[test]
+    fn posix_family_shells_are_scanned_without_tree_sitter() {
+        for shell in ["bash", "sh", "dash", "zsh", "ksh"] {
+            let cmd = format!("{shell} -c 'rm -rf /'");
+            assert!(scannable_command(&cmd).contains("rm -rf /"), "{shell}");
+        }
+    }
 }

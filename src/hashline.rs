@@ -669,6 +669,94 @@ fn strip_quotes(s: &str, mode: ParseMode) -> String {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RewindMode {
+    InPlace,
+    Fork,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RewindError {
+    Empty,
+    LiveMismatch { expected: String, actual: String },
+    OutOfRange,
+}
+
+impl fmt::Display for RewindError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Empty => write!(f, "empty hunk log"),
+            Self::LiveMismatch { .. } => write!(f, "live disk does not match last checkpoint"),
+            Self::OutOfRange => write!(f, "hunk index out of range"),
+        }
+    }
+}
+
+impl std::error::Error for RewindError {}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HunkCheckpoint {
+    pub path: String,
+    pub before: String,
+    pub after: String,
+    pub tag: String,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct HunkLog {
+    entries: Vec<HunkCheckpoint>,
+}
+
+impl HunkLog {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn record(&mut self, checkpoint: HunkCheckpoint) {
+        self.entries.push(checkpoint);
+    }
+
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    pub fn last(&self) -> Option<&HunkCheckpoint> {
+        self.entries.last()
+    }
+
+    pub fn rewind_to(
+        &self,
+        index: usize,
+        live: &str,
+        mode: RewindMode,
+    ) -> Result<String, RewindError> {
+        let entry = self.entries.get(index).ok_or(RewindError::OutOfRange)?;
+        match mode {
+            RewindMode::InPlace => {
+                if live != entry.after {
+                    return Err(RewindError::LiveMismatch {
+                        expected: tag_for(&entry.after),
+                        actual: tag_for(live),
+                    });
+                }
+                Ok(entry.before.clone())
+            }
+            RewindMode::Fork => Ok(entry.before.clone()),
+        }
+    }
+
+    pub fn rewind(&self, live: &str, mode: RewindMode) -> Result<String, RewindError> {
+        if self.entries.is_empty() {
+            return Err(RewindError::Empty);
+        }
+        self.rewind_to(self.entries.len() - 1, live, mode)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1087,5 +1175,20 @@ mod tests {
         assert!(!read.text.contains("1:L1\n") || !vis.allows(1));
         let shown = (1..=50).filter(|i| vis.allows(*i)).count();
         assert!(shown <= 10);
+    }
+
+    #[test]
+    fn hunk_log_inplace_and_fork() {
+        let mut log = HunkLog::new();
+        log.record(HunkCheckpoint {
+            path: "a.rs".into(),
+            before: "old\n".into(),
+            after: "new\n".into(),
+            tag: tag_for("old\n"),
+        });
+        assert_eq!(log.rewind("new\n", RewindMode::InPlace).unwrap(), "old\n");
+        assert!(log.rewind("other\n", RewindMode::InPlace).is_err());
+        assert_eq!(log.rewind("other\n", RewindMode::Fork).unwrap(), "old\n");
+        assert!(HunkLog::new().rewind("x", RewindMode::Fork).is_err());
     }
 }

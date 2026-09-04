@@ -105,7 +105,7 @@ fn bench_secret_redaction(c: &mut Criterion) {
 
 fn bench_tool_registry_lookup(c: &mut Criterion) {
     use rx4::{ToolDefinition, ToolRegistry};
-    let mut registry = ToolRegistry::new();
+    let registry = ToolRegistry::new();
     for i in 0..100 {
         registry.register(ToolDefinition::new_fn(
             format!("tool_{i}"),

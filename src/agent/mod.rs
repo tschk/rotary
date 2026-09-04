@@ -10,15 +10,17 @@ mod turn;
 pub use tool_types::*;
 
 use crate::compaction::{
-    apply_compaction, apply_compaction_result, compact_messages_semantically, estimate_messages,
-    CompactionConfig,
+    apply_compaction_result, compact_messages_semantically, estimate_messages, project_compact,
+    CompactionConfig, CompactionResult, RavenArchive,
 };
 use crate::cost::{PricingRegistry, SessionCost, TokenUsage};
 use crate::guardrails::{
-    plan_tool_effect_batches, GuardrailConfig, GuardrailDecision, SelfHealingRetry, ToolGuardrails,
+    check_empty_turn, recover_empty_turn, recover_stuck_tool, schedule_tool_calls, GuardrailConfig,
+    GuardrailDecision, RecoveryAction, SelfHealingRetry, ToolGuardrails,
 };
 use crate::hooks::HookRegistry;
 use crate::mode::{self, Profile, Scope};
+use crate::models::ModelBinding;
 use crate::models::ModelRegistry;
 use crate::permissions::{
     Approver, AsyncApprover, Authorizer, Decision, PlanApprover, PlanDecision, PlanProposal,
@@ -137,6 +139,22 @@ pub enum Event {
     BudgetExceeded {
         reason: String,
     },
+    RetryReason {
+        retry_reason: String,
+        layer: String,
+    },
+    ProcessStdin {
+        process_id: String,
+        bytes: usize,
+    },
+    RequestPermissions {
+        tool: String,
+        paths: Vec<String>,
+    },
+    PatchHunk {
+        path: String,
+        hunk: String,
+    },
 }
 
 /// Completion facts emitted in [`Event::TurnEnded`].
@@ -245,6 +263,7 @@ struct PromptFingerprint {
     system: Option<String>,
     tools: Vec<serde_json::Value>,
     messages: Vec<Message>,
+    credential_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -253,6 +272,15 @@ pub enum ToolSource {
     Builtin,
     Mcp { server: String },
     ComputerUse,
+}
+
+pub fn is_planning_content(content: &str) -> bool {
+    let t = content.trim();
+    t.contains("<planning>") || t.contains("[planning]") || t.starts_with("PLAN:")
+}
+
+pub fn wipe_planning_tokens(messages: &mut Vec<Message>) {
+    messages.retain(|m| !is_planning_content(&m.content));
 }
 
 pub type Subscriber = Arc<dyn Fn(&Event) + Send + Sync>;
@@ -389,6 +417,24 @@ pub struct Agent {
     cache_audit_enabled: bool,
     previous_prompt_fingerprint: Option<PromptFingerprint>,
     last_gate_workspace_hash: Option<String>,
+    pub session: Arc<RwLock<crate::session::Session>>,
+    pub write_paths: crate::permissions::WritePathSchedule,
+    pub model_binding: Option<ModelBinding>,
+    file_snapshots: Option<Arc<RwLock<crate::snapshot::SnapshotStore>>>,
+    file_versions: Option<Arc<RwLock<crate::snapshot::FileVersionGuard>>>,
+    hunk_log: Arc<RwLock<crate::hashline::HunkLog>>,
+    shadow_git: Option<crate::shadow_git::ShadowGit>,
+    worktree_claim: Option<crate::permissions::WorktreeClaim>,
+    pub exec: Arc<crate::tools::exec::ExecRegistry>,
+    pub subtasks: Arc<RwLock<Vec<crate::subtask::Subtask>>>,
+    pub evidence: Arc<RwLock<crate::subtask::EvidenceLedger>>,
+    sandbox_retries: Arc<parking_lot::Mutex<Vec<crate::sandbox::EscalateRetry>>>,
+    permission_asks: Arc<parking_lot::Mutex<Vec<PermissionAsk>>>,
+    patch_hunks: Arc<parking_lot::Mutex<Vec<PatchHunkNotice>>>,
+    subtasks_enabled: bool,
+    pub actor_id: String,
+    #[cfg(feature = "mcp")]
+    pub mcp: Option<Arc<crate::mcp::McpRegistry>>,
 }
 
 impl Agent {
@@ -456,6 +502,24 @@ impl Agent {
             cache_audit_enabled: false,
             previous_prompt_fingerprint: None,
             last_gate_workspace_hash: None,
+            session: Arc::new(RwLock::new(crate::session::Session::new("agent", "agent"))),
+            write_paths: crate::permissions::WritePathSchedule::whole_workspace(),
+            model_binding: None,
+            file_snapshots: None,
+            file_versions: None,
+            hunk_log: Arc::new(RwLock::new(crate::hashline::HunkLog::new())),
+            shadow_git: None,
+            worktree_claim: None,
+            exec: Arc::new(crate::tools::exec::ExecRegistry::new()),
+            subtasks: Arc::new(RwLock::new(Vec::new())),
+            evidence: Arc::new(RwLock::new(crate::subtask::EvidenceLedger::default())),
+            sandbox_retries: Arc::new(parking_lot::Mutex::new(Vec::new())),
+            permission_asks: Arc::new(parking_lot::Mutex::new(Vec::new())),
+            patch_hunks: Arc::new(parking_lot::Mutex::new(Vec::new())),
+            subtasks_enabled: false,
+            actor_id: "host".into(),
+            #[cfg(feature = "mcp")]
+            mcp: None,
         };
         // Always attach userspace workspace sandbox (path confinement for FS tools).
         agent.ensure_userspace_sandbox();
@@ -476,6 +540,43 @@ impl Agent {
     }
 
     /// Replace the model metadata supplied by the host.
+    pub fn set_model_binding(&mut self, binding: ModelBinding) {
+        self.model = binding.model_id.clone();
+        self.model_binding = Some(binding);
+    }
+
+    pub fn enable_file_guards(&mut self) {
+        self.file_snapshots = Some(Arc::new(RwLock::new(crate::snapshot::SnapshotStore::new())));
+        self.file_versions = Some(Arc::new(RwLock::new(
+            crate::snapshot::FileVersionGuard::new(),
+        )));
+    }
+
+    pub fn enable_shadow_git(&mut self) -> Result<String, crate::shadow_git::ShadowGitError> {
+        let shadow = crate::shadow_git::ShadowGit::init(&self.workspace_root)?;
+        let hash = shadow.checkpoint("init")?;
+        self.shadow_git = Some(shadow);
+        Ok(hash)
+    }
+
+    pub fn checkpoint_turn(
+        &self,
+        turn_id: &str,
+    ) -> Result<String, crate::shadow_git::ShadowGitError> {
+        self.shadow_git
+            .as_ref()
+            .ok_or_else(|| crate::shadow_git::ShadowGitError("shadow-git not enabled".into()))?
+            .checkpoint(turn_id)
+    }
+
+    pub fn set_worktree_claim(&mut self, claim: crate::permissions::WorktreeClaim) {
+        self.worktree_claim = Some(claim);
+    }
+
+    pub fn hunk_log(&self) -> Arc<RwLock<crate::hashline::HunkLog>> {
+        Arc::clone(&self.hunk_log)
+    }
+
     pub fn set_model_registry(&mut self, registry: ModelRegistry) {
         self.model_registry = registry;
     }
@@ -492,6 +593,11 @@ impl Agent {
     pub fn set_system_prompt(&mut self, prompt: impl Into<String>) {
         self.base_system_prompt = Some(prompt.into());
         self.refresh_system_prompt();
+    }
+
+    pub fn clear_system_prompt(&mut self) {
+        self.base_system_prompt = None;
+        self.system_prompt = None;
     }
 
     pub fn set_tools(&mut self, tools: ToolRegistry) {
@@ -874,25 +980,152 @@ impl Agent {
         }
     }
 
-    pub fn clear_messages(&self) {
-        self.messages.write().clear();
+    fn flush_tool_side_events(&self) {
+        let retries = std::mem::take(&mut *self.sandbox_retries.lock());
+        for retry in retries {
+            self.emit(Event::RetryReason {
+                retry_reason: retry.retry_reason,
+                layer: format!("{:?}", retry.to),
+            });
+        }
+        let asks = std::mem::take(&mut *self.permission_asks.lock());
+        for ask in asks {
+            self.emit(Event::RequestPermissions {
+                tool: ask.tool,
+                paths: ask.paths,
+            });
+        }
+        let hunks = std::mem::take(&mut *self.patch_hunks.lock());
+        for hunk in hunks {
+            self.emit(Event::PatchHunk {
+                path: hunk.path,
+                hunk: hunk.hunk,
+            });
+        }
     }
 
-    /// Shared handle to the agent's message history.
+    fn wipe_recorded_planning_tokens(&self) {
+        self.session.write().wipe_planning_tokens();
+        wipe_planning_tokens(&mut self.messages.write());
+    }
+
+    fn record_message(&self, message: Message) {
+        self.session.write().append_message(&message);
+        self.messages.write().push(message);
+    }
+
+    fn request_messages(&self) -> Vec<Message> {
+        let msgs = self.session.read().messages();
+        let tokens = estimate_messages(&msgs);
+        if tokens >= self.auto_compact_threshold() {
+            project_compact(&msgs, &self.compaction_config()).messages
+        } else {
+            msgs
+        }
+    }
+
+    pub fn session_handle(&self) -> Arc<RwLock<crate::session::Session>> {
+        Arc::clone(&self.session)
+    }
+
+    /// Dual-write a host message into the durable session and the live vec.
     ///
-    /// This is the supported way for a host to observe or append messages
-    /// without holding a lock on the [`Agent`] itself. [`Agent::prompt`] takes
+    /// This is the supported mutation path: provider requests rebuild from the
+    /// session, so an append here is what the model sees — including mid-turn,
+    /// because the tool loop re-reads the session each iteration.
+    pub fn append_message(&self, message: Message) {
+        self.record_message(message);
+    }
+
+    pub fn complete_subtask(
+        &self,
+        claim: crate::subtask::SubtaskClaim,
+        host: crate::subtask::HostAdjudication,
+    ) -> crate::subtask::ClaimOutcome {
+        crate::subtask::claim_complete(
+            &mut self.subtasks.write(),
+            &mut self.evidence.write(),
+            claim,
+            host,
+        )
+    }
+
+    pub fn add_subtask(&self, task: crate::subtask::Subtask) {
+        self.subtasks.write().push(task);
+    }
+
+    pub fn enable_subtasks(&mut self) {
+        crate::tools::register_complete_subtask_tool(&self.tools);
+        self.allow_extra_tools(["complete_subtask"]);
+        self.subtasks_enabled = true;
+    }
+
+    #[cfg(feature = "mcp")]
+    pub fn attach_mcp(&mut self, registry: crate::mcp::McpRegistry) {
+        let mcp = Arc::new(registry);
+        crate::tools::register_mcp_proxy_tools(&self.tools, Arc::clone(&mcp));
+        self.allow_extra_tools(["tool_search", "use_capability"]);
+        self.mcp = Some(mcp);
+    }
+
+    pub fn retry_sandbox_deny(
+        &self,
+        layer: crate::sandbox::SandboxLayer,
+        deny: &crate::sandbox::SandboxError,
+    ) -> Result<crate::sandbox::SandboxLayer, crate::sandbox::SandboxError> {
+        let retry = crate::sandbox::escalate_on_deny(layer, deny)?;
+        self.emit(Event::RetryReason {
+            retry_reason: retry.retry_reason,
+            layer: format!("{:?}", retry.to),
+        });
+        Ok(retry.to)
+    }
+
+    pub fn write_stdin(&self, process_id: &str, data: &[u8]) -> Result<usize, String> {
+        let n = self.exec.write_stdin(process_id, data)?;
+        self.emit(Event::ProcessStdin {
+            process_id: process_id.to_string(),
+            bytes: n,
+        });
+        Ok(n)
+    }
+
+    pub fn request_permissions(&self, tool: &str, paths: Vec<String>) {
+        self.emit(Event::RequestPermissions {
+            tool: tool.to_string(),
+            paths,
+        });
+    }
+
+    pub fn emit_patch_hunk(&self, path: &str, hunk: &str) {
+        self.emit(Event::PatchHunk {
+            path: path.to_string(),
+            hunk: hunk.to_string(),
+        });
+    }
+
+    /// Clear the live projection and the durable session log.
+    pub fn clear_messages(&self) {
+        self.messages.write().clear();
+        self.session.write().clear();
+    }
+
+    /// Shared handle to the live message projection.
+    ///
+    /// This is the supported way for a host to observe the live vec without
+    /// holding a lock on the [`Agent`] itself. [`Agent::prompt`] takes
     /// `&mut self`, so a host that wraps the agent in a mutex would otherwise
     /// block every read behind a whole turn.
     ///
-    /// The agent never replaces the message vector — compaction, session
-    /// loading and every other mutation happen in place through this same
-    /// `RwLock` — so a handle stays valid for the life of the agent.
+    /// After [`Agent::compact`] or [`Agent::compact_semantically`] the live vec
+    /// may diverge from the durable session: the session stays append-only and
+    /// provider requests still rebuild from it. Pushing through this
+    /// handle is live-only and does not reach the model. Hosts that need to
+    /// mutate history must use [`Self::append_message`] (dual-write) or
+    /// [`Self::clear_messages`].
     ///
-    /// Appends are picked up mid-turn: the tool loop re-reads the history at
-    /// the start of every tool iteration, so a message pushed through this
-    /// handle while a turn is in flight lands on the next iteration of that
-    /// turn rather than waiting for it to finish.
+    /// The `Arc<RwLock<_>>` identity is stable for the life of the agent.
+    /// Compaction replaces the vec contents in place through this same lock.
     ///
     /// Drop the guard as soon as the mutation is done. The tool loop takes
     /// this same lock at the top of every iteration, so a guard held longer
@@ -907,11 +1140,17 @@ impl Agent {
         Arc::clone(&self.messages)
     }
 
+    /// Durable session message count (not the live projection).
     pub fn message_count(&self) -> usize {
-        self.messages.read().len()
+        self.session.read().entries.len()
     }
 
     pub fn context_window(&self) -> usize {
+        if let Some(binding) = &self.model_binding {
+            if binding.context_window > 0 {
+                return binding.context_window;
+            }
+        }
         let model = self
             .provider
             .as_ref()
@@ -935,8 +1174,9 @@ impl Agent {
         }
     }
 
+    /// Estimated tokens of the durable session plus the system prompt.
     pub fn context_tokens(&self) -> usize {
-        estimate_messages(&self.messages.read())
+        estimate_messages(&self.session.read().messages())
             + self
                 .system_prompt
                 .as_deref()
@@ -968,12 +1208,7 @@ impl Agent {
             auto_compact_at,
         });
         if tokens >= auto_compact_at {
-            if let Err(error) = self
-                .compact_semantically("auto-compact before prompt", provider.as_ref())
-                .await
-            {
-                warn!("automatic context compaction failed: {error}");
-            }
+            self.compact("auto-compact before prompt");
         }
 
         let redactor = crate::secrets::Redactor::new();
@@ -981,7 +1216,7 @@ impl Agent {
 
         let active_skills = self.activate_skills_for_prompt(&safe_text);
 
-        self.messages.write().push(Message::user(safe_text.clone()));
+        self.record_message(Message::user(safe_text.clone()));
         self.emit(Event::AgentStart);
         self.budget_start = Some(Instant::now());
         self.before_prompt_hooks(&safe_text).await;
@@ -1010,6 +1245,7 @@ impl Agent {
         let mut guardrails = self.guardrails.clone().map(ToolGuardrails::new);
         let mut self_healing = self.self_healing.clone();
         let mut plan_approved = false;
+        let mut empty_turns = 0usize;
         // Current providers expose a terminal `Done` marker but not a portable
         // finish reason yet. Keep this optional metadata honest until they do.
         let last_finish_reason: Option<String> = None;
@@ -1023,7 +1259,7 @@ impl Agent {
             }
             self.emit(Event::TurnStart { turn: iteration });
 
-            let messages: Vec<Message> = self.messages.read().clone();
+            let messages: Vec<Message> = self.request_messages();
             let base_system =
                 turn::append_active_skills(self.system_prompt.clone(), active_skills.as_deref());
             #[cfg(feature = "graph-memory")]
@@ -1172,7 +1408,7 @@ impl Agent {
                 content: assistant_content.clone(),
             });
 
-            self.messages.write().push(Message::assistant_with_tools(
+            self.record_message(Message::assistant_with_tools(
                 assistant_content.clone(),
                 tool_calls.clone(),
             ));
@@ -1213,12 +1449,36 @@ impl Agent {
             }
 
             if tool_calls.is_empty() {
+                if self.guardrails.is_some() && check_empty_turn(&assistant_content) {
+                    let action = recover_empty_turn(empty_turns, 3);
+                    empty_turns += 1;
+                    match action {
+                        RecoveryAction::Prefill(text) | RecoveryAction::Nudge(text) => {
+                            self.record_message(Message::user(text));
+                            continue;
+                        }
+                        RecoveryAction::Retry => continue,
+                        RecoveryAction::Halt(reason) => {
+                            self.emit(Event::GuardrailStop {
+                                tool: "turn".into(),
+                                reason,
+                            });
+                            self.emit_turn_end(
+                                iteration,
+                                last_finish_reason.as_deref(),
+                                false,
+                                &assistant_content,
+                            );
+                            break;
+                        }
+                    }
+                }
                 if let Some(result) = self.run_quality_gate().await {
                     let failed = !result.success && !result.skipped_unchanged;
                     let output = result.output.clone();
                     self.emit(Event::GateResult(result));
                     if failed {
-                        self.messages.write().push(Message::user(format!(
+                        self.record_message(Message::user(format!(
                             "Quality gate failed. Fix the failure, then continue. Bounded gate output:\n{output}"
                         )));
                         continue;
@@ -1329,10 +1589,13 @@ impl Agent {
                         decision: decision.clone(),
                     });
                     match decision {
-                        PlanDecision::Approve => plan_approved = true,
+                        PlanDecision::Approve => {
+                            plan_approved = true;
+                            self.wipe_recorded_planning_tokens();
+                        }
                         PlanDecision::Reject(reason) => {
                             info!("plan rejected: {reason}");
-                            self.messages.write().push(Message::user(format!(
+                            self.record_message(Message::user(format!(
                                 "The plan was rejected: {reason}. Do not run it."
                             )));
                             self.emit_turn_end(
@@ -1345,7 +1608,7 @@ impl Agent {
                         }
                         PlanDecision::Revise(guidance) => {
                             info!("plan revision requested: {guidance}");
-                            self.messages.write().push(Message::user(format!(
+                            self.record_message(Message::user(format!(
                                 "Do not run that plan. Revise it: {guidance}"
                             )));
                             self.emit_turn_end(
@@ -1363,6 +1626,7 @@ impl Agent {
             }
 
             let results = self.execute_tools_parallel(&tool_calls, &ctx).await;
+            self.flush_tool_side_events();
             if let Some(updates) = &ctx.todo_updates {
                 for update in std::mem::take(&mut *updates.lock()) {
                     self.emit(Event::TodoUpdated { todos: update });
@@ -1373,9 +1637,7 @@ impl Agent {
                 {
                     tool_error_seen |= result.is_error;
                 }
-                self.messages
-                    .write()
-                    .push(Message::tool(&result.id, &result.content));
+                self.record_message(Message::tool(&result.id, &result.content));
             }
             if let Some(scope) = pending_scope.lock().take() {
                 self.set_scope(scope);
@@ -1388,7 +1650,35 @@ impl Agent {
             let mut stopped: Option<(String, String)> = None;
             if let Some(rails) = guardrails.as_mut() {
                 for (call, result) in tool_calls.iter().zip(results.iter()) {
-                    match rails.observe(&call.name, &call.arguments, result.is_error) {
+                    let decision = rails.observe(&call.name, &call.arguments, result.is_error);
+                    if rails.identical_call_count >= 1 {
+                        match recover_stuck_tool(
+                            rails.identical_call_count.saturating_sub(1),
+                            rails.config.same_tool_failure_halt_after,
+                        ) {
+                            RecoveryAction::Nudge(text) | RecoveryAction::Prefill(text) => {
+                                self.record_message(Message::user(text));
+                            }
+                            RecoveryAction::Retry => {
+                                self.emit(Event::RetryReason {
+                                    retry_reason: "stuck_tool".into(),
+                                    layer: "tool".into(),
+                                });
+                                self.record_message(Message::user(
+                                    "The same tool call is stuck. Change arguments or retry a different approach.",
+                                ));
+                            }
+                            RecoveryAction::Halt(reason) => {
+                                self.emit(Event::RetryReason {
+                                    retry_reason: reason.clone(),
+                                    layer: "tool".into(),
+                                });
+                                stopped = Some((call.name.clone(), reason));
+                                break;
+                            }
+                        }
+                    }
+                    match decision {
                         GuardrailDecision::Proceed => {}
                         GuardrailDecision::Warn(reason) => {
                             warn!("guardrail warning on '{}': {reason}", call.name);
@@ -1396,9 +1686,9 @@ impl Agent {
                                 tool: call.name.clone(),
                                 reason: reason.clone(),
                             });
-                            self.messages
-                                .write()
-                                .push(Message::user(format!("Guardrail warning: {reason}")));
+                            self.record_message(Message::user(format!(
+                                "Guardrail warning: {reason}"
+                            )));
                         }
                         GuardrailDecision::Stop(reason) => {
                             warn!("guardrail stop on '{}': {reason}", call.name);
@@ -1413,9 +1703,7 @@ impl Agent {
                     tool,
                     reason: reason.clone(),
                 });
-                self.messages
-                    .write()
-                    .push(Message::user(format!("Stopped by guardrail: {reason}")));
+                self.record_message(Message::user(format!("Stopped by guardrail: {reason}")));
                 self.emit_turn_end(
                     iteration,
                     last_finish_reason.as_deref(),
@@ -1443,7 +1731,7 @@ impl Agent {
                             max_attempts: healer.max_attempts,
                             errors,
                         });
-                        self.messages.write().push(Message::user(message));
+                        self.record_message(Message::user(message));
                     }
                 }
             }
@@ -1467,14 +1755,15 @@ impl Agent {
         calls: &[ToolCall],
         ctx: &Arc<ToolContext>,
     ) -> Vec<ToolResult> {
-        let effects: Vec<ToolEffect> = calls
+        let classified: Vec<(String, String, ToolEffect)> = calls
             .iter()
             .map(|c| {
-                let name = normalize_tool_name(&c.name);
-                self.tools.effect_of(name)
+                let name = normalize_tool_name(&c.name).to_string();
+                let registered = self.tools.effect_of(&name);
+                (name, c.arguments.clone(), registered)
             })
             .collect();
-        let batches = plan_tool_effect_batches(&effects);
+        let batches = schedule_tool_calls(&classified);
         let mut results: Vec<Option<ToolResult>> = vec![None; calls.len()];
         let mut join_failures: Vec<Option<String>> = vec![None; calls.len()];
 
@@ -1610,7 +1899,15 @@ impl Agent {
                 return (call.clone(), ToolResult::err(&id, reason));
             }
         };
-        let result = Self::run_tool_call(
+        if crate::permissions::is_write_tool(&call.name) {
+            if let Some(path) = crate::tools::common::parse_str_field(&call.arguments, "path") {
+                if !self.write_paths.allows(&ctx.workspace_root, &path) {
+                    let id = call.id.clone();
+                    return (call, ToolResult::err(&id, "write path denied by schedule"));
+                }
+            }
+        }
+        let mut result = Self::run_tool_call(
             self.tools.as_ref(),
             &self.policy,
             self.authorizer.as_deref(),
@@ -1623,6 +1920,16 @@ impl Agent {
             &self.extra_allowed_tools,
         )
         .await;
+        if result.content.len() > crate::tools::spill::DEFAULT_PREVIEW_BYTES {
+            let spill_dir = ctx.workspace_root.join(".rx4").join("spill");
+            if let Ok(spilled) = crate::tools::spill::bound_tool_output(
+                &result.content,
+                crate::tools::spill::DEFAULT_PREVIEW_BYTES,
+                &spill_dir,
+            ) {
+                result.content = spilled.preview;
+            }
+        }
         (call, result)
     }
 
@@ -1668,6 +1975,12 @@ impl Agent {
             ),
         };
         if decision == Decision::Ask {
+            if let Some(asks) = &ctx.permission_asks {
+                asks.lock().push(PermissionAsk {
+                    tool: resolved_name.clone(),
+                    paths: paths_from_args(&call.arguments),
+                });
+            }
             let ask_call = ToolCall {
                 id: call.id.clone(),
                 name: resolved_name.clone(),
@@ -1732,24 +2045,40 @@ impl Agent {
         }
     }
 
+    /// Project the session onto the live vec without rewriting the session.
+    ///
+    /// Archived turns are appended to `.rx4/raven.jsonl`. After this call the
+    /// live vec may differ from the durable session; provider requests still
+    /// rebuild from the session.
     pub fn compact(&self, reason: &str) {
         info!("compacting context: {reason}");
-        if self.message_count() <= 2 {
+        let source = self.session.read().messages();
+        if source.len() <= 2 {
             return;
         }
-        let before_tokens = self.context_tokens();
+        let before_tokens = estimate_messages(&source)
+            + self
+                .system_prompt
+                .as_deref()
+                .map(crate::compaction::estimate_tokens)
+                .unwrap_or(0);
+        let proj = project_compact(&source, &self.compaction_config());
+        if proj.archived.is_empty() && proj.step == crate::compaction::ProjectionStep::None {
+            return;
+        }
+        self.archive_raven(&proj.archived);
         self.emit(Event::CompactionStart {
             reason: reason.to_string(),
             before_tokens,
         });
-        let result = {
-            let mut msgs = self.messages.write();
-            let result = apply_compaction(&mut msgs, &self.compaction_config());
-            if !result.summary.is_empty() {
-                msgs.push(Message::system(format!("[compact reason: {reason}]")));
-            }
-            result
+        let result = CompactionResult {
+            summary: proj.summary.clone(),
+            removed_count: proj.archived.len(),
+            removed_tokens: estimate_messages(&proj.archived),
+            remaining_tokens: proj.remaining_tokens,
+            markers_preserved: Vec::new(),
         };
+        *self.messages.write() = proj.messages;
         self.emit(Event::CompactionEnd {
             reason: reason.to_string(),
             result,
@@ -1761,6 +2090,19 @@ impl Agent {
         tool_ctx.os_sandbox_required = self.policy.enable_os_sandbox && self.os_sandbox.is_none();
         tool_ctx.cancellation = self.turn_cancellation.reset();
         tool_ctx.hashline_sight = Arc::clone(&self.hashline_sight);
+        tool_ctx.snapshots = self.file_snapshots.clone();
+        tool_ctx.versions = self.file_versions.clone();
+        tool_ctx.hunk_log = Some(Arc::clone(&self.hunk_log));
+        tool_ctx.worktree_claim = self.worktree_claim.clone();
+        tool_ctx.sandbox_layer = crate::sandbox::SandboxLayer::Userspace;
+        tool_ctx.sandbox_retries = Some(Arc::clone(&self.sandbox_retries));
+        tool_ctx.exec = Some(Arc::clone(&self.exec));
+        tool_ctx.subtasks = Some(Arc::clone(&self.subtasks));
+        tool_ctx.evidence = Some(Arc::clone(&self.evidence));
+        tool_ctx.allow_complete_subtask = self.subtasks_enabled;
+        tool_ctx.actor_id = self.actor_id.clone();
+        tool_ctx.permission_asks = Some(Arc::clone(&self.permission_asks));
+        tool_ctx.patch_hunks = Some(Arc::clone(&self.patch_hunks));
         #[cfg(feature = "ipc")]
         {
             tool_ctx.lsp = Some(Arc::clone(&self.lsp));
@@ -1814,10 +2156,15 @@ impl Agent {
             return;
         }
         let previous = self.previous_prompt_fingerprint.as_ref();
+        let credential_id = self
+            .model_binding
+            .as_ref()
+            .map(|binding| binding.credential_id.clone())
+            .filter(|id| !id.is_empty());
         let first_divergence = previous.and_then(|previous| {
             if previous.system != *system {
                 Some(CacheDivergence::SystemPrompt)
-            } else if previous.tools != tools {
+            } else if previous.tools != tools || previous.credential_id != credential_id {
                 Some(CacheDivergence::Tools)
             } else {
                 let first = previous
@@ -1852,6 +2199,11 @@ impl Agent {
             system: system.clone(),
             tools: tools.to_vec(),
             messages: messages.to_vec(),
+            credential_id: self
+                .model_binding
+                .as_ref()
+                .map(|binding| binding.credential_id.clone())
+                .filter(|id| !id.is_empty()),
         });
     }
 
@@ -1945,17 +2297,28 @@ impl Agent {
         })
     }
 
-    async fn compact_semantically(
+    /// Semantically compact into the live projection without rewriting the session.
+    ///
+    /// Dropped turns are archived to `.rx4/raven.jsonl`. The durable session
+    /// stays append-only; a compact-reason marker is appended via
+    /// [`Self::append_message`]. After this call the live vec may differ from
+    /// the session; provider requests still rebuild from the session.
+    pub async fn compact_semantically(
         &self,
         reason: &str,
         provider: &dyn Provider,
     ) -> Result<(), crate::provider::ProviderError> {
         info!("compacting context: {reason}");
-        if self.message_count() <= 2 {
+        let snapshot = self.session.read().messages();
+        if snapshot.len() <= 2 {
             return Ok(());
         }
-        let before_tokens = self.context_tokens();
-        let snapshot = self.messages.read().clone();
+        let before_tokens = estimate_messages(&snapshot)
+            + self
+                .system_prompt
+                .as_deref()
+                .map(crate::compaction::estimate_tokens)
+                .unwrap_or(0);
         let result = compact_messages_semantically(
             &snapshot,
             &self.compaction_config(),
@@ -1966,13 +2329,18 @@ impl Agent {
         if result.removed_count == 0 {
             return Ok(());
         }
-        {
-            let mut messages = self.messages.write();
-            if !apply_compaction_result(&mut messages, &snapshot, &result) {
-                return Ok(());
-            }
-            messages.push(Message::system(format!("[compact reason: {reason}]")));
+        let mut projected = snapshot.clone();
+        if !apply_compaction_result(&mut projected, &snapshot, &result) {
+            return Ok(());
         }
+        let system_end = snapshot
+            .iter()
+            .position(|m| m.role != Role::System)
+            .unwrap_or(snapshot.len());
+        let removed_end = (system_end + result.removed_count).min(snapshot.len());
+        self.archive_raven(&snapshot[system_end..removed_end]);
+        *self.messages.write() = projected;
+        self.record_message(Message::system(format!("[compact reason: {reason}]")));
         self.emit(Event::CompactionStart {
             reason: reason.to_string(),
             before_tokens,
@@ -1982,6 +2350,17 @@ impl Agent {
             result,
         });
         Ok(())
+    }
+
+    fn archive_raven(&self, archived: &[Message]) {
+        if archived.is_empty() {
+            return;
+        }
+        let archive = RavenArchive::from_turns(archived);
+        let path = self.workspace_root.join(".rx4").join("raven.jsonl");
+        if let Err(error) = archive.write_to(&path) {
+            warn!("failed to write raven archive: {error}");
+        }
     }
 }
 
@@ -1996,6 +2375,22 @@ fn tool_source(name: &str) -> ToolSource {
         return ToolSource::ComputerUse;
     }
     ToolSource::Builtin
+}
+
+fn paths_from_args(args: &str) -> Vec<String> {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(args) else {
+        return Vec::new();
+    };
+    if let Some(path) = value.get("path").and_then(|v| v.as_str()) {
+        return vec![path.to_string()];
+    }
+    if let Some(paths) = value.get("paths").and_then(|v| v.as_array()) {
+        return paths
+            .iter()
+            .filter_map(|v| v.as_str().map(str::to_string))
+            .collect();
+    }
+    Vec::new()
 }
 
 fn redact_tool_call(call: &ToolCall) -> ToolCall {
@@ -2071,7 +2466,7 @@ mod tests {
     #[tokio::test]
     async fn parallel_read_tools_run_concurrently() {
         PARALLEL_DELAY_CALLS.store(0, Ordering::SeqCst);
-        let mut registry = ToolRegistry::new();
+        let registry = ToolRegistry::new();
         registry.register(delay_read_tool("a"));
         registry.register(delay_read_tool("b"));
         let mut agent = Agent::new();
@@ -2133,7 +2528,7 @@ mod tests {
     async fn cache_not_used_for_write_effect() {
         CACHE_READ_CALLS.store(0, Ordering::SeqCst);
         CACHE_WRITE_CALLS.store(0, Ordering::SeqCst);
-        let mut registry = ToolRegistry::new();
+        let registry = ToolRegistry::new();
         registry.register(
             ToolDefinition::new_boxed(
                 "r",
@@ -2191,24 +2586,34 @@ mod tests {
 
     #[test]
     fn compact_uses_token_aware_compaction() {
+        let dir = tempfile::tempdir().unwrap();
         let mut agent = Agent::new();
+        agent.set_workspace_root(dir.path());
         agent.auto_compact_after = 50;
-        {
-            let mut msgs = agent.messages.write();
-            msgs.push(Message::system("sys"));
-            for i in 0..20 {
-                msgs.push(Message::user(
-                    format!("old message {i} ",) + &"x".repeat(80),
-                ));
-                msgs.push(Message::assistant("reply".repeat(40)));
-            }
-            msgs.push(Message::user("recent tail"));
+        agent.record_message(Message::system("sys"));
+        for i in 0..20 {
+            agent.record_message(Message::user(
+                format!("old message {i} ",) + &"x".repeat(80),
+            ));
+            agent.record_message(Message::assistant("reply".repeat(40)));
         }
+        agent.record_message(Message::user("recent tail"));
         agent.compact("test");
         let msgs = agent.messages.read();
         assert!(msgs.len() < 42);
-        assert!(msgs.iter().any(|m| m.content.contains("context compacted")));
         assert!(msgs.iter().any(|m| m.content.contains("recent tail")));
+        assert!(msgs
+            .iter()
+            .any(|m| m.role == Role::System && m.content == "sys"));
+        let session = agent.session.read().messages();
+        assert!(
+            session.len() > msgs.len(),
+            "projection compact must leave the session intact"
+        );
+        let raven = dir.path().join(".rx4").join("raven.jsonl");
+        assert!(raven.exists(), "raven archive was not written");
+        let on_disk = std::fs::read_to_string(&raven).unwrap();
+        assert!(!on_disk.is_empty());
     }
 
     #[test]
@@ -2234,12 +2639,13 @@ mod tests {
 
     #[test]
     fn compaction_emits_lifecycle() {
+        let dir = tempfile::tempdir().unwrap();
         let mut agent = Agent::new();
+        agent.set_workspace_root(dir.path());
         agent.auto_compact_after = 50;
-        agent
-            .messages
-            .write()
-            .extend((0..10).map(|_| Message::user("x".repeat(100))));
+        for _ in 0..10 {
+            agent.record_message(Message::user("x".repeat(100)));
+        }
         let events = Arc::new(parking_lot::Mutex::new(Vec::new()));
         let received = Arc::clone(&events);
         agent.subscribe(move |event| {
@@ -2368,7 +2774,7 @@ mod tests {
 
     #[tokio::test]
     async fn tool_result_id_matches_call_id() {
-        let mut tools = ToolRegistry::new();
+        let tools = ToolRegistry::new();
         tools.register(
             ToolDefinition::new_boxed(
                 "echo_id",
@@ -2423,20 +2829,62 @@ mod tests {
     fn messages_handle_shares_the_agent_history() {
         let agent = Agent::new();
         let handle = agent.messages_handle();
-        handle.write().push(Message::user("from host"));
+        agent.append_message(Message::user("from host"));
         assert_eq!(agent.message_count(), 1);
+        assert_eq!(handle.read().len(), 1);
+        agent.append_message(Message::assistant("from agent"));
+        assert_eq!(handle.read().len(), 2);
+        assert_eq!(agent.session.read().entries.len(), 2);
+        agent.clear_messages();
+        assert!(handle.read().is_empty());
+        assert!(agent.session.read().entries.is_empty());
+        assert_eq!(agent.message_count(), 0);
+    }
+
+    #[test]
+    fn clear_messages_clears_session_and_live_vec() {
+        let agent = Agent::new();
+        agent.append_message(Message::user("keep me"));
+        agent.append_message(Message::assistant("and me"));
+        agent.messages.write().push(Message::user("live only"));
+        assert_eq!(agent.message_count(), 2);
+        assert_eq!(agent.messages.read().len(), 3);
+        agent.clear_messages();
+        assert!(agent.session.read().entries.is_empty());
+        assert!(agent.messages.read().is_empty());
+        assert_eq!(agent.message_count(), 0);
+        assert!(agent.request_messages().is_empty());
+    }
+
+    #[test]
+    fn append_message_reaches_request_messages() {
+        let agent = Agent::new();
+        agent.append_message(Message::user("steer"));
+        assert_eq!(agent.request_messages().len(), 1);
+        assert_eq!(agent.request_messages()[0].content, "steer");
+        assert_eq!(agent.message_count(), 1);
+    }
+
+    #[test]
+    fn message_count_and_context_tokens_use_session() {
+        let agent = Agent::new();
+        agent.append_message(Message::user("hello"));
+        let session_tokens = agent.context_tokens();
+        assert_eq!(agent.message_count(), 1);
+        agent.messages.write().clear();
         agent
             .messages
             .write()
-            .push(Message::assistant("from agent"));
-        assert_eq!(handle.read().len(), 2);
-        agent.clear_messages();
-        assert!(handle.read().is_empty());
+            .push(Message::user("MUTATED IN MEMORY"));
+        assert_eq!(agent.message_count(), 1);
+        assert_eq!(agent.context_tokens(), session_tokens);
+        assert_ne!(estimate_messages(&agent.messages.read()), session_tokens);
     }
 
     #[cfg(feature = "providers")]
     struct SteeringProvider {
-        handle: Arc<RwLock<Vec<Message>>>,
+        session: Arc<RwLock<crate::session::Session>>,
+        live: Arc<RwLock<Vec<Message>>>,
         calls: Arc<parking_lot::Mutex<Vec<Vec<String>>>>,
     }
 
@@ -2466,8 +2914,9 @@ mod tests {
                 calls.len() == 1
             };
             if first {
-                // Host steers mid-turn through the shared handle.
-                self.handle.write().push(Message::user("steer"));
+                let steer = Message::user("steer");
+                self.session.write().append_message(&steer);
+                self.live.write().push(steer);
                 Ok(Box::new(futures::stream::iter([
                     Ok(crate::provider::StreamEvent::ToolCall(ToolCall {
                         id: "call_1".into(),
@@ -2486,8 +2935,8 @@ mod tests {
 
     #[cfg(feature = "providers")]
     #[tokio::test]
-    async fn handle_append_is_seen_mid_turn() {
-        let mut registry = ToolRegistry::new();
+    async fn append_message_is_seen_mid_turn() {
+        let registry = ToolRegistry::new();
         registry.register(
             ToolDefinition::new_boxed(
                 "noop",
@@ -2502,7 +2951,8 @@ mod tests {
         agent.set_policy(Policy::full_access());
         let calls = Arc::new(parking_lot::Mutex::new(Vec::new()));
         agent.set_provider(Arc::new(SteeringProvider {
-            handle: agent.messages_handle(),
+            session: agent.session_handle(),
+            live: agent.messages_handle(),
             calls: Arc::clone(&calls),
         }));
         agent.prompt("hello").await.unwrap();
@@ -2511,7 +2961,7 @@ mod tests {
         assert!(!calls[0].iter().any(|c| c == "steer"));
         assert!(
             calls[1].iter().any(|c| c == "steer"),
-            "mid-turn append not observed on the next iteration: {:?}",
+            "mid-turn append_message not observed on the next iteration: {:?}",
             calls[1]
         );
     }
@@ -2575,7 +3025,7 @@ mod tests {
     ) {
         let tool_runs = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let runs = Arc::clone(&tool_runs);
-        let mut registry = ToolRegistry::new();
+        let registry = ToolRegistry::new();
         registry.register(
             ToolDefinition::new_boxed(
                 "flaky",
@@ -2615,6 +3065,12 @@ mod tests {
                 Event::SelfHealing { attempt, .. } => format!("heal:{attempt}"),
                 Event::PlanProposed(p) => format!("plan_proposed:{}", p.calls.len()),
                 Event::PlanDecided { decision } => format!("plan_decided:{decision:?}"),
+                Event::RetryReason { retry_reason, .. } => format!("retry:{retry_reason}"),
+                Event::RequestPermissions { tool, .. } => format!("perms:{tool}"),
+                Event::ProcessStdin { process_id, bytes } => {
+                    format!("stdin:{process_id}:{bytes}")
+                }
+                Event::PatchHunk { path, .. } => format!("hunk:{path}"),
                 _ => return,
             };
             sink.lock().push(label);
@@ -2813,6 +3269,605 @@ mod tests {
                 .iter()
                 .any(|m| m.contains("use the other tool")),
             "the revision guidance never reached the model"
+        );
+    }
+
+    #[test]
+    fn event_variants_are_serde_tagged() {
+        let events = vec![
+            Event::RetryReason {
+                retry_reason: "sandbox deny".into(),
+                layer: "NestedFs".into(),
+            },
+            Event::ProcessStdin {
+                process_id: "p1".into(),
+                bytes: 4,
+            },
+            Event::RequestPermissions {
+                tool: "write".into(),
+                paths: vec!["src/lib.rs".into()],
+            },
+            Event::PatchHunk {
+                path: "src/lib.rs".into(),
+                hunk: "@@ -1 +1 @@".into(),
+            },
+        ];
+        let expected = [
+            "RetryReason",
+            "ProcessStdin",
+            "RequestPermissions",
+            "PatchHunk",
+        ];
+        for (event, ty) in events.into_iter().zip(expected) {
+            let json = serde_json::to_value(&event).unwrap();
+            assert_eq!(json.get("type").and_then(|t| t.as_str()), Some(ty));
+        }
+    }
+
+    #[cfg(feature = "mcp")]
+    #[test]
+    fn attach_mcp_registers_stable_proxy_tools() {
+        let mut agent = Agent::new();
+        agent.attach_mcp(crate::mcp::McpRegistry::new());
+        let names = agent.tools.names();
+        assert!(names.contains(&"tool_search".to_string()));
+        assert!(names.contains(&"use_capability".to_string()));
+        assert!(agent
+            .extra_allowed_tools()
+            .contains(&"tool_search".to_string()));
+    }
+
+    #[test]
+    fn plan_wipe_clears_planning_tokens() {
+        let mut messages = vec![
+            Message::system("sys"),
+            Message::assistant("<planning>think</planning>"),
+            Message::user("go"),
+        ];
+        wipe_planning_tokens(&mut messages);
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[1].content, "go");
+    }
+
+    #[test]
+    fn plan_wipe_clears_session_not_just_live_vec() {
+        let agent = Agent::new();
+        agent.record_message(Message::system("sys"));
+        agent.record_message(Message::assistant("<planning>think</planning>"));
+        agent.record_message(Message::user("go"));
+        wipe_planning_tokens(&mut agent.messages.write());
+        assert!(agent
+            .request_messages()
+            .iter()
+            .any(|m| is_planning_content(&m.content)));
+        agent.wipe_recorded_planning_tokens();
+        assert!(agent
+            .request_messages()
+            .iter()
+            .all(|m| !is_planning_content(&m.content)));
+        assert_eq!(
+            agent
+                .request_messages()
+                .iter()
+                .map(|m| m.content.as_str())
+                .collect::<Vec<_>>(),
+            vec!["sys", "go"]
+        );
+    }
+
+    #[test]
+    fn compact_empty_session_does_not_use_live_vec() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut agent = Agent::new();
+        agent.set_workspace_root(dir.path());
+        agent.auto_compact_after = 50;
+        for i in 0..20 {
+            agent
+                .messages
+                .write()
+                .push(Message::user(format!("old message {i} ") + &"x".repeat(80)));
+        }
+        agent.compact("test");
+        assert_eq!(agent.messages.read().len(), 20);
+        assert!(!dir.path().join(".rx4").join("raven.jsonl").exists());
+    }
+
+    #[cfg(feature = "providers")]
+    struct SummaryProvider;
+
+    #[cfg(feature = "providers")]
+    #[async_trait::async_trait]
+    impl crate::provider::Provider for SummaryProvider {
+        fn id(&self) -> &str {
+            "summary"
+        }
+
+        fn name(&self) -> &str {
+            "summary"
+        }
+
+        async fn stream(
+            &self,
+            _messages: &[Message],
+            _system: &Option<String>,
+            _model: &str,
+            _tools: &[serde_json::Value],
+            _reasoning_effort: Option<&str>,
+        ) -> Result<crate::provider::StreamResult, crate::provider::ProviderError> {
+            Ok(Box::new(futures::stream::iter([Ok(
+                crate::provider::StreamEvent::Delta("checkpoint retained".into()),
+            )])))
+        }
+
+        async fn generate(
+            &self,
+            _messages: &[Message],
+            _system: &Option<String>,
+            _model: &str,
+            _tools: &[serde_json::Value],
+        ) -> Result<String, crate::provider::ProviderError> {
+            Ok("checkpoint retained".into())
+        }
+    }
+
+    #[cfg(feature = "providers")]
+    #[tokio::test]
+    async fn compact_semantically_updates_session_and_live_vec() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut agent = Agent::new();
+        agent.set_workspace_root(dir.path());
+        agent.auto_compact_after = 50;
+        agent.record_message(Message::system("sys"));
+        for i in 0..12 {
+            agent.record_message(Message::user(format!("old message {i} ") + &"x".repeat(80)));
+            agent.record_message(Message::assistant("reply".repeat(40)));
+        }
+        agent.record_message(Message::user("recent tail"));
+        let session_before = agent.session.read().messages();
+        let session_len_before = session_before.len();
+        agent.messages.write().clear();
+        agent.messages.write().push(Message::user("LIVE VEC ONLY"));
+        agent
+            .compact_semantically("test", &SummaryProvider)
+            .await
+            .unwrap();
+        let from_session = agent.session.read().messages();
+        let live = agent.messages.read().clone();
+        assert!(
+            from_session.len() >= session_len_before,
+            "session was rewritten: before={session_len_before} after={}",
+            from_session.len()
+        );
+        assert!(
+            from_session
+                .iter()
+                .any(|m| m.content.contains("old message 0")),
+            "session lost original turns: {from_session:?}"
+        );
+        assert!(
+            from_session
+                .iter()
+                .any(|m| m.content.contains("recent tail")),
+            "session lost the tail: {from_session:?}"
+        );
+        assert!(
+            from_session
+                .iter()
+                .any(|m| m.content.contains("[compact reason: test]")),
+            "session missing compact-reason marker: {from_session:?}"
+        );
+        assert_ne!(
+            from_session, live,
+            "live projection should diverge from the append-only session"
+        );
+        assert!(
+            live.iter().any(|m| m.content.contains("recent tail")),
+            "live projection lost the tail: {live:?}"
+        );
+        assert!(
+            live.iter()
+                .any(|m| m.content.contains("context compacted")
+                    || m.content.contains("compact reason")),
+            "live projection was not compacted: {live:?}"
+        );
+        assert!(
+            live.iter().all(|m| m.content != "LIVE VEC ONLY"),
+            "live vec was used as the compact source"
+        );
+        assert!(
+            agent
+                .request_messages()
+                .iter()
+                .all(|m| m.content != "LIVE VEC ONLY"),
+            "live vec was used as the compact source"
+        );
+        let raven = dir.path().join(".rx4").join("raven.jsonl");
+        assert!(raven.exists(), "raven archive was not written");
+        assert!(!std::fs::read_to_string(&raven).unwrap().is_empty());
+    }
+
+    #[test]
+    fn provider_request_ignores_live_vec_mutation() {
+        let agent = Agent::new();
+        agent.record_message(Message::user("hello"));
+        agent.record_message(Message::assistant("hi"));
+        let before = agent.request_messages();
+        agent.messages.write().clear();
+        agent
+            .messages
+            .write()
+            .push(Message::user("MUTATED IN MEMORY"));
+        let after = agent.request_messages();
+        assert_eq!(before, after);
+        assert_eq!(after[0].content, "hello");
+        assert_eq!(after[1].content, "hi");
+        assert_eq!(after.len(), 2);
+    }
+
+    #[test]
+    fn model_binding_sets_context_window() {
+        let mut agent = Agent::new();
+        agent.set_model_binding(ModelBinding::new("cred-1", "bound-model", 4096));
+        assert_eq!(agent.model, "bound-model");
+        assert_eq!(agent.context_window(), 4096);
+        assert_eq!(
+            agent
+                .model_binding
+                .as_ref()
+                .map(|b| b.credential_id.as_str()),
+            Some("cred-1")
+        );
+    }
+
+    #[test]
+    fn write_stdin_reaches_exec_session() {
+        let agent = Agent::new();
+        assert!(agent.write_stdin("missing", b"x").is_err());
+        let proc = agent.exec.spawn("cat", &[]).expect("spawn cat");
+        let n = agent
+            .write_stdin(&proc.process_id, b"hello\n")
+            .expect("write");
+        assert_eq!(n, 6);
+        agent.exec.kill(&proc.process_id).ok();
+    }
+
+    #[test]
+    fn complete_subtask_is_host_adjudicated() {
+        let agent = Agent::new();
+        agent.add_subtask(crate::subtask::Subtask {
+            id: "parent".into(),
+            parent_id: None,
+            status: crate::subtask::SubtaskStatus::Open,
+        });
+        agent.add_subtask(crate::subtask::Subtask {
+            id: "child".into(),
+            parent_id: Some("parent".into()),
+            status: crate::subtask::SubtaskStatus::Open,
+        });
+        let child_claim = crate::subtask::SubtaskClaim {
+            actor_id: "child".into(),
+            target_id: "parent".into(),
+            evidence: crate::subtask::Evidence {
+                claim_id: "c".into(),
+                actor_id: "child".into(),
+                note: "no".into(),
+            },
+        };
+        assert_eq!(
+            agent.complete_subtask(child_claim, crate::subtask::HostAdjudication::Accept),
+            crate::subtask::ClaimOutcome::RejectedChildMarkedParent
+        );
+        let parent_claim = crate::subtask::SubtaskClaim {
+            actor_id: "parent".into(),
+            target_id: "child".into(),
+            evidence: crate::subtask::Evidence {
+                claim_id: "p".into(),
+                actor_id: "parent".into(),
+                note: "done".into(),
+            },
+        };
+        assert_eq!(
+            agent.complete_subtask(parent_claim, crate::subtask::HostAdjudication::Accept),
+            crate::subtask::ClaimOutcome::Recorded
+        );
+    }
+
+    #[test]
+    fn retry_sandbox_deny_emits_retry_reason() {
+        let mut agent = Agent::new();
+        let events = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let received = Arc::clone(&events);
+        agent.subscribe(move |event| {
+            received.lock().push(event.clone());
+        });
+        let deny = crate::sandbox::SandboxError::PathDenied("/etc/passwd".into());
+        let layer = agent
+            .retry_sandbox_deny(crate::sandbox::SandboxLayer::Userspace, &deny)
+            .expect("escalate");
+        assert_eq!(layer, crate::sandbox::SandboxLayer::NestedFs);
+        assert!(events.lock().iter().any(|event| matches!(
+            event,
+            Event::RetryReason { retry_reason, .. } if retry_reason.contains("escalate")
+        )));
+        assert!(agent
+            .retry_sandbox_deny(crate::sandbox::SandboxLayer::GitReadOnly, &deny)
+            .is_err());
+    }
+
+    #[cfg(feature = "providers")]
+    struct AskAuthorizer;
+
+    #[cfg(feature = "providers")]
+    impl crate::permissions::Authorizer for AskAuthorizer {
+        fn authorize(
+            &self,
+            _policy: &Policy,
+            _tool_name: &str,
+            _arguments: &str,
+            _approver: Option<&dyn crate::permissions::Approver>,
+            _workspace_root: Option<&std::path::Path>,
+        ) -> crate::permissions::Decision {
+            crate::permissions::Decision::Ask
+        }
+    }
+
+    #[cfg(feature = "providers")]
+    #[tokio::test]
+    async fn authorize_ask_emits_request_permissions() {
+        let (mut agent, _, _) = looping_agent(1);
+        agent.set_authorizer(Arc::new(AskAuthorizer));
+        let seen = event_sink(&mut agent);
+        agent.prompt("go").await.unwrap();
+        assert!(
+            seen.lock().iter().any(|l| l == "perms:flaky"),
+            "Ask path did not emit RequestPermissions: {:?}",
+            seen.lock()
+        );
+    }
+
+    #[cfg(feature = "providers")]
+    #[tokio::test]
+    async fn stuck_tool_retries_then_halts() {
+        let (mut agent, _, _) = looping_agent(usize::MAX);
+        agent.set_guardrails(GuardrailConfig {
+            warnings_enabled: false,
+            hard_stop_enabled: false,
+            same_tool_failure_halt_after: 3,
+            ..GuardrailConfig::default()
+        });
+        let seen = event_sink(&mut agent);
+        agent.prompt("go").await.unwrap();
+        let labels = seen.lock().clone();
+        assert!(
+            labels.iter().any(|l| l == "retry:stuck_tool"),
+            "missing stuck-tool retry: {labels:?}"
+        );
+        assert!(
+            labels
+                .iter()
+                .any(|l| l.starts_with("retry:stuck tool") || l == "stop:flaky"),
+            "missing stuck-tool halt: {labels:?}"
+        );
+        let texts = agent
+            .request_messages()
+            .iter()
+            .map(|m| m.content.clone())
+            .collect::<Vec<_>>();
+        assert!(
+            texts
+                .iter()
+                .any(|m| m.contains("The same tool call is repeating")),
+            "nudge never reached the session: {texts:?}"
+        );
+        assert!(
+            texts
+                .iter()
+                .any(|m| m.contains("The same tool call is stuck")),
+            "retry never re-prompted: {texts:?}"
+        );
+    }
+
+    #[cfg(feature = "providers")]
+    struct PlanningRepeatingProvider {
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+        limit: usize,
+    }
+
+    #[cfg(feature = "providers")]
+    #[async_trait::async_trait]
+    impl crate::provider::Provider for PlanningRepeatingProvider {
+        fn id(&self) -> &str {
+            "planning-repeating"
+        }
+
+        fn name(&self) -> &str {
+            "planning-repeating"
+        }
+
+        async fn stream(
+            &self,
+            _messages: &[Message],
+            _system: &Option<String>,
+            _model: &str,
+            _tools: &[serde_json::Value],
+            _reasoning_effort: Option<&str>,
+        ) -> Result<crate::provider::StreamResult, crate::provider::ProviderError> {
+            let n = self.calls.fetch_add(1, Ordering::SeqCst);
+            if n >= self.limit {
+                return Ok(Box::new(futures::stream::iter([Ok(
+                    crate::provider::StreamEvent::Done,
+                )])));
+            }
+            Ok(Box::new(futures::stream::iter([
+                Ok(crate::provider::StreamEvent::Delta(
+                    "<planning>think</planning>".into(),
+                )),
+                Ok(crate::provider::StreamEvent::ToolCall(ToolCall {
+                    id: "call_1".into(),
+                    name: "flaky".into(),
+                    arguments: "{}".into(),
+                })),
+                Ok(crate::provider::StreamEvent::Done),
+            ])))
+        }
+    }
+
+    #[cfg(feature = "providers")]
+    #[tokio::test]
+    async fn approved_plan_wipes_planning_from_session() {
+        let (mut agent, _, _) = looping_agent(1);
+        agent.set_provider(Arc::new(PlanningRepeatingProvider {
+            calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            limit: 1,
+        }));
+        agent.set_plan_approver(Arc::new(crate::permissions::AlwaysApprovePlan));
+        agent.prompt("go").await.unwrap();
+        assert!(
+            agent
+                .request_messages()
+                .iter()
+                .all(|m| !is_planning_content(&m.content)),
+            "planning tokens still in provider request: {:?}",
+            agent.request_messages()
+        );
+    }
+
+    #[cfg(feature = "providers")]
+    struct ApplyPatchProvider {
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    #[cfg(feature = "providers")]
+    #[async_trait::async_trait]
+    impl crate::provider::Provider for ApplyPatchProvider {
+        fn id(&self) -> &str {
+            "apply-patch"
+        }
+
+        fn name(&self) -> &str {
+            "apply-patch"
+        }
+
+        async fn stream(
+            &self,
+            _messages: &[Message],
+            _system: &Option<String>,
+            _model: &str,
+            _tools: &[serde_json::Value],
+            _reasoning_effort: Option<&str>,
+        ) -> Result<crate::provider::StreamResult, crate::provider::ProviderError> {
+            let n = self.calls.fetch_add(1, Ordering::SeqCst);
+            if n >= 1 {
+                return Ok(Box::new(futures::stream::iter([Ok(
+                    crate::provider::StreamEvent::Done,
+                )])));
+            }
+            Ok(Box::new(futures::stream::iter([
+                Ok(crate::provider::StreamEvent::ToolCall(ToolCall {
+                    id: "p1".into(),
+                    name: "apply_patch".into(),
+                    arguments: serde_json::json!({
+                        "path": "f.txt",
+                        "diff": "@@ -1,3 +1,3 @@\n alpha\n-beta\n+delta\n gamma\n"
+                    })
+                    .to_string(),
+                })),
+                Ok(crate::provider::StreamEvent::Done),
+            ])))
+        }
+    }
+
+    #[cfg(feature = "providers")]
+    #[tokio::test]
+    async fn apply_patch_emits_patch_hunk() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("f.txt"), "alpha\nbeta\ngamma\n").unwrap();
+        let registry = ToolRegistry::new();
+        crate::tools::register_apply_patch_tool(&registry);
+        let mut agent = Agent::new();
+        agent.set_workspace_root(dir.path());
+        agent.set_tools(registry);
+        agent.set_policy(Policy::full_access());
+        agent.set_provider(Arc::new(ApplyPatchProvider {
+            calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        }));
+        let seen = event_sink(&mut agent);
+        agent.prompt("go").await.unwrap();
+        assert!(
+            seen.lock().iter().any(|l| l == "hunk:f.txt"),
+            "apply_patch did not emit PatchHunk: {:?}",
+            seen.lock()
+        );
+        let patched = std::fs::read_to_string(dir.path().join("f.txt")).unwrap();
+        assert_eq!(patched, "alpha\ndelta\ngamma\n");
+    }
+
+    #[cfg(feature = "providers")]
+    struct TextThenDoneProvider {
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+        seen: Arc<parking_lot::Mutex<Vec<Vec<String>>>>,
+    }
+
+    #[cfg(feature = "providers")]
+    #[async_trait::async_trait]
+    impl crate::provider::Provider for TextThenDoneProvider {
+        fn id(&self) -> &str {
+            "text-then-done"
+        }
+
+        fn name(&self) -> &str {
+            "text-then-done"
+        }
+
+        async fn stream(
+            &self,
+            messages: &[Message],
+            _system: &Option<String>,
+            _model: &str,
+            _tools: &[serde_json::Value],
+            _reasoning_effort: Option<&str>,
+        ) -> Result<crate::provider::StreamResult, crate::provider::ProviderError> {
+            self.seen
+                .lock()
+                .push(messages.iter().map(|m| m.content.clone()).collect());
+            let n = self.calls.fetch_add(1, Ordering::SeqCst);
+            if n >= 1 {
+                return Ok(Box::new(futures::stream::iter([Ok(
+                    crate::provider::StreamEvent::Done,
+                )])));
+            }
+            Ok(Box::new(futures::stream::iter([
+                Ok(crate::provider::StreamEvent::Delta("finished".into())),
+                Ok(crate::provider::StreamEvent::Done),
+            ])))
+        }
+    }
+
+    #[cfg(feature = "providers")]
+    #[tokio::test]
+    async fn quality_gate_failure_reaches_the_session() {
+        let seen = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let mut agent = Agent::new();
+        agent.set_quality_gate(QualityGateConfig::new("false"));
+        agent.set_provider(Arc::new(TextThenDoneProvider {
+            calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            seen: Arc::clone(&seen),
+        }));
+        agent.prompt("go").await.unwrap();
+        assert!(
+            agent
+                .request_messages()
+                .iter()
+                .any(|m| m.content.contains("Quality gate failed")),
+            "gate failure stayed on the live vec: {:?}",
+            agent.request_messages()
+        );
+        let calls = seen.lock();
+        assert!(
+            calls
+                .get(1)
+                .is_some_and(|msgs| msgs.iter().any(|m| m.contains("Quality gate failed"))),
+            "next provider request missed the gate failure: {calls:?}"
         );
     }
 }

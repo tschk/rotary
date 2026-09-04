@@ -19,7 +19,8 @@ pub fn normalize_tool_name(name: &str) -> &str {
         "run_command" | "bash" => "bash",
         "find_files" | "find" => "find",
         "code_intel" | "grep" => "grep",
-        "hashline_edit" | "search_replace" | "apply_patch" | "edit" => "edit",
+        "hashline_edit" | "search_replace" | "edit" => "edit",
+        "apply_patch" => "apply_patch",
         "spawn_agent" | "agent" => "spawn_agent",
         "web_fetch" | "fetch" | "fetch_url" => "web_fetch",
         "web_search" | "darash" | "darash_search" => "web_search",
@@ -140,6 +141,31 @@ pub struct ToolContext {
     pub lsp: Option<Arc<crate::lsp::LspManager>>,
     /// Last hashline read per path. `hashline_edit` fail-closes without a match.
     pub hashline_sight: Arc<parking_lot::RwLock<crate::hashline::HashlineSight>>,
+    pub snapshots: Option<Arc<parking_lot::RwLock<crate::snapshot::SnapshotStore>>>,
+    pub versions: Option<Arc<parking_lot::RwLock<crate::snapshot::FileVersionGuard>>>,
+    pub hunk_log: Option<Arc<parking_lot::RwLock<crate::hashline::HunkLog>>>,
+    pub worktree_claim: Option<crate::permissions::WorktreeClaim>,
+    pub sandbox_layer: crate::sandbox::SandboxLayer,
+    pub sandbox_retries: Option<Arc<parking_lot::Mutex<Vec<crate::sandbox::EscalateRetry>>>>,
+    pub exec: Option<Arc<crate::tools::exec::ExecRegistry>>,
+    pub subtasks: Option<Arc<parking_lot::RwLock<Vec<crate::subtask::Subtask>>>>,
+    pub evidence: Option<Arc<parking_lot::RwLock<crate::subtask::EvidenceLedger>>>,
+    pub allow_complete_subtask: bool,
+    pub actor_id: String,
+    pub permission_asks: Option<Arc<parking_lot::Mutex<Vec<PermissionAsk>>>>,
+    pub patch_hunks: Option<Arc<parking_lot::Mutex<Vec<PatchHunkNotice>>>>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct PermissionAsk {
+    pub tool: String,
+    pub paths: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct PatchHunkNotice {
+    pub path: String,
+    pub hunk: String,
 }
 
 impl ToolContext {
@@ -161,6 +187,19 @@ impl ToolContext {
             hashline_sight: Arc::new(parking_lot::RwLock::new(
                 crate::hashline::HashlineSight::new(),
             )),
+            snapshots: None,
+            versions: None,
+            hunk_log: None,
+            worktree_claim: None,
+            sandbox_layer: crate::sandbox::SandboxLayer::Userspace,
+            sandbox_retries: None,
+            exec: None,
+            subtasks: None,
+            evidence: None,
+            allow_complete_subtask: false,
+            actor_id: "host".into(),
+            permission_asks: None,
+            patch_hunks: None,
         }
     }
 
@@ -272,7 +311,7 @@ impl ToolRegistry {
         }
     }
 
-    pub fn register(&mut self, tool: ToolDefinition) {
+    pub fn register(&self, tool: ToolDefinition) {
         info!("registered tool: {}", tool.name);
         self.tools.insert(tool.name.clone(), tool);
     }
@@ -325,6 +364,12 @@ impl ToolRegistry {
 
     /// Get the effect class for a tool.
     /// Unknown tools default to Process (serial, no cache) — safer than Read.
+    pub fn names(&self) -> Vec<String> {
+        let mut names: Vec<String> = self.tools.iter().map(|t| t.name.clone()).collect();
+        names.sort();
+        names
+    }
+
     pub fn effect_of(&self, name: &str) -> ToolEffect {
         self.tools
             .get(name)
@@ -356,7 +401,7 @@ mod tests {
 
     #[test]
     fn definitions_are_stable_and_fingerprinted() {
-        let mut registry = ToolRegistry::new();
+        let registry = ToolRegistry::new();
         registry.register(ToolDefinition::new_fn("zeta", "z", "{}", noop));
         registry.register(ToolDefinition::new_fn("alpha", "a", "{}", noop));
         let definitions = registry.definitions();

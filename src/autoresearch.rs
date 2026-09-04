@@ -404,7 +404,7 @@ pub fn new_handle() -> AutoresearchHandle {
 
 /// Register the autoresearch tools without adding them to rotary's default
 /// tool loadout. Hosts can opt in when a measurable optimization task exists.
-pub fn register_tools(registry: &mut ToolRegistry, handle: AutoresearchHandle) {
+pub fn register_tools(registry: &ToolRegistry, handle: AutoresearchHandle) {
     let init_handle = Arc::clone(&handle);
     registry.register(
         ToolDefinition::new_boxed(

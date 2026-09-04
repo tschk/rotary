@@ -18,7 +18,7 @@ fn bridge() -> Result<Arc<ComputerUseBridge>, String> {
         .clone()
 }
 
-pub fn register_tools(registry: &mut ToolRegistry) {
+pub fn register_tools(registry: &ToolRegistry) {
     const TOOLS: &[(&str, &str, &str, ToolEffect)] = &[
         (
             "cu_call",
@@ -107,7 +107,7 @@ pub fn register_tools(registry: &mut ToolRegistry) {
 }
 
 fn register(
-    registry: &mut ToolRegistry,
+    registry: &ToolRegistry,
     name: &'static str,
     description: &'static str,
     parameters_json: &'static str,
@@ -545,8 +545,8 @@ mod tests {
 
     #[test]
     fn test_register_tools() {
-        let mut registry = ToolRegistry::new();
-        register_tools(&mut registry);
+        let registry = ToolRegistry::new();
+        register_tools(&registry);
 
         assert_eq!(registry.count(), 13);
 

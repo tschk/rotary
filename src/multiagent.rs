@@ -21,6 +21,8 @@ pub enum MultiAgentError {
     SpawnFailed(String),
     #[error("coordination error: {0}")]
     CoordinationError(String),
+    #[error("route not allowed: {0} -> {1}")]
+    RouteDenied(String, String),
 }
 
 /// The functional role of an agent within a team. Each role carries a
@@ -338,6 +340,60 @@ impl MultiAgentCoordinator {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionRoute {
+    pub from: String,
+    pub to: String,
+}
+
+pub struct TwoSessionCoordinator {
+    pub left: crate::session::Session,
+    pub right: crate::session::Session,
+    routes: Vec<SessionRoute>,
+}
+
+impl TwoSessionCoordinator {
+    pub fn new(left: crate::session::Session, right: crate::session::Session) -> Self {
+        Self {
+            left,
+            right,
+            routes: Vec::new(),
+        }
+    }
+
+    pub fn allow_route(&mut self, from: impl Into<String>, to: impl Into<String>) {
+        self.routes.push(SessionRoute {
+            from: from.into(),
+            to: to.into(),
+        });
+    }
+
+    pub fn send(
+        &mut self,
+        from: &str,
+        to: &str,
+        message: crate::provider::Message,
+    ) -> Result<(), MultiAgentError> {
+        if !self.routes.iter().any(|r| r.from == from && r.to == to) {
+            return Err(MultiAgentError::RouteDenied(
+                from.to_string(),
+                to.to_string(),
+            ));
+        }
+        let dest = if to == self.left.id || to == self.left.name {
+            &mut self.left
+        } else if to == self.right.id || to == self.right.name {
+            &mut self.right
+        } else {
+            return Err(MultiAgentError::CoordinationError(format!(
+                "unknown session {to}"
+            )));
+        };
+        dest.append_message(&message);
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -399,6 +455,23 @@ mod tests {
             .expect("spawn");
         assert_eq!(handle.name(), "worker");
         assert!(handle.result().is_some());
+    }
+
+    #[test]
+    fn two_session_coordinator_explicit_routes_only() {
+        use crate::provider::Message;
+        use crate::session::Session;
+        let mut coord = TwoSessionCoordinator::new(
+            Session::new("left", "left"),
+            Session::new("right", "right"),
+        );
+        let msg = Message::user("hello");
+        assert!(coord.send("left", "right", msg.clone()).is_err());
+        coord.allow_route("left", "right");
+        coord.send("left", "right", msg).expect("routed");
+        assert_eq!(coord.right.entries.len(), 1);
+        assert!(coord.left.entries.is_empty());
+        assert!(coord.send("right", "left", Message::user("nope")).is_err());
     }
 
     #[test]
@@ -494,6 +567,10 @@ mod tests {
         assert_eq!(
             MultiAgentError::CoordinationError("c".to_string()).to_string(),
             "coordination error: c"
+        );
+        assert_eq!(
+            MultiAgentError::RouteDenied("a".into(), "b".into()).to_string(),
+            "route not allowed: a -> b"
         );
     }
 

