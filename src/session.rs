@@ -100,6 +100,20 @@ impl Session {
     pub fn wipe_planning_tokens(&mut self) {
         self.entries
             .retain(|entry| !crate::agent::is_planning_content(&entry.content));
+        let ids: std::collections::HashSet<u64> =
+            self.entries.iter().map(|entry| entry.id).collect();
+        let mut prev: Option<u64> = None;
+        for entry in &mut self.entries {
+            if entry.parent_id.is_some_and(|parent| !ids.contains(&parent)) {
+                entry.parent_id = prev;
+            }
+            prev = Some(entry.id);
+        }
+    }
+
+    pub fn clear(&mut self) {
+        self.entries.clear();
+        self.next_id = 1;
     }
 
     pub fn replace_messages(&mut self, messages: &[Message]) {
@@ -701,6 +715,31 @@ mod tests {
         session.wipe_planning_tokens();
         let texts: Vec<_> = session.messages().into_iter().map(|m| m.content).collect();
         assert_eq!(texts, vec!["sys".to_string(), "go".to_string()]);
+        let ids: std::collections::HashSet<u64> = session.entries.iter().map(|e| e.id).collect();
+        for entry in &session.entries {
+            if let Some(parent) = entry.parent_id {
+                assert!(
+                    ids.contains(&parent),
+                    "orphan parent_id {parent} on entry {}",
+                    entry.id
+                );
+            }
+        }
+        assert_eq!(session.entries[0].parent_id, None);
+        assert_eq!(session.entries[1].parent_id, Some(session.entries[0].id));
+    }
+
+    #[test]
+    fn clear_drops_entries() {
+        let mut session = Session::new("clr", "clr");
+        session.append(Role::User, "old");
+        session.append(Role::Assistant, "reply");
+        session.clear();
+        assert!(session.entries.is_empty());
+        assert!(session.messages().is_empty());
+        let id = session.append(Role::User, "fresh");
+        assert_eq!(id, 1);
+        assert_eq!(session.entries[0].parent_id, None);
     }
 
     #[test]

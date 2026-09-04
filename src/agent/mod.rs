@@ -1028,6 +1028,11 @@ impl Agent {
         Arc::clone(&self.session)
     }
 
+    /// Dual-write a host message into the durable session and the live vec.
+    ///
+    /// This is the supported mutation path: provider requests rebuild from the
+    /// session, so an append here is what the model sees — including mid-turn,
+    /// because the tool loop re-reads the session each iteration.
     pub fn append_message(&self, message: Message) {
         self.record_message(message);
     }
@@ -1099,25 +1104,28 @@ impl Agent {
         });
     }
 
+    /// Clear the live projection and the durable session log.
     pub fn clear_messages(&self) {
         self.messages.write().clear();
+        self.session.write().clear();
     }
 
-    /// Shared handle to the agent's message history.
+    /// Shared handle to the live message projection.
     ///
-    /// This is the supported way for a host to observe or append messages
-    /// without holding a lock on the [`Agent`] itself. [`Agent::prompt`] takes
+    /// This is the supported way for a host to observe the live vec without
+    /// holding a lock on the [`Agent`] itself. [`Agent::prompt`] takes
     /// `&mut self`, so a host that wraps the agent in a mutex would otherwise
     /// block every read behind a whole turn.
     ///
-    /// The agent never replaces the message vector — compaction, session
-    /// loading and every other mutation happen in place through this same
-    /// `RwLock` — so a handle stays valid for the life of the agent.
+    /// After [`Agent::compact`] or [`Agent::compact_semantically`] the live vec
+    /// may diverge from the durable session: the session stays append-only and
+    /// provider requests still rebuild from it. Pushing through this
+    /// handle is live-only and does not reach the model. Hosts that need to
+    /// mutate history must use [`Self::append_message`] (dual-write) or
+    /// [`Self::clear_messages`].
     ///
-    /// Appends are picked up mid-turn: the tool loop re-reads the history at
-    /// the start of every tool iteration, so a message pushed through this
-    /// handle while a turn is in flight lands on the next iteration of that
-    /// turn rather than waiting for it to finish.
+    /// The `Arc<RwLock<_>>` identity is stable for the life of the agent.
+    /// Compaction replaces the vec contents in place through this same lock.
     ///
     /// Drop the guard as soon as the mutation is done. The tool loop takes
     /// this same lock at the top of every iteration, so a guard held longer
@@ -1132,8 +1140,9 @@ impl Agent {
         Arc::clone(&self.messages)
     }
 
+    /// Durable session message count (not the live projection).
     pub fn message_count(&self) -> usize {
-        self.messages.read().len()
+        self.session.read().entries.len()
     }
 
     pub fn context_window(&self) -> usize {
@@ -1165,8 +1174,9 @@ impl Agent {
         }
     }
 
+    /// Estimated tokens of the durable session plus the system prompt.
     pub fn context_tokens(&self) -> usize {
-        estimate_messages(&self.messages.read())
+        estimate_messages(&self.session.read().messages())
             + self
                 .system_prompt
                 .as_deref()
@@ -2035,6 +2045,11 @@ impl Agent {
         }
     }
 
+    /// Project the session onto the live vec without rewriting the session.
+    ///
+    /// Archived turns are appended to `.rx4/raven.jsonl`. After this call the
+    /// live vec may differ from the durable session; provider requests still
+    /// rebuild from the session.
     pub fn compact(&self, reason: &str) {
         info!("compacting context: {reason}");
         let source = self.session.read().messages();
@@ -2051,13 +2066,7 @@ impl Agent {
         if proj.archived.is_empty() && proj.step == crate::compaction::ProjectionStep::None {
             return;
         }
-        if !proj.archived.is_empty() {
-            let archive = RavenArchive::from_turns(&proj.archived);
-            let path = self.workspace_root.join(".rx4").join("raven.jsonl");
-            if let Err(error) = archive.write_to(&path) {
-                warn!("failed to write raven archive: {error}");
-            }
-        }
+        self.archive_raven(&proj.archived);
         self.emit(Event::CompactionStart {
             reason: reason.to_string(),
             before_tokens,
@@ -2288,6 +2297,12 @@ impl Agent {
         })
     }
 
+    /// Semantically compact into the live projection without rewriting the session.
+    ///
+    /// Dropped turns are archived to `.rx4/raven.jsonl`. The durable session
+    /// stays append-only; a compact-reason marker is appended via
+    /// [`Self::append_message`]. After this call the live vec may differ from
+    /// the session; provider requests still rebuild from the session.
     pub async fn compact_semantically(
         &self,
         reason: &str,
@@ -2314,13 +2329,18 @@ impl Agent {
         if result.removed_count == 0 {
             return Ok(());
         }
-        let mut messages = snapshot.clone();
-        if !apply_compaction_result(&mut messages, &snapshot, &result) {
+        let mut projected = snapshot.clone();
+        if !apply_compaction_result(&mut projected, &snapshot, &result) {
             return Ok(());
         }
-        messages.push(Message::system(format!("[compact reason: {reason}]")));
-        self.session.write().replace_messages(&messages);
-        *self.messages.write() = messages;
+        let system_end = snapshot
+            .iter()
+            .position(|m| m.role != Role::System)
+            .unwrap_or(snapshot.len());
+        let removed_end = (system_end + result.removed_count).min(snapshot.len());
+        self.archive_raven(&snapshot[system_end..removed_end]);
+        *self.messages.write() = projected;
+        self.record_message(Message::system(format!("[compact reason: {reason}]")));
         self.emit(Event::CompactionStart {
             reason: reason.to_string(),
             before_tokens,
@@ -2330,6 +2350,17 @@ impl Agent {
             result,
         });
         Ok(())
+    }
+
+    fn archive_raven(&self, archived: &[Message]) {
+        if archived.is_empty() {
+            return;
+        }
+        let archive = RavenArchive::from_turns(archived);
+        let path = self.workspace_root.join(".rx4").join("raven.jsonl");
+        if let Err(error) = archive.write_to(&path) {
+            warn!("failed to write raven archive: {error}");
+        }
     }
 }
 
@@ -2574,6 +2605,11 @@ mod tests {
         assert!(msgs
             .iter()
             .any(|m| m.role == Role::System && m.content == "sys"));
+        let session = agent.session.read().messages();
+        assert!(
+            session.len() > msgs.len(),
+            "projection compact must leave the session intact"
+        );
         let raven = dir.path().join(".rx4").join("raven.jsonl");
         assert!(raven.exists(), "raven archive was not written");
         let on_disk = std::fs::read_to_string(&raven).unwrap();
@@ -2793,20 +2829,62 @@ mod tests {
     fn messages_handle_shares_the_agent_history() {
         let agent = Agent::new();
         let handle = agent.messages_handle();
-        handle.write().push(Message::user("from host"));
+        agent.append_message(Message::user("from host"));
         assert_eq!(agent.message_count(), 1);
+        assert_eq!(handle.read().len(), 1);
+        agent.append_message(Message::assistant("from agent"));
+        assert_eq!(handle.read().len(), 2);
+        assert_eq!(agent.session.read().entries.len(), 2);
+        agent.clear_messages();
+        assert!(handle.read().is_empty());
+        assert!(agent.session.read().entries.is_empty());
+        assert_eq!(agent.message_count(), 0);
+    }
+
+    #[test]
+    fn clear_messages_clears_session_and_live_vec() {
+        let agent = Agent::new();
+        agent.append_message(Message::user("keep me"));
+        agent.append_message(Message::assistant("and me"));
+        agent.messages.write().push(Message::user("live only"));
+        assert_eq!(agent.message_count(), 2);
+        assert_eq!(agent.messages.read().len(), 3);
+        agent.clear_messages();
+        assert!(agent.session.read().entries.is_empty());
+        assert!(agent.messages.read().is_empty());
+        assert_eq!(agent.message_count(), 0);
+        assert!(agent.request_messages().is_empty());
+    }
+
+    #[test]
+    fn append_message_reaches_request_messages() {
+        let agent = Agent::new();
+        agent.append_message(Message::user("steer"));
+        assert_eq!(agent.request_messages().len(), 1);
+        assert_eq!(agent.request_messages()[0].content, "steer");
+        assert_eq!(agent.message_count(), 1);
+    }
+
+    #[test]
+    fn message_count_and_context_tokens_use_session() {
+        let agent = Agent::new();
+        agent.append_message(Message::user("hello"));
+        let session_tokens = agent.context_tokens();
+        assert_eq!(agent.message_count(), 1);
+        agent.messages.write().clear();
         agent
             .messages
             .write()
-            .push(Message::assistant("from agent"));
-        assert_eq!(handle.read().len(), 2);
-        agent.clear_messages();
-        assert!(handle.read().is_empty());
+            .push(Message::user("MUTATED IN MEMORY"));
+        assert_eq!(agent.message_count(), 1);
+        assert_eq!(agent.context_tokens(), session_tokens);
+        assert_ne!(estimate_messages(&agent.messages.read()), session_tokens);
     }
 
     #[cfg(feature = "providers")]
     struct SteeringProvider {
         session: Arc<RwLock<crate::session::Session>>,
+        live: Arc<RwLock<Vec<Message>>>,
         calls: Arc<parking_lot::Mutex<Vec<Vec<String>>>>,
     }
 
@@ -2836,7 +2914,9 @@ mod tests {
                 calls.len() == 1
             };
             if first {
-                self.session.write().append_message(&Message::user("steer"));
+                let steer = Message::user("steer");
+                self.session.write().append_message(&steer);
+                self.live.write().push(steer);
                 Ok(Box::new(futures::stream::iter([
                     Ok(crate::provider::StreamEvent::ToolCall(ToolCall {
                         id: "call_1".into(),
@@ -2855,7 +2935,7 @@ mod tests {
 
     #[cfg(feature = "providers")]
     #[tokio::test]
-    async fn handle_append_is_seen_mid_turn() {
+    async fn append_message_is_seen_mid_turn() {
         let registry = ToolRegistry::new();
         registry.register(
             ToolDefinition::new_boxed(
@@ -2872,6 +2952,7 @@ mod tests {
         let calls = Arc::new(parking_lot::Mutex::new(Vec::new()));
         agent.set_provider(Arc::new(SteeringProvider {
             session: agent.session_handle(),
+            live: agent.messages_handle(),
             calls: Arc::clone(&calls),
         }));
         agent.prompt("hello").await.unwrap();
@@ -2880,7 +2961,7 @@ mod tests {
         assert!(!calls[0].iter().any(|c| c == "steer"));
         assert!(
             calls[1].iter().any(|c| c == "steer"),
-            "mid-turn append not observed on the next iteration: {:?}",
+            "mid-turn append_message not observed on the next iteration: {:?}",
             calls[1]
         );
     }
@@ -3211,9 +3292,15 @@ mod tests {
                 hunk: "@@ -1 +1 @@".into(),
             },
         ];
-        for event in events {
+        let expected = [
+            "RetryReason",
+            "ProcessStdin",
+            "RequestPermissions",
+            "PatchHunk",
+        ];
+        for (event, ty) in events.into_iter().zip(expected) {
             let json = serde_json::to_value(&event).unwrap();
-            assert!(json.get("type").and_then(|t| t.as_str()).is_some());
+            assert_eq!(json.get("type").and_then(|t| t.as_str()), Some(ty));
         }
     }
 
@@ -3326,7 +3413,9 @@ mod tests {
     #[cfg(feature = "providers")]
     #[tokio::test]
     async fn compact_semantically_updates_session_and_live_vec() {
+        let dir = tempfile::tempdir().unwrap();
         let mut agent = Agent::new();
+        agent.set_workspace_root(dir.path());
         agent.auto_compact_after = 50;
         agent.record_message(Message::system("sys"));
         for i in 0..12 {
@@ -3334,6 +3423,8 @@ mod tests {
             agent.record_message(Message::assistant("reply".repeat(40)));
         }
         agent.record_message(Message::user("recent tail"));
+        let session_before = agent.session.read().messages();
+        let session_len_before = session_before.len();
         agent.messages.write().clear();
         agent.messages.write().push(Message::user("LIVE VEC ONLY"));
         agent
@@ -3341,7 +3432,18 @@ mod tests {
             .await
             .unwrap();
         let from_session = agent.session.read().messages();
-        assert_eq!(from_session, *agent.messages.read());
+        let live = agent.messages.read().clone();
+        assert!(
+            from_session.len() >= session_len_before,
+            "session was rewritten: before={session_len_before} after={}",
+            from_session.len()
+        );
+        assert!(
+            from_session
+                .iter()
+                .any(|m| m.content.contains("old message 0")),
+            "session lost original turns: {from_session:?}"
+        );
         assert!(
             from_session
                 .iter()
@@ -3351,9 +3453,26 @@ mod tests {
         assert!(
             from_session
                 .iter()
+                .any(|m| m.content.contains("[compact reason: test]")),
+            "session missing compact-reason marker: {from_session:?}"
+        );
+        assert_ne!(
+            from_session, live,
+            "live projection should diverge from the append-only session"
+        );
+        assert!(
+            live.iter().any(|m| m.content.contains("recent tail")),
+            "live projection lost the tail: {live:?}"
+        );
+        assert!(
+            live.iter()
                 .any(|m| m.content.contains("context compacted")
                     || m.content.contains("compact reason")),
-            "session was not compacted: {from_session:?}"
+            "live projection was not compacted: {live:?}"
+        );
+        assert!(
+            live.iter().all(|m| m.content != "LIVE VEC ONLY"),
+            "live vec was used as the compact source"
         );
         assert!(
             agent
@@ -3362,6 +3481,9 @@ mod tests {
                 .all(|m| m.content != "LIVE VEC ONLY"),
             "live vec was used as the compact source"
         );
+        let raven = dir.path().join(".rx4").join("raven.jsonl");
+        assert!(raven.exists(), "raven archive was not written");
+        assert!(!std::fs::read_to_string(&raven).unwrap().is_empty());
     }
 
     #[test]
