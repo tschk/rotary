@@ -549,6 +549,43 @@ mod tests {
     }
 
     #[test]
+    fn load_jsonl_recovers_gracefully() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("graceful.jsonl");
+
+        // Write a mix of valid entries, empty lines, and malformed JSON
+        let content = "\
+{\"id\":1,\"parent_id\":null,\"role\":\"user\",\"content\":\"valid first\"}
+
+not valid json at all
+{\"type\":\"session_todos\",\"todos\":{\"items\":[{\"id\":\"t1\",\"content\":\"a todo\",\"status\":\"pending\",\"creation_confidence\":100,\"verification_attempts\":0}]}}
+{\"id\":2,\"parent_id\":1,\"role\":\"assistant\"}  // missing content, malformed
+{\"id\":3,\"parent_id\":1,\"role\":\"assistant\",\"content\":\"valid second\"}
+";
+        std::fs::write(&path, content).unwrap();
+
+        let loaded = Session::load_jsonl(&path).unwrap();
+
+        assert_eq!(loaded.id, "graceful");
+        assert_eq!(loaded.name, "graceful");
+
+        // Only the valid entries should be loaded
+        assert_eq!(loaded.entries.len(), 2);
+        assert_eq!(loaded.entries[0].id, 1);
+        assert_eq!(loaded.entries[0].content, "valid first");
+        assert_eq!(loaded.entries[1].id, 3);
+        assert_eq!(loaded.entries[1].content, "valid second");
+
+        // Todos should be loaded successfully
+        assert_eq!(loaded.todos.items.len(), 1);
+        assert_eq!(loaded.todos.items[0].content, "a todo");
+        assert_eq!(loaded.todos.items[0].id, "t1");
+
+        // Next ID should be set correctly (max id + 1)
+        assert_eq!(loaded.next_id, 4);
+    }
+
+    #[test]
     fn append_and_fork() {
         let mut s = Session::new("s1", "test");
         let id1 = s.append(Role::System, "sys");
