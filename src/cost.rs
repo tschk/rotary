@@ -475,4 +475,29 @@ mod tests {
         let cost = registry.estimate_cost("gpt-4o", 1_000_000, 500_000);
         assert_eq!(cost, 0.0);
     }
+
+    #[test]
+    fn session_cost_records_entry_details() {
+        let registry = PricingRegistry::new();
+        let mut session = SessionCost::new();
+        let usage = TokenUsage {
+            input_tokens: 100,
+            output_tokens: 200,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+        };
+        session.record("gpt-4o", usage, &registry);
+        let entries = session.entries();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].model, "gpt-4o");
+        assert_eq!(entries[0].usage.input_tokens, 100);
+        assert_eq!(entries[0].usage.output_tokens, 200);
+        let expected_cost = 0.00025 + 0.002;
+        assert!((entries[0].cost - expected_cost).abs() < 1e-9);
+
+        // Assert overall session totals are updated correctly
+        assert!((session.total_cost() - expected_cost).abs() < 1e-9);
+        assert_eq!(session.total_input_tokens(), 100);
+        assert_eq!(session.total_output_tokens(), 200);
+    }
 }
