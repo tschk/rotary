@@ -582,4 +582,105 @@ mod tests {
         let updated = reviewer.engine.get(&skill_id).expect("exists");
         assert!(updated.instructions.contains("Test"));
     }
+
+    #[test]
+    fn test_apply_review_non_trivial_technique_existing_skill() {
+        let mut engine = test_engine();
+        let skill = engine
+            .create_from_pattern(
+                "existing_skill",
+                "a skill",
+                "do stuff",
+                vec!["stuff".into()],
+            )
+            .expect("create");
+        let skill_id = skill.id.clone();
+        let initial_confidence = skill.confidence;
+
+        let reviews = vec![ReviewResult {
+            signal: ReviewSignal::NonTrivialTechnique,
+            skill_id: Some(skill_id.clone()),
+            skill_name: "existing_skill".into(),
+            suggested_instructions: "do it better".into(),
+            confidence_delta: 0.1,
+        }];
+
+        let mut reviewer = BackgroundReviewer::with_config(
+            &mut engine,
+            BackgroundReviewConfig {
+                min_turns: 1,
+                max_review_tokens: 500,
+            },
+        );
+        reviewer.apply_review(&reviews).expect("apply");
+
+        let updated = reviewer.engine.get(&skill_id).expect("exists");
+        assert!(updated.confidence > initial_confidence);
+    }
+
+    #[test]
+    fn test_apply_review_non_trivial_technique_new_skill() {
+        let mut engine = test_engine();
+        let initial_count = engine.list().len();
+
+        let reviews = vec![ReviewResult {
+            signal: ReviewSignal::NonTrivialTechnique,
+            skill_id: None,
+            skill_name: "new_technique".into(),
+            suggested_instructions: "step 1, step 2".into(),
+            confidence_delta: 0.0,
+        }];
+
+        let mut reviewer = BackgroundReviewer::with_config(
+            &mut engine,
+            BackgroundReviewConfig {
+                min_turns: 1,
+                max_review_tokens: 500,
+            },
+        );
+        reviewer.apply_review(&reviews).expect("apply");
+
+        let updated_list = reviewer.engine.list();
+        assert_eq!(updated_list.len(), initial_count + 1);
+        let new_skill = updated_list
+            .into_iter()
+            .find(|s| s.name == "new_technique")
+            .expect("skill created");
+        assert_eq!(new_skill.instructions, "step 1, step 2");
+    }
+
+    #[test]
+    fn test_apply_review_updates_confidence_downward() {
+        let mut engine = test_engine();
+        let skill = engine
+            .create_from_pattern(
+                "existing_skill2",
+                "a skill 2",
+                "do stuff 2",
+                vec!["stuff2".into()],
+            )
+            .expect("create");
+        let skill_id = skill.id.clone();
+        let initial_confidence = skill.confidence;
+
+        let reviews = vec![ReviewResult {
+            signal: ReviewSignal::UserCorrection,
+            skill_id: Some(skill_id.clone()),
+            skill_name: "existing_skill2".into(),
+            suggested_instructions: "do it better 2".into(),
+            confidence_delta: -0.1,
+        }];
+
+        let mut reviewer = BackgroundReviewer::with_config(
+            &mut engine,
+            BackgroundReviewConfig {
+                min_turns: 1,
+                max_review_tokens: 500,
+            },
+        );
+        reviewer.apply_review(&reviews).expect("apply");
+
+        let updated = reviewer.engine.get(&skill_id).expect("exists");
+        assert!(updated.confidence < initial_confidence);
+    }
 }
