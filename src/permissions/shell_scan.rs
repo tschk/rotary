@@ -549,52 +549,84 @@ pub struct ShellScan {
     pub nested: Vec<String>,
 }
 
+/// Helper struct for shell scanning state
+struct ScanState {
+    commands: Vec<Vec<String>>,
+    nested: Vec<String>,
+    words: Vec<String>,
+    word: String,
+    started: bool,
+}
+
+impl ScanState {
+    fn new() -> Self {
+        Self {
+            commands: Vec::new(),
+            nested: Vec::new(),
+            words: Vec::new(),
+            word: String::new(),
+            started: false,
+        }
+    }
+
+    fn push_word(&mut self) {
+        if self.started {
+            self.words.push(std::mem::take(&mut self.word));
+            self.started = false;
+        }
+    }
+
+    fn push_command(&mut self) {
+        self.push_word();
+        if !self.words.is_empty() {
+            self.commands.push(std::mem::take(&mut self.words));
+        }
+    }
+}
+
 /// Split `input` into simple commands (quote-aware) and command-substitution bodies.
 pub fn scan_shell(input: &str) -> ShellScan {
     let chars: Vec<char> = input.chars().collect();
-    let mut commands: Vec<Vec<String>> = Vec::new();
-    let mut nested: Vec<String> = Vec::new();
-    let mut words: Vec<String> = Vec::new();
+    let mut state = ScanState::new();
     let mut i = 0;
     const BREAKS: &str = ";|&(){}";
+
     while i < chars.len() {
         let c = chars[i];
         if c.is_whitespace() {
-            if c == '\n' && !words.is_empty() {
-                commands.push(std::mem::take(&mut words));
+            if c == '\n' && !state.words.is_empty() {
+                state.push_command();
             }
             i += 1;
             continue;
         }
-        if c == '#' && words.is_empty() {
+        if c == '#' && state.words.is_empty() {
             while i < chars.len() && chars[i] != '\n' {
                 i += 1;
             }
             continue;
         }
         if BREAKS.contains(c) {
-            if !words.is_empty() {
-                commands.push(std::mem::take(&mut words));
-            }
+            state.push_command();
             while i < chars.len() && BREAKS.contains(chars[i]) {
                 i += 1;
             }
             continue;
         }
-        let mut word = String::new();
-        let mut started = false;
+
         while i < chars.len()
             && !chars[i].is_whitespace()
             && (!BREAKS.contains(chars[i])
-                || (chars[i] == '&' && (word.ends_with('<') || word.ends_with('>'))))
+                || (chars[i] == '&' && (state.word.ends_with('<') || state.word.ends_with('>'))))
         {
             let c = chars[i];
+
             if c == '\\' {
                 if chars.get(i + 1) == Some(&'\n') {
                     i += 2;
                 } else if i + 1 < chars.len() {
-                    started = true;
-                    word.push(chars[i + 1]);
+                    state.started = true;
+                    state.word.push(chars[i + 1]);
                     i += 2;
                 } else {
                     i += 1;
@@ -602,106 +634,114 @@ pub fn scan_shell(input: &str) -> ShellScan {
                 continue;
             }
             if c == '\'' {
-                started = true;
+                state.started = true;
                 match read_delimited(&chars, i + 1, '\'', false) {
                     Some((inner, end)) => {
-                        word.push_str(&inner);
+                        state.word.push_str(&inner);
                         i = end;
                     }
                     None => {
-                        word.push_str(&chars[i + 1..].iter().collect::<String>());
+                        state
+                            .word
+                            .push_str(&chars[i + 1..].iter().collect::<String>());
                         i = chars.len();
                     }
                 }
                 continue;
             }
             if c == '$' && chars.get(i + 1) == Some(&'\'') {
-                started = true;
+                state.started = true;
                 match read_delimited(&chars, i + 2, '\'', false) {
                     Some((inner, end)) => {
-                        word.push_str(&decode_ansi_c(&inner));
+                        state.word.push_str(&decode_ansi_c(&inner));
                         i = end;
                     }
                     None => {
-                        word.push_str(&chars[i + 2..].iter().collect::<String>());
+                        state
+                            .word
+                            .push_str(&chars[i + 2..].iter().collect::<String>());
                         i = chars.len();
                     }
                 }
                 continue;
             }
             if c == '"' {
-                started = true;
-                i += 1;
-                while i < chars.len() && chars[i] != '"' {
-                    if chars[i] == '\\' && i + 1 < chars.len() {
-                        word.push(chars[i + 1]);
-                        i += 2;
-                    } else if chars[i] == '$' && chars.get(i + 1) == Some(&'(') {
-                        match command_substitution(&chars, i) {
-                            Some((body, end)) => {
-                                nested.push(body);
-                                i = end;
-                            }
-                            None => {
-                                word.push(chars[i]);
-                                i += 1;
-                            }
-                        }
-                    } else if chars[i] == '`' {
-                        match read_delimited(&chars, i + 1, '`', false) {
-                            Some((body, end)) => {
-                                nested.push(body);
-                                i = end;
-                            }
-                            None => i += 1,
-                        }
-                    } else {
-                        word.push(chars[i]);
-                        i += 1;
-                    }
-                }
-                if chars.get(i) == Some(&'"') {
-                    i += 1;
-                }
+                state.started = true;
+                i = process_double_quotes(&chars, i + 1, &mut state);
                 continue;
             }
             if c == '$' && chars.get(i + 1) == Some(&'(') {
-                started = true;
+                state.started = true;
                 match command_substitution(&chars, i) {
                     Some((body, end)) => {
-                        nested.push(body);
+                        state.nested.push(body);
                         i = end;
                     }
                     None => {
-                        word.push(c);
+                        state.word.push(c);
                         i += 1;
                     }
                 }
                 continue;
             }
             if c == '`' {
-                started = true;
+                state.started = true;
                 match read_delimited(&chars, i + 1, '`', false) {
                     Some((body, end)) => {
-                        nested.push(body);
+                        state.nested.push(body);
                         i = end;
                     }
                     None => i += 1,
                 }
                 continue;
             }
-            word.push(c);
-            started = true;
+            state.word.push(c);
+            state.started = true;
             i += 1;
         }
-        if started {
-            words.push(word);
+        state.push_word();
+    }
+    state.push_command();
+
+    ShellScan {
+        commands: state.commands,
+        nested: state.nested,
+    }
+}
+
+fn process_double_quotes(chars: &[char], mut i: usize, state: &mut ScanState) -> usize {
+    while i < chars.len() && chars[i] != '"' {
+        if chars[i] == '\\' && i + 1 < chars.len() {
+            state.word.push(chars[i + 1]);
+            i += 2;
+        } else if chars[i] == '$' && chars.get(i + 1) == Some(&'(') {
+            match command_substitution(chars, i) {
+                Some((body, end)) => {
+                    state.nested.push(body);
+                    i = end;
+                }
+                None => {
+                    state.word.push(chars[i]);
+                    i += 1;
+                }
+            }
+        } else if chars[i] == '`' {
+            match read_delimited(chars, i + 1, '`', false) {
+                Some((body, end)) => {
+                    state.nested.push(body);
+                    i = end;
+                }
+                None => i += 1,
+            }
+        } else {
+            state.word.push(chars[i]);
+            i += 1;
         }
     }
-    if !words.is_empty() {
-        commands.push(words);
+    if chars.get(i) == Some(&'"') {
+        i += 1;
     }
-    ShellScan { commands, nested }
+    i
 }
 
 fn command_substitution(chars: &[char], start: usize) -> Option<(String, usize)> {
