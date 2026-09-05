@@ -506,7 +506,7 @@ impl AutoresearchController {
         let session_dir = sessions_root.join(&id);
         create_private_dir(&session_dir)?;
         let config_path = session_dir.join("config.json");
-        std::fs::write(&config_path, serde_json::to_vec_pretty(&config)?)?;
+        tokio::fs::write(&config_path, serde_json::to_vec_pretty(&config)?).await?;
         let worktrees_root = std::env::temp_dir().join("rx4-autoresearch-worktrees");
         create_private_dir(&worktrees_root)?;
         let worktree = worktrees_root.join(&id);
@@ -1522,7 +1522,7 @@ impl AutoresearchController {
             return Ok(final_patch);
         }
         let patch_path = self.session_dir.join("final.patch");
-        std::fs::write(&patch_path, &final_patch.patch)?;
+        tokio::fs::write(&patch_path, &final_patch.patch).await?;
         let args = vec![
             "apply".to_string(),
             "--3way".to_string(),
