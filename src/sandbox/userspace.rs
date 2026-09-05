@@ -339,14 +339,25 @@ impl SandboxManager {
             self.workspace_root.join(path)
         };
         // Resolve symlinks when path exists; for create targets resolve parent.
-        if let Ok(c) = std::fs::canonicalize(&abs) {
-            return c;
-        }
-        if let Some(parent) = abs.parent() {
-            if let Ok(cp) = std::fs::canonicalize(parent) {
-                if let Some(name) = abs.file_name() {
-                    return cp.join(name);
+        let mut current = abs.as_path();
+        let mut missing_components = Vec::new();
+
+        loop {
+            if let Ok(c) = std::fs::canonicalize(current) {
+                let mut resolved = c;
+                for comp in missing_components.into_iter().rev() {
+                    resolved.push(comp);
                 }
+                return resolved;
+            }
+
+            if let Some(parent) = current.parent() {
+                if let Some(name) = current.file_name() {
+                    missing_components.push(name.to_os_string());
+                }
+                current = parent;
+            } else {
+                break;
             }
         }
         abs
