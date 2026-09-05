@@ -662,6 +662,58 @@ mod tests {
         assert_eq!(s1.next_id, 6);
     }
 
+    #[test]
+    fn save_jsonl_validates_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Session::new("../invalid", "test");
+        let err = s.save_jsonl(dir.path()).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn save_jsonl_writes_entries_and_todos() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = Session::new("test-session", "test");
+        let secret = format!("sk-{}", "a".repeat(48));
+        s.append(Role::User, format!("hello {}", secret));
+        s.todos.items.push(crate::todo::TodoItem {
+            id: "t1".to_string(),
+            content: "a task".to_string(),
+            status: crate::todo::TodoStatus::Pending,
+            creation_confidence: 90,
+            completion_confidence: None,
+            verification_attempts: 0,
+        });
+
+        let path = s.save_jsonl(dir.path()).unwrap();
+        assert_eq!(path, dir.path().join("test-session.jsonl"));
+
+        let content = std::fs::read_to_string(path).unwrap();
+        let lines: Vec<&str> = content.lines().collect();
+        assert_eq!(lines.len(), 2);
+
+        let entry: Entry = serde_json::from_str(lines[0]).unwrap();
+        assert_eq!(entry.role, Role::User);
+        assert_eq!(entry.content, "hello [REDACTED:api-key]");
+
+        assert!(s.entries[0].content.contains(&secret));
+
+        let todos: serde_json::Value = serde_json::from_str(lines[1]).unwrap();
+        assert_eq!(
+            todos.get("type").unwrap().as_str().unwrap(),
+            "session_todos"
+        );
+        let items = todos
+            .get("todos")
+            .unwrap()
+            .get("items")
+            .unwrap()
+            .as_array()
+            .unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].get("content").unwrap().as_str().unwrap(), "a task");
+    }
+
     #[cfg(feature = "sqlite-sessions")]
     #[test]
     fn sqlite_roundtrip() {
