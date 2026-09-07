@@ -644,15 +644,13 @@ impl Session {
             session.entries.push(row.map_err(|e| e.to_string())?);
         }
         let _ = conn.execute("ALTER TABLE sessions ADD COLUMN projections TEXT", []);
-        if let Ok(raw) = conn.query_row(
+        if let Ok(Some(raw)) = conn.query_row(
             "SELECT projections FROM sessions WHERE id = ?1",
             params![id],
             |row| row.get::<_, Option<String>>(0),
         ) {
-            if let Some(raw) = raw {
-                if let Ok(projections) = serde_json::from_str::<Vec<SessionProjection>>(&raw) {
-                    session.projections = projections;
-                }
+            if let Ok(projections) = serde_json::from_str::<Vec<SessionProjection>>(&raw) {
+                session.projections = projections;
             }
         }
         Ok(session)

@@ -2578,6 +2578,7 @@ fn workspace_hash(root: &std::path::Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "providers")]
     use crate::cassette::{CassetteTurn, ReplayProvider};
     use crate::models::ModelInfo;
     use std::sync::atomic::{AtomicUsize, Ordering};
