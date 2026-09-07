@@ -73,6 +73,9 @@
   `Agent::cache_stats()`.
 
 ### Security and reliability
+- Model-facing `complete_subtask` is fail-closed (`ApprovalRequired`) and
+  ignores spoofed `actor_id` / `adjudication`; hosts accept via
+  `Agent::complete_subtask`.
 - IPC uses async Tokio socket I/O, waits for prompts, and authenticates every
   mutating method, including model and session changes.
 - Workspace changes preserve sandbox configuration and invalidate tool-cache
