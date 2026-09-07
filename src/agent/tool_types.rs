@@ -30,6 +30,7 @@ pub fn normalize_tool_name(name: &str) -> &str {
         "lsp_diagnostics" | "diagnostics" => "lsp_diagnostics",
         "lsp_definition" | "definition" | "go_to_definition" => "lsp_definition",
         "lsp_references" | "references" | "find_references" => "lsp_references",
+        "exec" | "exec_spawn" => "exec",
         _ => name,
     }
 }
@@ -76,6 +77,8 @@ pub struct ToolResult {
     /// This avoids making the agent loop infer control flow from text.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error_kind: Option<ToolErrorKind>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spill: Option<crate::tools::spill::SpillNotice>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -90,6 +93,7 @@ impl ToolResult {
             content: content.into(),
             is_error: false,
             error_kind: None,
+            spill: None,
         }
     }
     pub fn err(id: impl Into<String>, content: impl Into<String>) -> Self {
@@ -98,6 +102,7 @@ impl ToolResult {
             content: content.into(),
             is_error: true,
             error_kind: None,
+            spill: None,
         }
     }
 
@@ -107,6 +112,7 @@ impl ToolResult {
             content: "approval required".to_string(),
             is_error: true,
             error_kind: Some(ToolErrorKind::ApprovalRequired),
+            spill: None,
         }
     }
 
@@ -154,6 +160,8 @@ pub struct ToolContext {
     pub actor_id: String,
     pub permission_asks: Option<Arc<parking_lot::Mutex<Vec<PermissionAsk>>>>,
     pub patch_hunks: Option<Arc<parking_lot::Mutex<Vec<PatchHunkNotice>>>>,
+    pub process_lifecycle:
+        Option<Arc<parking_lot::Mutex<Vec<crate::tools::exec::ProcessLifecycle>>>>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -200,6 +208,7 @@ impl ToolContext {
             actor_id: "host".into(),
             permission_asks: None,
             patch_hunks: None,
+            process_lifecycle: None,
         }
     }
 

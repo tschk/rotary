@@ -149,9 +149,10 @@ impl PrefixShape {
 }
 
 /// Which projection step produced a [`ProjectionResult`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProjectionStep {
+    #[default]
     None,
     Prune,
     Fold,

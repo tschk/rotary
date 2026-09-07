@@ -42,6 +42,7 @@ struct SymbolDef {
 pub struct RepoMap {
     workspace: PathBuf,
     cache: Option<Vec<(PathBuf, f64)>>,
+    cache_root: Option<PathBuf>,
 }
 
 impl RepoMap {
@@ -50,6 +51,16 @@ impl RepoMap {
         Self {
             workspace: workspace.to_path_buf(),
             cache: None,
+            cache_root: None,
+        }
+    }
+
+    /// Create a [`RepoMap`] that stores its cache under `cache_root`.
+    pub fn with_cache_root(workspace: &Path, cache_root: &Path) -> Self {
+        Self {
+            workspace: workspace.to_path_buf(),
+            cache: None,
+            cache_root: Some(cache_root.to_path_buf()),
         }
     }
 
@@ -317,11 +328,12 @@ impl RepoMap {
     }
 
     fn cache_path(&self) -> Option<PathBuf> {
-        let home = std::env::var_os("HOME")?;
+        let root = match &self.cache_root {
+            Some(root) => root.clone(),
+            None => PathBuf::from(std::env::var_os("HOME")?).join(".rx4"),
+        };
         Some(
-            PathBuf::from(home)
-                .join(".rx4")
-                .join("repomap-cache")
+            root.join("repomap-cache")
                 .join(format!("{}.json", self.project_hash())),
         )
     }
@@ -344,10 +356,9 @@ impl RepoMap {
     }
 
     fn save_cache(&self, ranking: &[(PathBuf, f64)]) -> Result<(), RepoMapError> {
-        let path = match self.cache_path() {
-            Some(p) => p,
-            None => return Ok(()),
-        };
+        let path = self.cache_path().ok_or_else(|| {
+            RepoMapError::Cache("no cache path (HOME unset and no cache root)".into())
+        })?;
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).map_err(|e| RepoMapError::Cache(e.to_string()))?;
         }
@@ -761,9 +772,10 @@ type Server struct {}
     #[test]
     fn cache_save_and_load() {
         let dir = tempdir().unwrap();
+        let cache = tempdir().unwrap();
         write(dir.path(), "a.rs", "fn alpha() {}\n");
         write(dir.path(), "b.rs", "fn beta() {}\n");
-        let map = RepoMap::new(dir.path());
+        let map = RepoMap::with_cache_root(dir.path(), cache.path());
         let first = map.rank_files();
         let loaded = map.load_cache();
         assert!(loaded.is_some(), "cache should be saved to disk");
@@ -778,12 +790,26 @@ type Server struct {}
     #[test]
     fn cache_invalidates_on_file_count_change() {
         let dir = tempdir().unwrap();
+        let cache = tempdir().unwrap();
         write(dir.path(), "a.rs", "fn alpha() {}\n");
-        let map = RepoMap::new(dir.path());
+        let map = RepoMap::with_cache_root(dir.path(), cache.path());
         let _ = map.rank_files();
         write(dir.path(), "b.rs", "fn beta() {}\n");
         let loaded = map.load_cache();
         assert!(loaded.is_none(), "stale cache should be ignored");
+    }
+
+    #[test]
+    fn save_cache_errors_when_path_unavailable() {
+        let dir = tempdir().unwrap();
+        write(dir.path(), "a.rs", "fn alpha() {}\n");
+        let blocked = dir.path().join("not-a-dir");
+        fs::write(&blocked, "x").unwrap();
+        let map = RepoMap::with_cache_root(dir.path(), &blocked);
+        assert!(
+            map.save_cache(&[]).is_err(),
+            "failed cache write must not report success"
+        );
     }
 
     #[test]

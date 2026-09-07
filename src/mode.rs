@@ -78,6 +78,8 @@ pub const CODING_TOOLS: &[&str] = &[
     "lsp_diagnostics",
     "lsp_definition",
     "lsp_references",
+    "exec",
+    "exec_spawn",
 ];
 pub const RESEARCH_TOOLS: &[&str] = &[
     "read",
@@ -97,6 +99,8 @@ pub const RESEARCH_TOOLS: &[&str] = &[
     "lsp_diagnostics",
     "lsp_definition",
     "lsp_references",
+    "exec",
+    "exec_spawn",
 ];
 pub const PLAN_TOOLS: &[&str] = &[
     "read",

@@ -143,9 +143,27 @@ pub enum Event {
         retry_reason: String,
         layer: String,
     },
+    /// Empty-turn or stuck-tool recovery the host can forward.
+    Recovery {
+        action: RecoveryKind,
+        reason: String,
+    },
     ProcessStdin {
         process_id: String,
         bytes: usize,
+    },
+    ProcessStart {
+        process_id: String,
+        program: String,
+    },
+    ProcessEnd {
+        process_id: String,
+        exit_code: Option<i32>,
+    },
+    ToolSpill {
+        status: crate::tools::spill::SpillStatus,
+        locator: String,
+        original_bytes: usize,
     },
     RequestPermissions {
         tool: String,
@@ -155,6 +173,16 @@ pub enum Event {
         path: String,
         hunk: String,
     },
+}
+
+/// Stable recovery action forwarded to hosts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RecoveryKind {
+    Prefill,
+    Nudge,
+    Retry,
+    Halt,
 }
 
 /// Completion facts emitted in [`Event::TurnEnded`].
@@ -435,6 +463,8 @@ pub struct Agent {
     pub actor_id: String,
     #[cfg(feature = "mcp")]
     pub mcp: Option<Arc<crate::mcp::McpRegistry>>,
+    cassette_replay: bool,
+    process_lifecycle: Arc<parking_lot::Mutex<Vec<crate::tools::exec::ProcessLifecycle>>>,
 }
 
 impl Agent {
@@ -520,6 +550,8 @@ impl Agent {
             actor_id: "host".into(),
             #[cfg(feature = "mcp")]
             mcp: None,
+            cassette_replay: false,
+            process_lifecycle: Arc::new(parking_lot::Mutex::new(Vec::new())),
         };
         // Always attach userspace workspace sandbox (path confinement for FS tools).
         agent.ensure_userspace_sandbox();
@@ -1002,6 +1034,33 @@ impl Agent {
                 hunk: hunk.hunk,
             });
         }
+        let lifecycle = std::mem::take(&mut *self.process_lifecycle.lock());
+        for notice in lifecycle {
+            if notice.start {
+                self.emit(Event::ProcessStart {
+                    process_id: notice.process_id,
+                    program: notice.program.unwrap_or_default(),
+                });
+            } else {
+                self.emit(Event::ProcessEnd {
+                    process_id: notice.process_id,
+                    exit_code: notice.exit_code,
+                });
+            }
+        }
+    }
+
+    fn emit_recovery(&self, action: &RecoveryAction) {
+        let (kind, reason) = match action {
+            RecoveryAction::Prefill(text) => (RecoveryKind::Prefill, text.clone()),
+            RecoveryAction::Nudge(text) => (RecoveryKind::Nudge, text.clone()),
+            RecoveryAction::Retry => (RecoveryKind::Retry, String::new()),
+            RecoveryAction::Halt(reason) => (RecoveryKind::Halt, reason.clone()),
+        };
+        self.emit(Event::Recovery {
+            action: kind,
+            reason,
+        });
     }
 
     fn wipe_recorded_planning_tokens(&self) {
@@ -1015,13 +1074,17 @@ impl Agent {
     }
 
     fn request_messages(&self) -> Vec<Message> {
-        let msgs = self.session.read().messages();
+        let msgs = self.session.read().provider_messages();
         let tokens = estimate_messages(&msgs);
         if tokens >= self.auto_compact_threshold() {
             project_compact(&msgs, &self.compaction_config()).messages
         } else {
             msgs
         }
+    }
+
+    pub fn enable_cassette_replay(&mut self) {
+        self.cassette_replay = true;
     }
 
     pub fn session_handle(&self) -> Arc<RwLock<crate::session::Session>> {
@@ -1090,6 +1153,37 @@ impl Agent {
         Ok(n)
     }
 
+    pub fn spawn_exec(
+        &self,
+        program: &str,
+        args: &[String],
+    ) -> Result<crate::tools::exec::ExecProcess, String> {
+        let proc = self.exec.spawn(program, args)?;
+        self.emit(Event::ProcessStart {
+            process_id: proc.process_id.clone(),
+            program: program.to_string(),
+        });
+        Ok(proc)
+    }
+
+    pub fn wait_exec(&self, process_id: &str) -> Result<crate::tools::exec::ExecOutput, String> {
+        let output = self.exec.wait(process_id)?;
+        self.emit(Event::ProcessEnd {
+            process_id: output.process_id.clone(),
+            exit_code: output.exit_code,
+        });
+        Ok(output)
+    }
+
+    pub fn kill_exec(&self, process_id: &str) -> Result<crate::tools::exec::ExecOutput, String> {
+        let output = self.exec.kill(process_id)?;
+        self.emit(Event::ProcessEnd {
+            process_id: output.process_id.clone(),
+            exit_code: output.exit_code,
+        });
+        Ok(output)
+    }
+
     pub fn request_permissions(&self, tool: &str, paths: Vec<String>) {
         self.emit(Event::RequestPermissions {
             tool: tool.to_string(),
@@ -1118,11 +1212,11 @@ impl Agent {
     /// block every read behind a whole turn.
     ///
     /// After [`Agent::compact`] or [`Agent::compact_semantically`] the live vec
-    /// may diverge from the durable session: the session stays append-only and
-    /// provider requests still rebuild from it. Pushing through this
-    /// handle is live-only and does not reach the model. Hosts that need to
-    /// mutate history must use [`Self::append_message`] (dual-write) or
-    /// [`Self::clear_messages`].
+    /// may diverge from the durable session log: the session stays append-only
+    /// and provider requests rebuild from it plus the persisted projection
+    /// ledger. Pushing through this handle is live-only and does not reach the
+    /// model. Hosts that need to mutate history must use
+    /// [`Self::append_message`] (dual-write) or [`Self::clear_messages`].
     ///
     /// The `Arc<RwLock<_>>` identity is stable for the life of the agent.
     /// Compaction replaces the vec contents in place through this same lock.
@@ -1176,7 +1270,7 @@ impl Agent {
 
     /// Estimated tokens of the durable session plus the system prompt.
     pub fn context_tokens(&self) -> usize {
-        estimate_messages(&self.session.read().messages())
+        estimate_messages(&self.session.read().provider_messages())
             + self
                 .system_prompt
                 .as_deref()
@@ -1452,6 +1546,7 @@ impl Agent {
                 if self.guardrails.is_some() && check_empty_turn(&assistant_content) {
                     let action = recover_empty_turn(empty_turns, 3);
                     empty_turns += 1;
+                    self.emit_recovery(&action);
                     match action {
                         RecoveryAction::Prefill(text) | RecoveryAction::Nudge(text) => {
                             self.record_message(Message::user(text));
@@ -1652,10 +1747,12 @@ impl Agent {
                 for (call, result) in tool_calls.iter().zip(results.iter()) {
                     let decision = rails.observe(&call.name, &call.arguments, result.is_error);
                     if rails.identical_call_count >= 1 {
-                        match recover_stuck_tool(
+                        let action = recover_stuck_tool(
                             rails.identical_call_count.saturating_sub(1),
                             rails.config.same_tool_failure_halt_after,
-                        ) {
+                        );
+                        self.emit_recovery(&action);
+                        match action {
                             RecoveryAction::Nudge(text) | RecoveryAction::Prefill(text) => {
                                 self.record_message(Message::user(text));
                             }
@@ -1809,6 +1906,12 @@ impl Agent {
                     }
                 };
                 self.emit(Event::ToolExecutionStart(redact_tool_call(&call)));
+                if self.cassette_replay {
+                    let result = crate::cassette::simulate_tool(&call);
+                    self.emit(Event::ToolExecutionEnd(result.clone()));
+                    results[idx] = Some(result);
+                    continue;
+                }
                 let ctx = Arc::clone(ctx);
                 let tools = Arc::clone(&tools);
                 let policy = policy.clone();
@@ -1907,6 +2010,10 @@ impl Agent {
                 }
             }
         }
+        if self.cassette_replay {
+            let result = crate::cassette::simulate_tool(&call);
+            return (call, result);
+        }
         let mut result = Self::run_tool_call(
             self.tools.as_ref(),
             &self.policy,
@@ -1922,13 +2029,18 @@ impl Agent {
         .await;
         if result.content.len() > crate::tools::spill::DEFAULT_PREVIEW_BYTES {
             let spill_dir = ctx.workspace_root.join(".rx4").join("spill");
-            if let Ok(spilled) = crate::tools::spill::bound_tool_output(
+            let spilled = crate::tools::spill::bound_tool_output(
                 &result.content,
                 crate::tools::spill::DEFAULT_PREVIEW_BYTES,
                 &spill_dir,
-            ) {
-                result.content = spilled.preview;
-            }
+            );
+            result.spill = Some(spilled.notice());
+            self.emit(Event::ToolSpill {
+                status: spilled.status,
+                locator: spilled.locator.clone(),
+                original_bytes: spilled.original_bytes,
+            });
+            result.content = spilled.preview;
         }
         (call, result)
     }
@@ -2047,12 +2159,11 @@ impl Agent {
 
     /// Project the session onto the live vec without rewriting the session.
     ///
-    /// Archived turns are appended to `.rx4/raven.jsonl`. After this call the
-    /// live vec may differ from the durable session; provider requests still
-    /// rebuild from the session.
+    /// Archived turns are appended to `.rx4/raven.jsonl` once and recorded on
+    /// the session ledger so later provider requests keep the summary.
     pub fn compact(&self, reason: &str) {
         info!("compacting context: {reason}");
-        let source = self.session.read().messages();
+        let source = self.session.read().live_messages();
         if source.len() <= 2 {
             return;
         }
@@ -2066,7 +2177,20 @@ impl Agent {
         if proj.archived.is_empty() && proj.step == crate::compaction::ProjectionStep::None {
             return;
         }
+        let archived_ids = self.session.read().ids_matching(&proj.archived);
         self.archive_raven(&proj.archived);
+        let summary = if proj.summary.is_empty() {
+            String::new()
+        } else {
+            format!("[context compacted] {}", proj.summary)
+        };
+        self.session
+            .write()
+            .record_projection(crate::session::SessionProjection {
+                summary,
+                archived_ids,
+                step: proj.step,
+            });
         self.emit(Event::CompactionStart {
             reason: reason.to_string(),
             before_tokens,
@@ -2078,7 +2202,7 @@ impl Agent {
             remaining_tokens: proj.remaining_tokens,
             markers_preserved: Vec::new(),
         };
-        *self.messages.write() = proj.messages;
+        *self.messages.write() = self.session.read().provider_messages();
         self.emit(Event::CompactionEnd {
             reason: reason.to_string(),
             result,
@@ -2103,6 +2227,7 @@ impl Agent {
         tool_ctx.actor_id = self.actor_id.clone();
         tool_ctx.permission_asks = Some(Arc::clone(&self.permission_asks));
         tool_ctx.patch_hunks = Some(Arc::clone(&self.patch_hunks));
+        tool_ctx.process_lifecycle = Some(Arc::clone(&self.process_lifecycle));
         #[cfg(feature = "ipc")]
         {
             tool_ctx.lsp = Some(Arc::clone(&self.lsp));
@@ -2297,19 +2422,18 @@ impl Agent {
         })
     }
 
-    /// Semantically compact into the live projection without rewriting the session.
+    /// Semantically compact into a durable projection without rewriting the session.
     ///
-    /// Dropped turns are archived to `.rx4/raven.jsonl`. The durable session
-    /// stays append-only; a compact-reason marker is appended via
-    /// [`Self::append_message`]. After this call the live vec may differ from
-    /// the session; provider requests still rebuild from the session.
+    /// Dropped turns are archived to `.rx4/raven.jsonl` once. The summary is
+    /// persisted as a session projection event so the next provider request
+    /// still sees it.
     pub async fn compact_semantically(
         &self,
         reason: &str,
         provider: &dyn Provider,
     ) -> Result<(), crate::provider::ProviderError> {
         info!("compacting context: {reason}");
-        let snapshot = self.session.read().messages();
+        let snapshot = self.session.read().live_messages();
         if snapshot.len() <= 2 {
             return Ok(());
         }
@@ -2338,8 +2462,21 @@ impl Agent {
             .position(|m| m.role != Role::System)
             .unwrap_or(snapshot.len());
         let removed_end = (system_end + result.removed_count).min(snapshot.len());
-        self.archive_raven(&snapshot[system_end..removed_end]);
-        *self.messages.write() = projected;
+        let archived = snapshot[system_end..removed_end].to_vec();
+        let archived_ids = self.session.read().ids_matching(&archived);
+        self.archive_raven(&archived);
+        let summary = format!(
+            "[context compacted] {} Markers preserved: {:?}",
+            result.summary, result.markers_preserved
+        );
+        self.session
+            .write()
+            .record_projection(crate::session::SessionProjection {
+                summary,
+                archived_ids,
+                step: crate::compaction::ProjectionStep::Fold,
+            });
+        *self.messages.write() = self.session.read().provider_messages();
         self.record_message(Message::system(format!("[compact reason: {reason}]")));
         self.emit(Event::CompactionStart {
             reason: reason.to_string(),
@@ -2441,6 +2578,7 @@ fn workspace_hash(root: &std::path::Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cassette::{CassetteTurn, ReplayProvider};
     use crate::models::ModelInfo;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
@@ -3066,10 +3204,22 @@ mod tests {
                 Event::PlanProposed(p) => format!("plan_proposed:{}", p.calls.len()),
                 Event::PlanDecided { decision } => format!("plan_decided:{decision:?}"),
                 Event::RetryReason { retry_reason, .. } => format!("retry:{retry_reason}"),
+                Event::Recovery { action, reason } => format!("recovery:{action:?}:{reason}"),
                 Event::RequestPermissions { tool, .. } => format!("perms:{tool}"),
                 Event::ProcessStdin { process_id, bytes } => {
                     format!("stdin:{process_id}:{bytes}")
                 }
+                Event::ProcessStart {
+                    process_id,
+                    program,
+                } => {
+                    format!("proc_start:{process_id}:{program}")
+                }
+                Event::ProcessEnd {
+                    process_id,
+                    exit_code,
+                } => format!("proc_end:{process_id}:{exit_code:?}"),
+                Event::ToolSpill { status, .. } => format!("spill:{status:?}"),
                 Event::PatchHunk { path, .. } => format!("hunk:{path}"),
                 _ => return,
             };
@@ -3291,12 +3441,33 @@ mod tests {
                 path: "src/lib.rs".into(),
                 hunk: "@@ -1 +1 @@".into(),
             },
+            Event::Recovery {
+                action: RecoveryKind::Prefill,
+                reason: "Continue from where you left off.".into(),
+            },
+            Event::ProcessStart {
+                process_id: "p1".into(),
+                program: "cat".into(),
+            },
+            Event::ProcessEnd {
+                process_id: "p1".into(),
+                exit_code: Some(0),
+            },
+            Event::ToolSpill {
+                status: crate::tools::spill::SpillStatus::SpillFailed,
+                locator: String::new(),
+                original_bytes: 20,
+            },
         ];
         let expected = [
             "RetryReason",
             "ProcessStdin",
             "RequestPermissions",
             "PatchHunk",
+            "Recovery",
+            "ProcessStart",
+            "ProcessEnd",
+            "ToolSpill",
         ];
         for (event, ty) in events.into_iter().zip(expected) {
             let json = serde_json::to_value(&event).unwrap();
@@ -3484,6 +3655,39 @@ mod tests {
         let raven = dir.path().join(".rx4").join("raven.jsonl");
         assert!(raven.exists(), "raven archive was not written");
         assert!(!std::fs::read_to_string(&raven).unwrap().is_empty());
+        let next_request = agent.request_messages();
+        assert!(
+            next_request
+                .iter()
+                .any(|m| m.content.contains("checkpoint retained")),
+            "semantic summary missing from next provider request: {next_request:?}"
+        );
+    }
+
+    #[test]
+    fn compact_twice_does_not_rearchive_the_same_turns() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut agent = Agent::new();
+        agent.set_workspace_root(dir.path());
+        agent.auto_compact_after = 50;
+        agent.record_message(Message::system("sys"));
+        for i in 0..20 {
+            agent.record_message(Message::user(format!("old message {i} ") + &"x".repeat(80)));
+            agent.record_message(Message::assistant("reply".repeat(40)));
+        }
+        agent.record_message(Message::user("recent tail"));
+        agent.compact("first");
+        let raven = dir.path().join(".rx4").join("raven.jsonl");
+        let first = std::fs::read_to_string(&raven).unwrap();
+        let first_lines = first.lines().count();
+        assert!(first_lines > 0);
+        agent.compact("second");
+        let second = std::fs::read_to_string(&raven).unwrap();
+        assert_eq!(
+            second.lines().count(),
+            first_lines,
+            "repeated compact re-archived dropped turns"
+        );
     }
 
     #[test]
@@ -3665,6 +3869,169 @@ mod tests {
                 .any(|m| m.contains("The same tool call is stuck")),
             "retry never re-prompted: {texts:?}"
         );
+        assert!(
+            labels.iter().any(|l| l.starts_with("recovery:Nudge:")),
+            "missing typed stuck-tool recovery: {labels:?}"
+        );
+        assert!(
+            labels.iter().any(|l| l.starts_with("recovery:Retry:")),
+            "missing typed stuck-tool retry recovery: {labels:?}"
+        );
+        assert!(
+            labels.iter().any(|l| l.starts_with("recovery:Halt:")),
+            "missing typed stuck-tool halt recovery: {labels:?}"
+        );
+    }
+
+    #[cfg(feature = "providers")]
+    struct EmptyTurnProvider;
+
+    #[cfg(feature = "providers")]
+    #[async_trait::async_trait]
+    impl crate::provider::Provider for EmptyTurnProvider {
+        fn id(&self) -> &str {
+            "empty"
+        }
+
+        fn name(&self) -> &str {
+            "empty"
+        }
+
+        async fn stream(
+            &self,
+            _messages: &[Message],
+            _system: &Option<String>,
+            _model: &str,
+            _tools: &[serde_json::Value],
+            _reasoning_effort: Option<&str>,
+        ) -> Result<crate::provider::StreamResult, crate::provider::ProviderError> {
+            Ok(Box::new(futures::stream::iter([Ok(
+                crate::provider::StreamEvent::Done,
+            )])))
+        }
+
+        async fn generate(
+            &self,
+            _messages: &[Message],
+            _system: &Option<String>,
+            _model: &str,
+            _tools: &[serde_json::Value],
+        ) -> Result<String, crate::provider::ProviderError> {
+            Ok(String::new())
+        }
+    }
+
+    #[cfg(feature = "providers")]
+    #[tokio::test]
+    async fn empty_turn_recovery_emits_typed_event() {
+        let mut agent = Agent::new();
+        agent.set_policy(Policy::full_access());
+        agent.set_guardrails(GuardrailConfig::default());
+        agent.max_tool_iterations = 6;
+        agent.set_provider(Arc::new(EmptyTurnProvider));
+        let seen = event_sink(&mut agent);
+        agent.prompt("go").await.unwrap();
+        let labels = seen.lock().clone();
+        assert!(
+            labels.iter().any(|l| l.starts_with("recovery:Prefill:")),
+            "missing typed empty-turn prefill: {labels:?}"
+        );
+        assert!(
+            labels.iter().any(|l| l.starts_with("recovery:Nudge:")),
+            "missing typed empty-turn nudge: {labels:?}"
+        );
+    }
+
+    #[cfg(feature = "providers")]
+    #[tokio::test]
+    async fn cassette_replay_simulates_recorded_tools() {
+        let runs = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let registry = ToolRegistry::new();
+        let runs_c = Arc::clone(&runs);
+        registry.register(
+            ToolDefinition::new_boxed(
+                "boom",
+                "must not run",
+                "{}",
+                Box::new(move |_ctx, _args| {
+                    let runs = Arc::clone(&runs_c);
+                    Box::pin(async move {
+                        runs.fetch_add(1, Ordering::SeqCst);
+                        ToolResult::ok("c1", "executed")
+                    })
+                }),
+            )
+            .with_effect(ToolEffect::Read),
+        );
+        let call = ToolCall {
+            id: "c1".into(),
+            name: "boom".into(),
+            arguments: "{}".into(),
+        };
+        let cassette = vec![
+            CassetteTurn {
+                messages: vec![Message::user("go")],
+                response: "calling".into(),
+                tool_calls: vec![call.clone()],
+            },
+            CassetteTurn {
+                messages: vec![
+                    Message::user("go"),
+                    Message::assistant_with_tools("calling", vec![call.clone()]),
+                    Message::tool("c1", "[cassette] boom"),
+                ],
+                response: "done".into(),
+                tool_calls: vec![],
+            },
+        ];
+        let mut agent = Agent::new();
+        agent.set_tools(registry);
+        agent.set_policy(Policy::full_access());
+        agent.enable_cassette_replay();
+        agent.set_provider(Arc::new(ReplayProvider::new(cassette)));
+        agent.prompt("go").await.unwrap();
+        assert_eq!(
+            runs.load(Ordering::SeqCst),
+            0,
+            "recorded tool was re-executed"
+        );
+        let texts = agent
+            .request_messages()
+            .iter()
+            .map(|m| m.content.clone())
+            .collect::<Vec<_>>();
+        assert!(
+            texts.iter().any(|m| m.contains("[cassette] boom")),
+            "simulated tool result missing: {texts:?}"
+        );
+        assert!(texts.iter().any(|m| m == "done"));
+    }
+
+    #[test]
+    fn spawn_exec_emits_start_and_end() {
+        let mut agent = Agent::new();
+        let events = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let received = Arc::clone(&events);
+        agent.subscribe(move |event| {
+            received.lock().push(event.clone());
+        });
+        let proc = agent
+            .spawn_exec("seq", &["1".into(), "3".into()])
+            .expect("spawn");
+        let output = agent.wait_exec(&proc.process_id).expect("wait");
+        assert!(output.stdout.contains('1'));
+        let events = events.lock();
+        assert!(events.iter().any(|event| matches!(
+            event,
+            Event::ProcessStart { program, .. } if program == "seq"
+        )));
+        assert!(events.iter().any(|event| matches!(
+            event,
+            Event::ProcessEnd {
+                exit_code: Some(0),
+                ..
+            }
+        )));
     }
 
     #[cfg(feature = "providers")]
