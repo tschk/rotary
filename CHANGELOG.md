@@ -42,6 +42,11 @@
 ## Unreleased
 
 ### Added
+- Durable session `projection` ledger so semantic compaction survives the next provider request.
+- Typed `Event::Recovery` for empty-turn Prefill/Nudge and stuck-tool recovery.
+- Unified `exec` tool (`spawn` / `stdin` / `wait` / `kill`) with drained pipes and `ProcessStart` / `ProcessEnd`.
+- Typed tool-spill notice (`Event::ToolSpill`, `SpillStatus`) and fail-closed bounded previews.
+- Cassette replay emits recorded `tool_calls`; `enable_cassette_replay` simulates them.
 - Projection compaction: `PrefixShape`, prune-then-fold, verbatim Raven JSONL archive.
 - Session-log provider request reconstruction; live message mutation does not change replay.
 - Sandbox-deny escalate retry with layered SBPL (`.git` re-RO) and `Event::RetryReason`.

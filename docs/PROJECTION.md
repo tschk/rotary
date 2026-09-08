@@ -18,10 +18,16 @@ Provider requests rebuild from the session log (`Session::serialize_provider_req
 / `replay_provider_request`). Mutating a live `Vec<Message>` does not change a
 request reconstructed from `session.jsonl`.
 
+Semantic and automatic compaction persist an append-only `projection` event
+(`summary` + `archived_ids`). Replay applies that ledger so the next provider
+request still includes the summary. Repeated `compact()` does not re-archive
+the same dropped turns.
+
 ## Empty-turn recovery
 
 `recover_empty_turn` / `recover_stuck_tool` classify `Prefill`, `Nudge`,
-`Retry`, or `Halt`. The engine records; the host decides whether to continue.
+`Retry`, or `Halt`. The engine emits `Event::Recovery` (`action` + `reason`);
+the host decides whether to continue.
 
 ## Sandbox escalate
 
@@ -32,7 +38,9 @@ userspace → nested FS (seatbelt/bwrap) → `.git` remounted read-only.
 ## Tool spill
 
 Oversized tool bodies are written to `.rx4/spill/`. The model sees a preview
-plus a locator.
+plus a locator. Previews truncate on a UTF-8 character boundary. If the spill
+write fails, the model still receives a bounded preview and hosts get a typed
+`SpillStatus::SpillFailed` notice (`Event::ToolSpill` / `ToolResult.spill`).
 
 ## complete_subtask
 
@@ -48,12 +56,16 @@ When the `mcp` feature is on, the prefix exposes `tool_search` and
 
 ## Trajectory cassette
 
-`ReplayProvider` replays recorded turns without executing real tools.
-`detect_divergence` reports the first mismatched message.
+`ReplayProvider` replays recorded turns, including `CassetteTurn.tool_calls`.
+`detect_divergence` / `detect_tool_divergence` report the first mismatch.
+`Agent::enable_cassette_replay` simulates recorded tools instead of executing
+them.
 
 ## Other host capabilities
 
-- Unified exec sessions emit `ProcessStdin` (`process_id` + bytes).
+- Unified exec sessions drain stdout/stderr, expose the `exec` tool
+  (`spawn` / `stdin` / `wait` / `kill`), and emit `ProcessStart` /
+  `ProcessStdin` / `ProcessEnd`.
 - `GuardianAuthorizer` is fail-closed; hosts install the review callback.
 - `apply_patch` is an optional bulk tool. Hashline remains the editor.
 - Plan accept wipes `<planning>` / `[planning]` / `PLAN:` tokens.

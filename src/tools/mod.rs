@@ -233,6 +233,13 @@ pub fn register_builtin_tools(registry: &ToolRegistry) {
             extended::exec_lsp_references,
             ToolEffect::Read,
         ),
+        (
+            "exec",
+            "Unified process control. Actions: spawn, stdin, wait, kill. stdout/stderr are drained.",
+            r#"{"type":"object","properties":{"action":{"type":"string","enum":["spawn","stdin","wait","kill"]},"program":{"type":"string"},"args":{"type":"array","items":{"type":"string"}},"process_id":{"type":"string"},"data":{"type":"string"}},"required":["action"]}"#,
+            exec::exec_tool,
+            ToolEffect::Process,
+        ),
     ];
 
     for (name, desc, params, exec, effect) in tools {
@@ -425,6 +432,7 @@ mod tests {
             "lsp_diagnostics",
             "lsp_definition",
             "lsp_references",
+            "exec",
         ];
 
         assert_eq!(registry.count(), expected_tools.len());

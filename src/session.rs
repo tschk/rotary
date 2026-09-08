@@ -1,9 +1,11 @@
 //! Session: conversation tree with fork/merge/persist (JSONL).
 
 use crate::agent::ToolCall;
+use crate::compaction::ProjectionStep;
 use crate::provider::{Message, Role};
 use crate::todo::TodoState;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::io::Read;
 use std::path::PathBuf;
 
@@ -60,6 +62,16 @@ pub struct Entry {
     pub tool_calls: Vec<ToolCall>,
 }
 
+/// Append-only projection applied when reconstructing a provider request.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionProjection {
+    /// Exact system note inserted after the live system prefix.
+    pub summary: String,
+    pub archived_ids: Vec<u64>,
+    #[serde(default)]
+    pub step: ProjectionStep,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Session {
     pub id: String,
@@ -68,6 +80,9 @@ pub struct Session {
     /// Host-visible todo state persisted with the session.
     #[serde(default)]
     pub todos: TodoState,
+    /// Durable prune/fold ledger. The entry log stays append-only.
+    #[serde(default)]
+    pub projections: Vec<SessionProjection>,
     next_id: u64,
 }
 
@@ -78,6 +93,7 @@ impl Session {
             name: name.into(),
             entries: Vec::new(),
             todos: TodoState::default(),
+            projections: Vec::new(),
             next_id: 1,
         }
     }
@@ -113,11 +129,13 @@ impl Session {
 
     pub fn clear(&mut self) {
         self.entries.clear();
+        self.projections.clear();
         self.next_id = 1;
     }
 
     pub fn replace_messages(&mut self, messages: &[Message]) {
         self.entries.clear();
+        self.projections.clear();
         self.next_id = 1;
         for message in messages {
             self.append_message(message);
@@ -147,8 +165,92 @@ impl Session {
                 break;
             }
         }
+        forked.projections = self
+            .projections
+            .iter()
+            .map(|projection| SessionProjection {
+                summary: projection.summary.clone(),
+                archived_ids: projection
+                    .archived_ids
+                    .iter()
+                    .copied()
+                    .filter(|id| forked.entries.iter().any(|entry| entry.id == *id))
+                    .collect(),
+                step: projection.step,
+            })
+            .filter(|projection| {
+                !projection.archived_ids.is_empty() || !projection.summary.is_empty()
+            })
+            .collect();
         forked.next_id = self.next_id;
         forked
+    }
+
+    pub fn record_projection(&mut self, projection: SessionProjection) {
+        if projection.archived_ids.is_empty() && projection.summary.is_empty() {
+            return;
+        }
+        self.projections.push(projection);
+    }
+
+    pub fn archived_ids(&self) -> HashSet<u64> {
+        self.projections
+            .iter()
+            .flat_map(|projection| projection.archived_ids.iter().copied())
+            .collect()
+    }
+
+    pub fn live_entries(&self) -> Vec<&Entry> {
+        let archived = self.archived_ids();
+        self.entries
+            .iter()
+            .filter(|entry| !archived.contains(&entry.id))
+            .collect()
+    }
+
+    /// Unarchived messages without synthetic summary notes.
+    pub fn live_messages(&self) -> Vec<Message> {
+        self.live_entries()
+            .into_iter()
+            .map(entry_to_message)
+            .collect()
+    }
+
+    /// Provider reconstruction: drop archived turns and insert persisted summaries.
+    pub fn provider_messages(&self) -> Vec<Message> {
+        let archived = self.archived_ids();
+        let mut out = Vec::new();
+        let mut inserted = false;
+        for entry in &self.entries {
+            if archived.contains(&entry.id) {
+                continue;
+            }
+            if !inserted && entry.role != Role::System {
+                push_projection_summaries(&self.projections, &mut out);
+                inserted = true;
+            }
+            out.push(entry_to_message(entry));
+        }
+        if !inserted {
+            push_projection_summaries(&self.projections, &mut out);
+        }
+        out
+    }
+
+    pub fn ids_matching(&self, dropped: &[Message]) -> Vec<u64> {
+        let mut next = dropped.iter();
+        let mut expected = next.next();
+        let mut ids = Vec::new();
+        for entry in self.live_entries() {
+            let Some(message) = expected else {
+                break;
+            };
+            if entry_matches(entry, message) {
+                ids.push(entry.id);
+                expected = next.next();
+            }
+        }
+        ids
     }
 
     pub fn merge(&mut self, other: &Self) -> usize {
@@ -177,6 +279,18 @@ impl Session {
             &serde_json::json!({"type": "session_todos", "todos": self.todos}).to_string(),
         );
         content.push('\n');
+        for projection in &self.projections {
+            content.push_str(
+                &serde_json::json!({
+                    "type": "projection",
+                    "summary": projection.summary,
+                    "archived_ids": projection.archived_ids,
+                    "step": projection.step,
+                })
+                .to_string(),
+            );
+            content.push('\n');
+        }
         std::fs::write(&path, content)?;
         Ok(path)
     }
@@ -197,6 +311,10 @@ impl Session {
                     if let Ok(todos) = serde_json::from_value(todos.clone()) {
                         session.todos = todos;
                     }
+                }
+            } else if value.get("type").and_then(|value| value.as_str()) == Some("projection") {
+                if let Ok(projection) = serde_json::from_value::<SessionProjection>(value) {
+                    session.record_projection(projection);
                 }
             } else if let Ok(entry) = serde_json::from_value::<Entry>(value) {
                 if entry.id >= session.next_id {
@@ -228,6 +346,18 @@ impl Session {
             &serde_json::json!({"type": "session_todos", "todos": self.todos}).to_string(),
         );
         out.push('\n');
+        for projection in &self.projections {
+            out.push_str(
+                &serde_json::json!({
+                    "type": "projection",
+                    "summary": projection.summary,
+                    "archived_ids": projection.archived_ids,
+                    "step": projection.step,
+                })
+                .to_string(),
+            );
+            out.push('\n');
+        }
         for entry in &self.entries {
             let safe_content = redactor.redact(&entry.content);
             let mut line = serde_json::json!({
@@ -276,6 +406,10 @@ impl Session {
             self.process_session_meta(v);
         } else if ty == "session_todos" {
             self.process_session_todos(v);
+        } else if ty == "projection" {
+            if let Ok(projection) = serde_json::from_value::<SessionProjection>(v.clone()) {
+                self.record_projection(projection);
+            }
         } else if ty == "message" || v.get("role").is_some() {
             self.process_message(v);
         }
@@ -346,15 +480,7 @@ impl Session {
     }
 
     pub fn messages(&self) -> Vec<Message> {
-        self.entries
-            .iter()
-            .map(|e| Message {
-                role: e.role,
-                content: e.content.clone(),
-                tool_call_id: e.tool_call_id.clone(),
-                tool_calls: e.tool_calls.clone(),
-            })
-            .collect()
+        self.entries.iter().map(entry_to_message).collect()
     }
 
     pub fn serialize_provider_request(
@@ -362,7 +488,7 @@ impl Session {
         system: &Option<String>,
         tools: &[serde_json::Value],
     ) -> Vec<u8> {
-        serde_json::to_vec(&(system, tools, self.messages())).unwrap_or_default()
+        serde_json::to_vec(&(system, tools, self.provider_messages())).unwrap_or_default()
     }
 
     pub fn replay_provider_request(
@@ -445,6 +571,13 @@ impl Session {
 
         tx.commit().map_err(|e| e.to_string())?;
 
+        let _ = conn.execute("ALTER TABLE sessions ADD COLUMN projections TEXT", []);
+        let encoded = serde_json::to_string(&self.projections).unwrap_or_else(|_| "[]".into());
+        let _ = conn.execute(
+            "UPDATE sessions SET projections = ?1 WHERE id = ?2",
+            params![encoded, self.id],
+        );
+
         Ok(())
     }
 
@@ -510,7 +643,42 @@ impl Session {
         for row in rows {
             session.entries.push(row.map_err(|e| e.to_string())?);
         }
+        let _ = conn.execute("ALTER TABLE sessions ADD COLUMN projections TEXT", []);
+        if let Ok(Some(raw)) = conn.query_row(
+            "SELECT projections FROM sessions WHERE id = ?1",
+            params![id],
+            |row| row.get::<_, Option<String>>(0),
+        ) {
+            if let Ok(projections) = serde_json::from_str::<Vec<SessionProjection>>(&raw) {
+                session.projections = projections;
+            }
+        }
         Ok(session)
+    }
+}
+
+fn entry_to_message(entry: &Entry) -> Message {
+    Message {
+        role: entry.role,
+        content: entry.content.clone(),
+        tool_call_id: entry.tool_call_id.clone(),
+        tool_calls: entry.tool_calls.clone(),
+    }
+}
+
+fn entry_matches(entry: &Entry, message: &Message) -> bool {
+    entry.role == message.role
+        && entry.content == message.content
+        && entry.tool_call_id == message.tool_call_id
+        && entry.tool_calls == message.tool_calls
+}
+
+fn push_projection_summaries(projections: &[SessionProjection], out: &mut Vec<Message>) {
+    for projection in projections {
+        if projection.summary.is_empty() {
+            continue;
+        }
+        out.push(Message::system(projection.summary.clone()));
     }
 }
 
@@ -850,5 +1018,41 @@ not valid json at all
             serde_json::to_vec(&(&system, &tools, &live)).unwrap(),
             from_replay
         );
+    }
+
+    #[test]
+    fn projection_ledger_survives_jsonl_and_shapes_provider_request() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut session = Session::new("proj", "proj");
+        session.append(Role::System, "sys");
+        let old = session.append(Role::User, "old turn");
+        session.append(Role::User, "recent tail");
+        session.record_projection(SessionProjection {
+            summary: "[context compacted] checkpoint retained".into(),
+            archived_ids: vec![old],
+            step: ProjectionStep::Fold,
+        });
+        let reconstructed = session.provider_messages();
+        assert!(reconstructed
+            .iter()
+            .any(|m| m.content.contains("checkpoint retained")));
+        assert!(reconstructed
+            .iter()
+            .any(|m| m.content.contains("recent tail")));
+        assert!(reconstructed.iter().all(|m| m.content != "old turn"));
+        assert!(
+            session.messages().iter().any(|m| m.content == "old turn"),
+            "append-only log must keep archived turns"
+        );
+        let path = session.save_jsonl(dir.path()).unwrap();
+        let loaded = Session::load_jsonl(&path).unwrap();
+        assert_eq!(loaded.projections.len(), 1);
+        let replayed = Session::replay_provider_request(&path, &None, &[]).unwrap();
+        let expected = session.serialize_provider_request(&None, &[]);
+        assert_eq!(replayed, expected);
+        let replayed_msgs = loaded.provider_messages();
+        assert!(replayed_msgs
+            .iter()
+            .any(|m| m.content.contains("checkpoint retained")));
     }
 }

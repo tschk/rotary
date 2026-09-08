@@ -59,6 +59,9 @@ flowchart TD
 | `MemoryRecalled` | Semantic graph memories selected for this prompt |
 | `BudgetExceeded` | A host-configured budget stopped the loop |
 | `RetryReason` | Sandbox deny escalated one layer (`retry_reason`, `layer`) |
+| `Recovery` | Empty-turn or stuck-tool recovery (`action`, `reason`) |
 | `ProcessStdin` | Bytes written to a unified exec session (`process_id`) |
+| `ProcessStart` / `ProcessEnd` | Unified exec session lifecycle |
+| `ToolSpill` | Oversized tool output was spilled or spill failed |
 | `RequestPermissions` | Engine asks the host to adjudicate extra paths |
 | `PatchHunk` | Streaming apply_patch hunk |

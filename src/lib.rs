@@ -117,7 +117,7 @@ pub mod marketplace;
 pub use agent::{
     is_planning_content, normalize_tool_name, wipe_planning_tokens, Agent, AgentBudget, CacheAudit,
     CacheDivergence, Event, GateResult, MemoryRecall, PatchHunkNotice, PermissionAsk,
-    QualityGateConfig, SemanticEmbedder, SemanticRecallConfig, ToolCall, ToolContext,
+    QualityGateConfig, RecoveryKind, SemanticEmbedder, SemanticRecallConfig, ToolCall, ToolContext,
     ToolDefinition, ToolEffect, ToolErrorKind, ToolExecuteBox, ToolExecuteFn, ToolExecutor,
     ToolFuture, ToolRegistry, ToolResult, TurnEndMetadata,
 };
@@ -144,7 +144,10 @@ pub use background_review::{
     BackgroundReviewConfig, BackgroundReviewer, ReviewResult, ReviewSignal,
 };
 pub use capsule::ContextCapsule;
-pub use cassette::{detect_divergence, CassetteTurn, Divergence, ReplayProvider};
+pub use cassette::{
+    detect_divergence, detect_tool_divergence, simulate_tool, CassetteTurn, Divergence,
+    ReplayProvider,
+};
 pub use compaction::{
     apply_compaction, compact_messages, compact_messages_semantically, project_compact,
     prune_messages, CompactionConfig, CompactionMarker, CompactionResult, PrefixShape,
@@ -227,7 +230,7 @@ pub use sandbox::{
 pub use secrets::{
     filter_env_vars, is_sensitive_env_var, RedactionConfig, Redactor, SecretMatch, SecretPattern,
 };
-pub use session::Session;
+pub use session::{Session, SessionProjection};
 pub use shadow_git::{ShadowGit, ShadowGitError};
 #[cfg(feature = "skills")]
 pub use skill_curator::{CuratorConfig, CuratorSuggestion, SkillCurator, SuggestionKind};
@@ -249,10 +252,12 @@ pub use subtask::{
     SubtaskClaim, SubtaskStatus,
 };
 pub use todo::{TodoConfig, TodoItem, TodoState, TodoStatus};
+pub use tools::exec::{ExecOutput, ExecProcess, ExecRegistry};
 #[cfg(feature = "autoresearch")]
 pub use tools::register_autoresearch_tools;
 #[cfg(feature = "mcp")]
 pub use tools::register_mcp_proxy_tools;
+pub use tools::spill::{SpillNotice, SpillStatus, SpilledResult};
 pub use tools::{
     register_apply_patch_tool, register_builtin_tools, register_complete_subtask_tool,
     register_spawn_agent_tool,
