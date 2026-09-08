@@ -310,7 +310,7 @@ pub fn register_complete_subtask_tool(registry: &ToolRegistry) {
         ToolDefinition::new_boxed(
             "complete_subtask",
             "Host-adjudicated subtask completion. Children cannot mark a parent complete.",
-            r#"{"type":"object","properties":{"actor_id":{"type":"string"},"target_id":{"type":"string"},"claim_id":{"type":"string"},"note":{"type":"string"},"adjudication":{"type":"string"}},"required":["target_id"]}"#,
+            r#"{"type":"object","properties":{"target_id":{"type":"string"},"claim_id":{"type":"string"},"note":{"type":"string"}},"required":["target_id"]}"#,
             Box::new(|ctx, args| Box::pin(async move { execute_complete_subtask(ctx, args) })),
         )
         .with_effect(ToolEffect::Write),
@@ -321,55 +321,19 @@ fn execute_complete_subtask(ctx: Arc<ToolContext>, args: String) -> ToolResult {
     if !ctx.allow_complete_subtask {
         return ToolResult::err("complete_subtask", "child cannot mark parent complete");
     }
-    let Some(tasks) = ctx.subtasks.clone() else {
+    if ctx.subtasks.is_none() {
         return ToolResult::err("complete_subtask", "subtasks are not enabled");
-    };
-    let Some(ledger) = ctx.evidence.clone() else {
-        return ToolResult::err("complete_subtask", "evidence ledger is not enabled");
-    };
-    let target_id = match crate::tools::common::parse_str_field(&args, "target_id") {
-        Some(id) if !id.is_empty() => id,
-        _ => return ToolResult::err("complete_subtask", "target_id required"),
-    };
-    let actor_id = crate::tools::common::parse_str_field(&args, "actor_id")
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| ctx.actor_id.clone());
-    let claim_id = crate::tools::common::parse_str_field(&args, "claim_id")
-        .unwrap_or_else(|| format!("{actor_id}->{target_id}"));
-    let note = crate::tools::common::parse_str_field(&args, "note").unwrap_or_default();
-    let host = match crate::tools::common::parse_str_field(&args, "adjudication")
-        .unwrap_or_else(|| "accept".into())
-        .as_str()
-    {
-        "reject" => crate::subtask::HostAdjudication::Reject,
-        _ => crate::subtask::HostAdjudication::Accept,
-    };
-    let claim = crate::subtask::SubtaskClaim {
-        actor_id,
-        target_id,
-        evidence: crate::subtask::Evidence {
-            claim_id,
-            actor_id: ctx.actor_id.clone(),
-            note,
-        },
-    };
-    let outcome =
-        crate::subtask::claim_complete(&mut tasks.write(), &mut ledger.write(), claim, host);
-    match outcome {
-        crate::subtask::ClaimOutcome::Recorded => ToolResult::ok(
-            "complete_subtask",
-            serde_json::json!({"status": "recorded"}).to_string(),
-        ),
-        crate::subtask::ClaimOutcome::RejectedChildMarkedParent => {
-            ToolResult::err("complete_subtask", "child cannot mark parent complete")
-        }
-        crate::subtask::ClaimOutcome::RejectedHost => {
-            ToolResult::err("complete_subtask", "host rejected the claim")
-        }
-        crate::subtask::ClaimOutcome::RejectedUnknown => {
-            ToolResult::err("complete_subtask", "unknown subtask")
-        }
     }
+    if ctx.evidence.is_none() {
+        return ToolResult::err("complete_subtask", "evidence ledger is not enabled");
+    }
+    if crate::tools::common::parse_str_field(&args, "target_id")
+        .filter(|id| !id.is_empty())
+        .is_none()
+    {
+        return ToolResult::err("complete_subtask", "target_id required");
+    }
+    ToolResult::approval_required("complete_subtask")
 }
 
 #[cfg(feature = "mcp")]
@@ -832,6 +796,91 @@ mod tests {
         let edit = fs::exec_hashline_edit(ctx, args).await;
         assert!(edit.is_error, "{}", edit.content);
         assert!(edit.content.contains("elided"), "{}", edit.content);
+    }
+
+    struct CompleteSubtaskFixture {
+        ctx: Arc<ToolContext>,
+        tasks: Arc<parking_lot::RwLock<Vec<crate::subtask::Subtask>>>,
+        ledger: Arc<parking_lot::RwLock<crate::subtask::EvidenceLedger>>,
+    }
+
+    fn complete_subtask_ctx() -> CompleteSubtaskFixture {
+        let tasks = Arc::new(parking_lot::RwLock::new(vec![
+            crate::subtask::Subtask {
+                id: "parent".into(),
+                parent_id: None,
+                status: crate::subtask::SubtaskStatus::Open,
+            },
+            crate::subtask::Subtask {
+                id: "child".into(),
+                parent_id: Some("parent".into()),
+                status: crate::subtask::SubtaskStatus::Open,
+            },
+        ]));
+        let ledger = Arc::new(parking_lot::RwLock::new(
+            crate::subtask::EvidenceLedger::default(),
+        ));
+        let mut ctx = ToolContext::new(".");
+        ctx.allow_complete_subtask = true;
+        ctx.actor_id = "child".into();
+        ctx.subtasks = Some(Arc::clone(&tasks));
+        ctx.evidence = Some(Arc::clone(&ledger));
+        CompleteSubtaskFixture {
+            ctx: Arc::new(ctx),
+            tasks,
+            ledger,
+        }
+    }
+
+    #[test]
+    fn complete_subtask_schema_omits_model_adjudication() {
+        let registry = ToolRegistry::new();
+        super::register_complete_subtask_tool(&registry);
+        let def = registry
+            .definitions()
+            .into_iter()
+            .find(|d| d["name"] == "complete_subtask")
+            .expect("complete_subtask");
+        let params = def["parameters"].to_string();
+        assert!(!params.contains("actor_id"), "{params}");
+        assert!(!params.contains("adjudication"), "{params}");
+        assert!(params.contains("target_id"), "{params}");
+    }
+
+    #[test]
+    fn complete_subtask_tool_cannot_self_approve_via_spoofed_fields() {
+        let fixture = complete_subtask_ctx();
+        let result = super::execute_complete_subtask(
+            fixture.ctx,
+            r#"{"actor_id":"parent","target_id":"parent","adjudication":"accept","note":"spoof"}"#
+                .into(),
+        );
+        assert!(result.requires_approval(), "{}", result.content);
+        assert!(result.is_error);
+        assert_eq!(
+            fixture.tasks.read()[0].status,
+            crate::subtask::SubtaskStatus::Open
+        );
+        assert_eq!(
+            fixture.tasks.read()[1].status,
+            crate::subtask::SubtaskStatus::Open
+        );
+        assert!(fixture.ledger.read().entries.is_empty());
+    }
+
+    #[test]
+    fn complete_subtask_tool_cannot_complete_child_by_spoofing_parent() {
+        let fixture = complete_subtask_ctx();
+        let result = super::execute_complete_subtask(
+            fixture.ctx,
+            r#"{"actor_id":"parent","target_id":"child","adjudication":"accept"}"#.into(),
+        );
+        assert!(result.requires_approval(), "{}", result.content);
+        assert_eq!(
+            fixture.tasks.read()[1].status,
+            crate::subtask::SubtaskStatus::Open
+        );
+        assert!(fixture.ledger.read().entries.is_empty());
     }
 
     #[tokio::test]

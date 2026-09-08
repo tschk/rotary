@@ -36,8 +36,10 @@ plus a locator.
 
 ## complete_subtask
 
-Claims only go down the task tree. The host adjudicates; the engine records an
-evidence ledger. Complements AVO scoring. A child cannot mark a parent complete.
+Claims only go down the task tree. The model-facing tool is fail-closed
+(`ApprovalRequired`) and does not accept `actor_id` or `adjudication`. The host
+adjudicates via `Agent::complete_subtask`; the engine records an evidence
+ledger. Complements AVO scoring. A child cannot mark a parent complete.
 
 ## Stable MCP surface
 
