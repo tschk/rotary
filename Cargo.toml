@@ -92,6 +92,10 @@ sha2 = "0.10"
 # IPC token compare. Marketplace does not use this crate.
 subtle = { version = "2.6.1", optional = true }
 
+[[example]]
+name = "provider_agent"
+required-features = ["providers"]
+
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }
 tokio-test = "0.4"

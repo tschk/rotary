@@ -28,7 +28,7 @@ Tool gate shape (pi `beforeToolCall`):
 - Rust 2021 (MSRV 1.88), `#![forbid(unsafe_code)]`
 - tokio (async runtime, feature-gated)
 - serde / serde_json
-- praefectus 0.4.1 (crates.io, computer-use, feature-gated)
+- praefectus 0.8.0 (crates.io, computer-use, feature-gated)
 - reqwest (providers, feature-gated)
 - MPL-2.0
 
@@ -102,7 +102,7 @@ graph LR
 |---|---|
 | `agent.rs` | event-driven loop, tool registry, streaming, JoinSet parallel tool batches |
 | `provider.rs` | multi-provider OpenAI-compatible client, HTTP connection prewarm |
-| `tools.rs` | built-in FS/shell/find tools (7) |
+| `tools.rs` | built-in tool loadout (file, shell, search, web, todo, subagent, plan-mode, LSP) |
 | `session.rs` | session tree (fork/merge) + JSONL persistence |
 | `permissions.rs` | policy pattern, allow/deny, host approver |
 | `hooks.rs` | lifecycle hooks |
@@ -237,6 +237,8 @@ graph TD
 | `sqlite-sessions` | no | SQLite session persistence |
 | `skills` | no | skill engine, skill curator, background review, embeddings (serde_yaml + dirs) |
 | `graph-memory` | no | graph memory (pagerank, community detection), dream scheduler |
+| `zkr-memory` | no | zkr-backed memory |
+| `personality` | no | personality layer (implies `zkr-memory`) |
 | `autoresearch` | no | AutoresearchSession + AutoresearchController |
 | `routing` | no | ModelRouter + SmartRouter |
 | `extract` | no | extract + ranking |
