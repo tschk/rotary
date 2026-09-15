@@ -64,7 +64,10 @@ class TkHarborAgent(BaseAgent):
         result = await environment.exec(
             cmd,
             cwd="/app",
-            env={"ZAI_API_KEY": key},
+            env={
+                "ZAI_API_KEY": key,
+                "TK_MAX_TURNS": os.environ.get("TK_MAX_TURNS", "250"),
+            },
             timeout_sec=int(os.environ.get("BENCH_AGENT_TIMEOUT", "1800")),
         )
         log = self.logs_dir / "tk-harbor.log"
