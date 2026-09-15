@@ -754,6 +754,7 @@ fn emit_subagent_event(subscribers: &[SubagentSubscriber], event: SubagentEvent)
 
 fn git_output(cwd: &Path, args: &[&str]) -> Result<String, SubagentError> {
     let output = Command::new("git")
+        .args(["-c", "commit.gpgsign=false"])
         .args(args)
         .current_dir(cwd)
         .output()

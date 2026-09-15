@@ -32,7 +32,7 @@ impl ShadowGit {
         }
         if !git_dir.join("HEAD").exists() {
             let out = Command::new("git")
-                .args(["init", "--bare"])
+                .args(["-c", "commit.gpgsign=false", "init", "--bare"])
                 .arg(&git_dir)
                 .output()
                 .map_err(|e| ShadowGitError(e.to_string()))?;
@@ -49,11 +49,11 @@ impl ShadowGit {
         }
         run(&self.workspace, &self.git_dir, &["add", "-A"])?;
         let msg = format!("rx4 shadow turn {turn_id}");
-        let _ = run(
+        run(
             &self.workspace,
             &self.git_dir,
             &["commit", "--allow-empty", "-m", &msg],
-        );
+        )?;
         run(&self.workspace, &self.git_dir, &["rev-parse", "HEAD"])
     }
 
@@ -74,6 +74,7 @@ fn run(workspace: &Path, git_dir: &Path, args: &[&str]) -> Result<String, Shadow
         .env("GIT_AUTHOR_EMAIL", "rx4@local")
         .env("GIT_COMMITTER_NAME", "rx4")
         .env("GIT_COMMITTER_EMAIL", "rx4@local")
+        .args(["-c", "commit.gpgsign=false"])
         .args(args)
         .current_dir(workspace)
         .output()
