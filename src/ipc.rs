@@ -161,20 +161,9 @@ impl IpcServer {
         let params = req.get("params").cloned().unwrap_or(Value::Null);
 
         let provided = params.get("token").and_then(|t| t.as_str()).unwrap_or("");
-        let mutating = matches!(
-            method,
-            "prompt"
-                | "set_scope"
-                | "set_policy"
-                | "set_approver"
-                | "clear_authorizer"
-                | "set_model"
-                | "cancel"
-                | "reset"
-                | "load_session"
-                | "save_session"
-                | "session_clear"
-        );
+        // Any method other than ping can leak session/policy state or mutate
+        // the agent. Require a token whenever one is configured, and always
+        // refuse non-ping methods when RX4_IPC_TOKEN is unset.
         if method != "ping" {
             match required_token_hash {
                 Some(token_hash) => {
@@ -187,14 +176,13 @@ impl IpcServer {
                         return error_response(id, -32000, "invalid or missing token");
                     }
                 }
-                None if mutating => {
+                None => {
                     return error_response(
                         id,
                         -32000,
-                        "RX4_IPC_TOKEN required for mutating IPC methods",
+                        "RX4_IPC_TOKEN required for non-ping IPC methods",
                     );
                 }
-                _ => {}
             }
         }
 
@@ -437,15 +425,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn mutating_requests_require_a_token_when_unconfigured() {
+    async fn non_ping_requests_require_a_token_when_unconfigured() {
         let server = IpcServer::new("/tmp/test_ipc_auth_socket");
-        let response = server
-            .handle_request_with_token(
-                r#"{"jsonrpc":"2.0","id":1,"method":"set_model","params":{"model":"unsafe"}}"#,
-                None,
-            )
-            .await;
-        assert!(response.contains("RX4_IPC_TOKEN required"), "{response}");
+        for method in ["set_model", "state", "messages", "get_policy", "tools"] {
+            let line = format!(r#"{{"jsonrpc":"2.0","id":1,"method":"{method}","params":{{}}}}"#);
+            let response = server.handle_request_with_token(&line, None).await;
+            assert!(
+                response.contains("RX4_IPC_TOKEN required"),
+                "{method}: {response}"
+            );
+        }
 
         let ping = server
             .handle_request_with_token(
