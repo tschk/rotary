@@ -740,12 +740,25 @@ impl ProviderError {
     pub fn is_transient(&self) -> bool {
         match self {
             Self::Http(_) => true,
-            Self::Api(message) => matches!(
-                message.split_whitespace().next(),
-                Some("408" | "409" | "429" | "500" | "502" | "503" | "504")
-            ),
+            Self::Api(message) => {
+                let first = message.split_whitespace().next();
+                matches!(
+                    first,
+                    Some("408" | "409" | "429" | "500" | "502" | "503" | "504")
+                ) || Self::message_looks_transient(message)
+            }
             Self::Stream(_) => true,
         }
+    }
+
+    fn message_looks_transient(message: &str) -> bool {
+        let lower = message.to_ascii_lowercase();
+        lower.contains("error decoding response body")
+            || lower.contains("stream read failed")
+            || lower.contains("connection reset")
+            || lower.contains("unexpected eof")
+            || lower.contains("timed out")
+            || lower.contains("error sending request")
     }
 }
 
@@ -761,6 +774,10 @@ mod tests {
         assert!(ProviderError::Http("reset".into()).is_transient());
         assert!(ProviderError::Api("429 busy".into()).is_transient());
         assert!(ProviderError::Api("503 unavailable".into()).is_transient());
+        assert!(
+            ProviderError::Api("chat stream read failed: error decoding response body".into())
+                .is_transient()
+        );
         assert!(!ProviderError::Api("401 unauthorized".into()).is_transient());
     }
 

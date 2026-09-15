@@ -1412,7 +1412,7 @@ impl Agent {
                     self.model_registry
                         .supports_reasoning_effort_for(provider.id(), &self.model)
                 });
-                let stream = loop {
+                'stream_attempt: loop {
                     let result = ctx
                         .cancellation
                         .run(provider.stream(
@@ -1424,8 +1424,8 @@ impl Agent {
                         ))
                         .await
                         .map_err(|_| AgentError::Cancelled)?;
-                    match result {
-                        Ok(stream) => break stream,
+                    let mut stream = match result {
+                        Ok(stream) => stream,
                         Err(e) if e.is_transient() && attempts < 2 => {
                             attempts += 1;
                             ctx.cancellation
@@ -1434,49 +1434,66 @@ impl Agent {
                                 )))
                                 .await
                                 .map_err(|_| AgentError::Cancelled)?;
+                            continue;
                         }
                         Err(e) => {
                             error!("provider stream error: {e}");
                             self.emit(Event::Error(e.to_string()));
                             return Err(AgentError::Provider(e.to_string()));
                         }
-                    }
-                };
-
-                let mut stream = stream;
-                loop {
-                    let next = ctx
-                        .cancellation
-                        .run(stream.next())
-                        .await
-                        .map_err(|_| AgentError::Cancelled)?;
-                    let Some(event_result) = next else {
-                        break;
                     };
-                    match event_result {
-                        Ok(StreamEvent::Delta(delta)) => {
-                            assistant_content.push_str(&delta);
-                            // Deltas are emitted after the complete assistant
-                            // response is redacted below. This prevents a
-                            // credential split across provider chunks from
-                            // leaking through the streaming event path.
-                        }
-                        Ok(StreamEvent::ToolCall(call)) => {
-                            tool_calls.push(call.clone());
-                            self.emit(Event::ToolSource {
-                                tool: call.name.clone(),
-                                source: tool_source(&call.name),
-                            });
-                            self.emit(Event::ToolCall(redact_tool_call(&call)));
-                        }
-                        Ok(StreamEvent::Usage(usage)) => {
-                            provider_usage = Some(usage);
-                        }
-                        Ok(StreamEvent::Done) => break,
-                        Err(e) => {
-                            error!("stream error: {e}");
-                            self.emit(Event::Error(e.to_string()));
-                            return Err(AgentError::Provider(e.to_string()));
+
+                    loop {
+                        let next = ctx
+                            .cancellation
+                            .run(stream.next())
+                            .await
+                            .map_err(|_| AgentError::Cancelled)?;
+                        let Some(event_result) = next else {
+                            break 'stream_attempt;
+                        };
+                        match event_result {
+                            Ok(StreamEvent::Delta(delta)) => {
+                                assistant_content.push_str(&delta);
+                                // Deltas are emitted after the complete assistant
+                                // response is redacted below. This prevents a
+                                // credential split across provider chunks from
+                                // leaking through the streaming event path.
+                            }
+                            Ok(StreamEvent::ToolCall(call)) => {
+                                tool_calls.push(call.clone());
+                                self.emit(Event::ToolSource {
+                                    tool: call.name.clone(),
+                                    source: tool_source(&call.name),
+                                });
+                                self.emit(Event::ToolCall(redact_tool_call(&call)));
+                            }
+                            Ok(StreamEvent::Usage(usage)) => {
+                                provider_usage = Some(usage);
+                            }
+                            Ok(StreamEvent::Done) => break 'stream_attempt,
+                            Err(e) => {
+                                error!("stream error: {e}");
+                                self.emit(Event::Error(e.to_string()));
+                                // Keep tool calls already received. GLM Coding
+                                // Plan often closes the SSE body after the
+                                // tool_calls chunk (`error decoding response body`).
+                                if !tool_calls.is_empty() {
+                                    break 'stream_attempt;
+                                }
+                                if e.is_transient() && attempts < 2 {
+                                    attempts += 1;
+                                    assistant_content.clear();
+                                    ctx.cancellation
+                                        .run(tokio::time::sleep(std::time::Duration::from_millis(
+                                            250 * (1 << attempts),
+                                        )))
+                                        .await
+                                        .map_err(|_| AgentError::Cancelled)?;
+                                    continue 'stream_attempt;
+                                }
+                                return Err(AgentError::Provider(e.to_string()));
+                            }
                         }
                     }
                 }
