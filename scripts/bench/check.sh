@@ -23,12 +23,16 @@ assert "models" in cfg and len(cfg["models"]) >= 2
 ids = {m["id"] for m in cfg["models"]}
 assert "gpt-5.6-sol" in ids
 assert "deepseek-v4-flash" in ids
+assert "glm-5.3-flash" in ids
 for m in cfg["models"]:
     assert m.get("effort")
     if m["id"] in ("gpt-5.6-sol", "gpt-5.6-terra"):
         assert "codex" in m and "pi" in m and "tk" in m and "omp" in m and "fx" in m
     if m["id"] == "deepseek-v4-flash":
         assert "opencode" in m and m["opencode"].get("model")
+    if m["id"] == "glm-5.3-flash":
+        assert m["tk"]["model"] == "glm-5.3-flash"
+        assert m["tk"]["provider"] == "zai"
 assert "omp" in cfg.get("harnesses", []) and "fx" in cfg.get("harnesses", [])
 assert "opencode" in cfg.get("harnesses", [])
 print("ok models.json", sorted(ids))

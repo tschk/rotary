@@ -354,7 +354,10 @@ run_thin_cell() {
       ;;
     tk)
       model=$(json_get "$mid" "['tk']['model']")
-      BENCH_MODEL="$model" BENCH_EFFORT="$effort" \
+      prov=$(python3 -c "import json; cfg=json.load(open(r'''$MODELS_JSON'''));
+m=next(x for x in cfg['models'] if x['id']=='''$mid''')
+print(m.get('tk',{}).get('provider',''))" )
+      BENCH_MODEL="$model" BENCH_EFFORT="$effort" BENCH_PROVIDER="$prov" \
         "$ADAPTERS/tk.sh" "$dest" "$dest/.bench_prompt.md" >"$log" 2>&1
       rc=$?
       ;;

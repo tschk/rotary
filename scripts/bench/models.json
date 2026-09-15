@@ -17,7 +17,8 @@
     "tk_effort": "tk exec --effort is passed through when present; current telekinesis-rx4-consume tk exec only documents --model (no --effort yet).",
     "fx": "fx (vercel-labs/fx) non-interactive: fx ask --yolo --no-save; stdin /dev/null. Model via --model if advertised else FX_MODEL. Effort via --effort/--thinking if advertised. Unauthenticated (no fx login / setup / AI_GATEWAY_API_KEY) fail closed.",
     "omp": "omp v18 non-interactive: -p --print --cwd TASK --no-session --provider openai-codex --model openai-codex/<id> --thinking <effort>; stdin /dev/null. Bare gpt-5.6-sol fuzzy-matches cursor first (no CURSOR_ACCESS_TOKEN).",
-    "opencode": "opencode non-interactive: opencode run --auto --dir TASK -m <id>; stdin /dev/null. Auth via ~/.local/share/opencode/auth.json (adapter never prints keys). deepseek-v4-flash uses cline-pass/cline-pass/deepseek-v4-flash."
+    "opencode": "opencode non-interactive: opencode run --auto --dir TASK -m <id>; stdin /dev/null. Auth via ~/.local/share/opencode/auth.json (adapter never prints keys). deepseek-v4-flash uses cline-pass/cline-pass/deepseek-v4-flash.",
+    "zai": "glm-5.3-flash only via Z.ai Coding Plan (https://api.z.ai/api/coding/paas/v4). Do not use glm-5.3 for this loop. OpenCode Go is not a bench harness here."
   },
   "models": [
     {
@@ -77,6 +78,15 @@
       "effort": "low",
       "opencode": {
         "model": "cline-pass/cline-pass/deepseek-v4-flash"
+      }
+    },
+    {
+      "id": "glm-5.3-flash",
+      "effort": "low",
+      "tk": {
+        "model": "glm-5.3-flash",
+        "effort": "low",
+        "provider": "zai"
       }
     }
   ]

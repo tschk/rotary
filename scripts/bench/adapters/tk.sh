@@ -14,15 +14,16 @@ Usage:
 Reads the issue prompt from PROMPT_FILE or $TASK_DIR/.bench_prompt.md.
 Writes a git patch or leaves the repo fixed. stdin is /dev/null.
 
-Prefers ~/projects/worktrees/telekinesis-rx4-consume/ui/tui/target/release/tk,
+Prefers $TK_BIN, then $TELEKINESIS_ROOT/ui/tui/target/release/tk,
 then PATH tk.
 
 Env:
-  BENCH_MODEL           model id (default: gpt-5.6-sol)
+  BENCH_MODEL           model id (default: glm-5.3-flash)
+  BENCH_PROVIDER        tk --provider (optional; e.g. zai)
   BENCH_EFFORT          effort (default: low). Passed as --effort when tk exec
-                        advertises that flag; otherwise documented pass-through
-                        only (current tk exec has --model, not --effort).
+                        advertises that flag.
   TK_BIN                tk binary override
+  TELEKINESIS_ROOT      telekinesis checkout (optional)
   BENCH_AGENT_TIMEOUT   seconds (optional)
 H
 }
@@ -38,13 +39,17 @@ fi
 
 TASK_DIR=$(cd "$1" && pwd)
 PROMPT_FILE=${2:-"$TASK_DIR/.bench_prompt.md"}
-MODEL=${BENCH_MODEL:-gpt-5.6-sol}
+MODEL=${BENCH_MODEL:-glm-5.3-flash}
 EFFORT=${BENCH_EFFORT:-low}
+PROVIDER=${BENCH_PROVIDER:-}
 
-PREFERRED="${HOME}/projects/worktrees/telekinesis-rx4-consume/ui/tui/target/release/tk"
+PREFERRED=""
+if [[ -n "${TELEKINESIS_ROOT:-}" ]]; then
+  PREFERRED="${TELEKINESIS_ROOT}/ui/tui/target/release/tk"
+fi
 if [[ -n "${TK_BIN:-}" ]]; then
   TK="$TK_BIN"
-elif [[ -x "$PREFERRED" ]]; then
+elif [[ -n "$PREFERRED" && -x "$PREFERRED" ]]; then
   TK="$PREFERRED"
 else
   TK=$(command -v tk)
@@ -63,6 +68,9 @@ help_text=$("$TK" exec --help 2>&1 || true)
 
 cd "$TASK_DIR"
 cmd=("$TK" exec --cwd "$TASK_DIR" --model "$MODEL")
+if [[ -n "$PROVIDER" ]] && grep -q -- '--provider' <<<"$help_text"; then
+  cmd+=(--provider "$PROVIDER")
+fi
 if grep -q -- '--effort' <<<"$help_text"; then
   cmd+=(--effort "$EFFORT")
 else

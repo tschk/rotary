@@ -54,6 +54,10 @@ print(next(m['pi'].get('provider','openai-codex') for m in cfg['models'] if m['i
     export BENCH_OMP_PROVIDER=${BENCH_OMP_PROVIDER:-$(python3 -c "import json; cfg=json.load(open(r'''$MODELS_JSON'''));
 print(next(m['omp'].get('provider','openai-codex') for m in cfg['models'] if m['id']=='''$MID'''))")}
     ;;
+  tk)
+    export BENCH_PROVIDER=${BENCH_PROVIDER:-$(python3 -c "import json; cfg=json.load(open(r'''$MODELS_JSON'''));
+print(next(m.get('tk',{}).get('provider','') for m in cfg['models'] if m['id']=='''$MID'''))")}
+    ;;
   codex)
     export BENCH_CODEX_CONFIG=${BENCH_CODEX_CONFIG:-$(python3 -c "import json; cfg=json.load(open(r'''$MODELS_JSON'''));
 print(next(m['codex'].get('config','model_reasoning_effort=low') for m in cfg['models'] if m['id']=='''$MID'''))")}
