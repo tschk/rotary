@@ -12,3 +12,4 @@ target/
 references/
 scripts/bench/out/
 scripts/bench/.cache/
+.amp/portals/*
