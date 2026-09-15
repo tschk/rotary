@@ -105,7 +105,7 @@ Live coding-plan smoke (optional, uses `ZAI_API_KEY`, model **glm-5.3-flash**
 only — do not spend the Coding Plan key on glm-5.3 for this loop):
 
 ```bash
-tk exec --provider zai --model glm-5.3-flash "reply with the single word pong"
+TK_BIN=/path/to/tk scripts/bench/harness-live.sh
 ```
 
 ## DeepSWE (faster live score)

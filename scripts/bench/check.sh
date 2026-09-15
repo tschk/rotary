@@ -44,6 +44,11 @@ if [[ -x "$ROOT/harness.sh" ]]; then
 else
   echo "missing $ROOT/harness.sh"; fail=1
 fi
+if [[ -x "$ROOT/harness-live.sh" ]]; then
+  echo "ok harness-live.sh present"
+else
+  echo "missing $ROOT/harness-live.sh"; fail=1
+fi
 
 "$ROOT/deepswe/run.sh" --help >/dev/null
 echo "ok deepswe/run.sh --help"
