@@ -160,7 +160,7 @@ fn build_client(config: &TimeoutConfig) -> reqwest::Client {
         .tcp_keepalive(config.tcp_keepalive)
         .http1_only()
         .build()
-        .unwrap_or_else(|_| reqwest::Client::new())
+        .expect("http client")
 }
 
 /// HTTP client wrapping [`reqwest::Client`] with provider-aware timeouts.

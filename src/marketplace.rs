@@ -76,6 +76,8 @@ impl MarketplaceIndex {
     pub fn fetch(url: &str) -> Result<Self, MarketplaceError> {
         let client = reqwest::blocking::Client::builder()
             .user_agent(concat!("rx4/", env!("CARGO_PKG_VERSION")))
+            .timeout(std::time::Duration::from_secs(30))
+            .redirect(reqwest::redirect::Policy::limited(5))
             .build()
             .map_err(|e| MarketplaceError::Fetch(e.to_string()))?;
         let resp = client

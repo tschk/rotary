@@ -41,6 +41,13 @@
 
 ## Unreleased
 
+### Security
+- `web_fetch` now allows only `http`/`https`, blocks abbreviated/decimal IPv4 loopback, IPv6-mapped addresses, CGNAT, unique-local IPv6, and DNS-resolved private/link-local targets. Redirects to blocked URLs are rejected.
+- The `providers` feature enables `reqwest` rustls TLS (it previously built without a TLS backend).
+- Unauthenticated IPC no longer serves `state` / `messages` / `get_policy` / `tools` when `RX4_IPC_TOKEN` is unset; only `ping` is open.
+- Marketplace index fetch uses a 30s timeout and a bounded redirect policy.
+- CI runs `cargo deny check` against `deny.toml`.
+
 ### Added
 - Durable session `projection` ledger so semantic compaction survives the next provider request.
 - Typed `Event::Recovery` for empty-turn Prefill/Nudge and stuck-tool recovery.

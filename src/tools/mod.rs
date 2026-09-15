@@ -647,7 +647,10 @@ mod tests {
         assert!(
             result.content.contains("providers feature required")
                 || result.content.contains("request failed")
-                || result.content.contains("error")
+                || result.content.contains("dns lookup")
+                || result.content.contains("error"),
+            "{}",
+            result.content
         );
     }
 
