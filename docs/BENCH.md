@@ -87,6 +87,27 @@ pass waits until the current serial run finishes.
 `cells.jsonl`. Existing `patches/<harness>__<model>__<instance>.patch` files are
 recorded as cells and skipped.
 
+## Harness inner loop (no model, seconds)
+
+Fix-and-iterate path. Does not measure GLM. Catches stream/tool/recovery
+regressions that SWE-bench only shows after hours.
+
+```bash
+scripts/bench/harness.sh
+```
+
+Runs `cargo test` for `provider`, `cassette`, `guardrails`, `hashline`,
+`avo`, and `compaction` with `providers` + `builtin-tools`. Includes the
+Z.ai GLM fixture: `usage` bundled with `finish_reason: tool_calls` must
+still emit the tool call.
+
+Live coding-plan smoke (optional, uses `ZAI_API_KEY`, model **glm-5.3-flash**
+only — do not spend the Coding Plan key on glm-5.3 for this loop):
+
+```bash
+tk exec --provider zai --model glm-5.3-flash "reply with the single word pong"
+```
+
 ## DeepSWE (faster live score)
 
 DeepSWE is the live pass@1 while Verified 500 is still running.

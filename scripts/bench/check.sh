@@ -39,6 +39,12 @@ echo "ok run.sh --help"
 "$ROOT/run.sh" --dry-check >/dev/null
 echo "ok run.sh --dry-check"
 
+if [[ -x "$ROOT/harness.sh" ]]; then
+  echo "ok harness.sh present"
+else
+  echo "missing $ROOT/harness.sh"; fail=1
+fi
+
 "$ROOT/deepswe/run.sh" --help >/dev/null
 echo "ok deepswe/run.sh --help"
 if [[ -x "$ROOT/deepswe/thin_task.sh" && -f "$ROOT/deepswe/apply_host_patch.py" && -f "$ROOT/deepswe/sample.py" && -f "$ROOT/deepswe/report.py" ]]; then

@@ -547,18 +547,29 @@ fn parse_sse_events(
         return parse_anthropic_event(json, state);
     }
 
-    // OpenAI-compatible providers send usage in a final stream chunk when
-    // `stream_options.include_usage` is enabled. That chunk commonly has no
-    // choices, so inspect it before looking for a delta.
+    // Collect every event this chunk carries. Z.ai GLM (and some other
+    // OpenAI-compatible coding endpoints) put `usage` on the same terminal
+    // chunk as `finish_reason: "tool_calls"`. Returning early on usage
+    // dropped the tool calls and stalled the agent loop.
+    let mut events = Vec::new();
+
     if let Some(usage) = json.get("usage").and_then(parse_token_usage) {
-        return vec![Ok(StreamEvent::Usage(usage))];
+        events.push(Ok(StreamEvent::Usage(usage)));
+    }
+
+    let has_choices = json
+        .get("choices")
+        .and_then(|choices| choices.as_array())
+        .is_some_and(|choices| !choices.is_empty());
+    if !has_choices {
+        return events;
     }
 
     let delta = &json["choices"][0]["delta"];
 
     if let Some(content) = delta.get("content").and_then(|c| c.as_str()) {
         if !content.is_empty() {
-            return vec![Ok(StreamEvent::Delta(content.to_string()))];
+            events.push(Ok(StreamEvent::Delta(content.to_string())));
         }
     }
 
@@ -592,18 +603,19 @@ fn parse_sse_events(
         .get("finish_reason")
         .and_then(|f| f.as_str());
     if matches!(finish, Some("stop")) {
-        return vec![Ok(StreamEvent::Done)];
+        events.push(Ok(StreamEvent::Done));
     }
     if matches!(finish, Some("tool_calls")) {
-        return state
-            .tool_calls
-            .split_off(&0)
-            .into_values()
-            .map(|call| Ok(StreamEvent::ToolCall(call)))
-            .collect();
+        events.extend(
+            state
+                .tool_calls
+                .split_off(&0)
+                .into_values()
+                .map(|call| Ok(StreamEvent::ToolCall(call))),
+        );
     }
 
-    Vec::new()
+    events
 }
 
 #[cfg(feature = "providers")]
@@ -849,6 +861,82 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[cfg(feature = "providers")]
+    #[test]
+    fn usage_bundled_with_tool_calls_finish_still_emits_tools() {
+        // Z.ai GLM Coding Plan attaches `usage` to the same terminal chunk as
+        // `finish_reason: "tool_calls"`. The loop must see the tool calls.
+        let mut state = StreamState::default();
+        assert!(parse_sse_events(
+            &serde_json::json!({
+                "choices":[{
+                    "delta":{
+                        "tool_calls":[{
+                            "index":0,
+                            "id":"c1",
+                            "function":{"name":"ls","arguments":"{}"}
+                        }]
+                    }
+                }]
+            }),
+            "openai",
+            &mut state,
+        )
+        .is_empty());
+
+        let events = parse_sse_events(
+            &serde_json::json!({
+                "choices":[{
+                    "delta":{"role":"assistant","content":""},
+                    "finish_reason":"tool_calls"
+                }],
+                "usage":{"prompt_tokens":10,"completion_tokens":2}
+            }),
+            "openai",
+            &mut state,
+        );
+        let kinds: Vec<_> = events.into_iter().map(|event| event.expect("ok")).collect();
+        assert!(
+            kinds
+                .iter()
+                .any(|event| matches!(event, StreamEvent::Usage(_))),
+            "usage must still be forwarded"
+        );
+        let StreamEvent::ToolCall(call) = kinds
+            .iter()
+            .find(|event| matches!(event, StreamEvent::ToolCall(_)))
+            .expect("tool call must survive the usage-bearing chunk")
+        else {
+            unreachable!();
+        };
+        assert_eq!(call.id, "c1");
+        assert_eq!(call.name, "ls");
+        assert_eq!(call.arguments, "{}");
+    }
+
+    #[cfg(feature = "providers")]
+    #[test]
+    fn usage_on_stop_chunk_still_emits_done() {
+        let mut state = StreamState::default();
+        let events = parse_sse_events(
+            &serde_json::json!({
+                "choices":[{"delta":{"content":"pong"},"finish_reason":"stop"}],
+                "usage":{"prompt_tokens":3,"completion_tokens":1}
+            }),
+            "openai",
+            &mut state,
+        );
+        let kinds: Vec<_> = events.into_iter().map(|event| event.expect("ok")).collect();
+        assert!(kinds.iter().any(|event| matches!(
+            event,
+            StreamEvent::Delta(text) if text == "pong"
+        )));
+        assert!(kinds
+            .iter()
+            .any(|event| matches!(event, StreamEvent::Usage(_))));
+        assert!(kinds.iter().any(|event| matches!(event, StreamEvent::Done)));
     }
 
     #[cfg(feature = "providers")]
