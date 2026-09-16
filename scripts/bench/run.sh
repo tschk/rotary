@@ -95,6 +95,9 @@ SEED=${SEED:-$DEFAULT_SEED}
 DATE=$(date +%Y-%m-%d)
 OUT=${OUT:-"$ROOT/out/$DATE"}
 mkdir -p "$OUT" "$CACHE_DIR"
+# Match Z.ai Flash protocol (6h). Inherited 1800s from older jobs starves SWE.
+export BENCH_AGENT_TIMEOUT=${BENCH_AGENT_TIMEOUT:-21600}
+export TK_MAX_TURNS=${TK_MAX_TURNS:-400}
 JOBS_DIR=${JOBS_DIR:-"$OUT/jobs"}
 CELLS="$OUT/cells.jsonl"
 SAMPLE_JSONL="$OUT/sample.jsonl"
@@ -252,10 +255,19 @@ collect_patch() {
     rm -f "$dest/$helper"
     git -C "$dest" rm -f --ignore-unmatch --quiet "$helper" >/dev/null 2>&1 || true
   done
+  rm -rf "$dest/.rx4" >/dev/null 2>&1 || true
   git -C "$dest" add -A >/dev/null 2>&1 || true
-  git -C "$dest" diff --binary "$base" -- . ":(exclude).bench_prompt.md" > "$patch_out" || true
+  git -C "$dest" diff --binary "$base" -- . \
+    ":(exclude).bench_prompt.md" \
+    ":(exclude).rx4" \
+    ":(exclude).rx4/**" \
+    > "$patch_out" || true
   if [ ! -s "$patch_out" ]; then
-    git -C "$dest" diff --binary --cached "$base" -- . ":(exclude).bench_prompt.md" > "$patch_out" || true
+    git -C "$dest" diff --binary --cached "$base" -- . \
+      ":(exclude).bench_prompt.md" \
+      ":(exclude).rx4" \
+      ":(exclude).rx4/**" \
+      > "$patch_out" || true
   fi
 }
 

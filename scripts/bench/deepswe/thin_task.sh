@@ -44,7 +44,7 @@ export BENCH_MODEL=${BENCH_MODEL:-$(python3 -c "import json; cfg=json.load(open(
 print(next(m['$HARNESS']['model'] for m in cfg['models'] if m['id']=='''$MID'''))")}
 export BENCH_EFFORT=${BENCH_EFFORT:-$(python3 -c "import json; cfg=json.load(open(r'''$MODELS_JSON'''));
 print(next(m['effort'] for m in cfg['models'] if m['id']=='''$MID'''))")}
-export BENCH_AGENT_TIMEOUT=${BENCH_AGENT_TIMEOUT:-1800}
+export BENCH_AGENT_TIMEOUT=${BENCH_AGENT_TIMEOUT:-21600}
 case "$HARNESS" in
   pi)
     export BENCH_PI_PROVIDER=${BENCH_PI_PROVIDER:-$(python3 -c "import json; cfg=json.load(open(r'''$MODELS_JSON'''));
@@ -69,11 +69,20 @@ rc=$?
 set -e
 rm -f "$WS/.bench_prompt.md"
 git -C "$WS" rm -f --ignore-unmatch --quiet .bench_prompt.md >/dev/null 2>&1 || true
+rm -rf "$WS/.rx4" >/dev/null 2>&1 || true
 base=$(git -C "$WS" rev-parse HEAD)
 git -C "$WS" add -A >/dev/null 2>&1 || true
-git -C "$WS" diff --binary "$base" -- . ":(exclude).bench_prompt.md" > "$OUT_PATCH" || true
+git -C "$WS" diff --binary "$base" -- . \
+  ":(exclude).bench_prompt.md" \
+  ":(exclude).rx4" \
+  ":(exclude).rx4/**" \
+  > "$OUT_PATCH" || true
 if [ ! -s "$OUT_PATCH" ]; then
-  git -C "$WS" diff --binary --cached "$base" -- . ":(exclude).bench_prompt.md" > "$OUT_PATCH" || true
+  git -C "$WS" diff --binary --cached "$base" -- . \
+    ":(exclude).bench_prompt.md" \
+    ":(exclude).rx4" \
+    ":(exclude).rx4/**" \
+    > "$OUT_PATCH" || true
 fi
 echo "thin $HARNESS $(basename "$TASK") rc=$rc patch_bytes=$(wc -c < "$OUT_PATCH" | tr -d ' ')"
 echo "$rc" > "${OUT_PATCH}.rc"

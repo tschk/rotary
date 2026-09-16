@@ -124,7 +124,8 @@ print(next(m$1 for m in cfg['models'] if m['id']==mid))"
 EFFORT=$(json_get "['effort']")
 export BENCH_MODEL_ID="$MID"
 export BENCH_EFFORT="$EFFORT"
-export BENCH_AGENT_TIMEOUT=${BENCH_AGENT_TIMEOUT:-1800}
+export BENCH_AGENT_TIMEOUT=${BENCH_AGENT_TIMEOUT:-21600}
+export TK_MAX_TURNS=${TK_MAX_TURNS:-400}
 
 cell_exists() {
   python3 -c "

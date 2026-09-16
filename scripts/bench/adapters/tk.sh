@@ -82,7 +82,7 @@ run() {
   "${cmd[@]}" </dev/null
 }
 
-TIMEOUT_SECS=${BENCH_AGENT_TIMEOUT:-1800}
+TIMEOUT_SECS=${BENCH_AGENT_TIMEOUT:-21600}
 if command -v gtimeout >/dev/null 2>&1; then
   gtimeout --signal=TERM "$TIMEOUT_SECS" "${cmd[@]}" </dev/null
 elif command -v timeout >/dev/null 2>&1; then
