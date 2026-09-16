@@ -4,10 +4,12 @@ use crate::mode::Scope;
 use crate::subagent::SubagentManager;
 use dashmap::DashMap;
 use parking_lot::Mutex;
+#[cfg(any(test, feature = "providers"))]
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, ToSocketAddrs};
 use std::sync::{Arc, OnceLock};
 
 /// Parsed `web_fetch` target (scheme already checked).
+#[cfg(any(test, feature = "providers"))]
 struct FetchTarget {
     host: String,
     port: u16,
@@ -16,11 +18,13 @@ struct FetchTarget {
 /// Validate a URL for web_fetch: only http(s), reject loopback / private /
 /// link-local / metadata hosts. Does not perform DNS; see
 /// [`validate_fetch_destination`].
+#[cfg(any(test, feature = "providers"))]
 fn validate_fetch_url(url: &str) -> Result<(), String> {
     let target = parse_fetch_target(url)?;
     host_is_blocked(&target.host)
 }
 
+#[cfg(any(test, feature = "providers"))]
 fn parse_fetch_target(url: &str) -> Result<FetchTarget, String> {
     let url = url.trim();
     let Some(scheme_end) = url.find("://") else {
@@ -75,11 +79,13 @@ fn parse_fetch_target(url: &str) -> Result<FetchTarget, String> {
     })
 }
 
+#[cfg(any(test, feature = "providers"))]
 fn parse_port(raw: &str) -> Result<u16, String> {
     raw.parse::<u16>()
         .map_err(|_| format!("invalid port: {raw}"))
 }
 
+#[cfg(any(test, feature = "providers"))]
 fn host_is_blocked(host: &str) -> Result<(), String> {
     let host = host.trim_end_matches('.').to_ascii_lowercase();
     if host.is_empty() {
@@ -101,6 +107,7 @@ fn host_is_blocked(host: &str) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(any(test, feature = "providers"))]
 fn parse_literal_ip(host: &str) -> Option<IpAddr> {
     if let Ok(ip) = host.parse::<IpAddr>() {
         return Some(ip);
@@ -109,6 +116,7 @@ fn parse_literal_ip(host: &str) -> Option<IpAddr> {
 }
 
 /// inet_aton-style IPv4: `2130706433`, `127.1`, `127.0.1`.
+#[cfg(any(test, feature = "providers"))]
 fn parse_abbreviated_ipv4(host: &str) -> Option<Ipv4Addr> {
     if host.bytes().all(|b| b.is_ascii_digit()) {
         return host.parse::<u32>().ok().map(Ipv4Addr::from);
@@ -130,6 +138,7 @@ fn parse_abbreviated_ipv4(host: &str) -> Option<Ipv4Addr> {
     Some(Ipv4Addr::from(addr))
 }
 
+#[cfg(any(test, feature = "providers"))]
 fn ip_is_blocked(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(v4) => ipv4_is_blocked(v4),
@@ -137,6 +146,7 @@ fn ip_is_blocked(ip: IpAddr) -> bool {
     }
 }
 
+#[cfg(any(test, feature = "providers"))]
 fn ipv4_is_blocked(ip: Ipv4Addr) -> bool {
     if ip.is_loopback()
         || ip.is_private()
@@ -156,6 +166,7 @@ fn ipv4_is_blocked(ip: Ipv4Addr) -> bool {
         || o[0] >= 240
 }
 
+#[cfg(any(test, feature = "providers"))]
 fn ipv6_is_blocked(ip: Ipv6Addr) -> bool {
     if let Some(v4) = ip.to_ipv4_mapped() {
         return ipv4_is_blocked(v4);
@@ -167,6 +178,7 @@ fn ipv6_is_blocked(ip: Ipv6Addr) -> bool {
         || ip.is_unique_local()
 }
 
+#[cfg(any(test, feature = "providers"))]
 async fn validate_fetch_destination(url: &str) -> Result<(), String> {
     let target = parse_fetch_target(url)?;
     host_is_blocked(&target.host)?;
