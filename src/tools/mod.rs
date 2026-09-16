@@ -235,8 +235,8 @@ pub fn register_builtin_tools(registry: &ToolRegistry) {
         ),
         (
             "exec",
-            "Unified process control. Actions: spawn, stdin, wait, kill. stdout/stderr are drained.",
-            r#"{"type":"object","properties":{"action":{"type":"string","enum":["spawn","stdin","wait","kill"]},"program":{"type":"string"},"args":{"type":"array","items":{"type":"string"}},"process_id":{"type":"string"},"data":{"type":"string"}},"required":["action"]}"#,
+            "Unified process control. Actions: spawn, stdin, wait, kill. stdout/stderr are drained. wait closes stdin and times out after `timeout` seconds (default 120, max 600).",
+            r#"{"type":"object","properties":{"action":{"type":"string","enum":["spawn","stdin","wait","kill"]},"program":{"type":"string"},"args":{"type":"array","items":{"type":"string"}},"process_id":{"type":"string"},"data":{"type":"string"},"timeout":{"type":"integer","minimum":1,"maximum":600}},"required":["action"]}"#,
             exec::exec_tool,
             ToolEffect::Process,
         ),

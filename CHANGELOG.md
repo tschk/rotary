@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+- `exec wait` now closes stdin and times out (default 120s, max 600s) instead of blocking the agent loop until an outer Harbor/SWE timeout.
+
 ## [0.7.2] — 2026-09-16
 
 Patch release on crates.io `0.7.1` (git `Cargo.toml` had lagged at `0.6.5`).

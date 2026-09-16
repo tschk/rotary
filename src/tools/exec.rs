@@ -6,7 +6,13 @@ use std::io::{Read, Write};
 use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
 use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
 use uuid::Uuid;
+
+/// Default wait cap so `exec wait` cannot pin the agent loop for hours.
+/// Matches bash's default tool timeout. Override per-call via `timeout`.
+pub const DEFAULT_WAIT_TIMEOUT_SECS: u64 = 120;
+pub const MAX_WAIT_TIMEOUT_SECS: u64 = 600;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExecProcess {
@@ -102,12 +108,18 @@ impl ExecRegistry {
     }
 
     pub fn wait(&self, process_id: &str) -> Result<ExecOutput, String> {
+        self.wait_timeout(process_id, Duration::from_secs(DEFAULT_WAIT_TIMEOUT_SECS))
+    }
+
+    pub fn wait_timeout(&self, process_id: &str, timeout: Duration) -> Result<ExecOutput, String> {
         let mut session = self
             .sessions
             .lock()
             .remove(process_id)
             .ok_or_else(|| format!("unknown process_id {process_id}"))?;
-        finish_session(&mut session)
+        // Close stdin so readers like `cat`/`python` don't wait forever for EOF.
+        drop(session.child.stdin.take());
+        finish_session_timeout(&mut session, timeout)
     }
 
     pub fn kill(&self, process_id: &str) -> Result<ExecOutput, String> {
@@ -116,6 +128,7 @@ impl ExecRegistry {
             .lock()
             .remove(process_id)
             .ok_or_else(|| format!("unknown process_id {process_id}"))?;
+        drop(session.child.stdin.take());
         session
             .child
             .kill()
@@ -141,6 +154,44 @@ fn finish_session(session: &mut ExecSession) -> Result<ExecOutput, String> {
         .child
         .wait()
         .map_err(|e| format!("wait failed: {e}"))?;
+    collect_output(session, status.code())
+}
+
+fn finish_session_timeout(
+    session: &mut ExecSession,
+    timeout: Duration,
+) -> Result<ExecOutput, String> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        match session
+            .child
+            .try_wait()
+            .map_err(|e| format!("wait failed: {e}"))?
+        {
+            Some(status) => return collect_output(session, status.code()),
+            None if Instant::now() >= deadline => {
+                let _ = session.child.kill();
+                let _ = session.child.wait();
+                let mut output = collect_output(session, None)?;
+                if output.stderr.is_empty() {
+                    output.stderr = format!(
+                        "exec wait timed out after {}s; process killed",
+                        timeout.as_secs()
+                    );
+                } else {
+                    output.stderr.push_str(&format!(
+                        "\nexec wait timed out after {}s; process killed",
+                        timeout.as_secs()
+                    ));
+                }
+                return Ok(output);
+            }
+            None => std::thread::sleep(Duration::from_millis(20)),
+        }
+    }
+}
+
+fn collect_output(session: &mut ExecSession, exit_code: Option<i32>) -> Result<ExecOutput, String> {
     if let Some(handle) = session.stdout_thread.take() {
         let _ = handle.join();
     }
@@ -151,7 +202,7 @@ fn finish_session(session: &mut ExecSession) -> Result<ExecOutput, String> {
         process_id: session.process_id.clone(),
         stdout: String::from_utf8_lossy(&session.stdout.lock()).into_owned(),
         stderr: String::from_utf8_lossy(&session.stderr.lock()).into_owned(),
-        exit_code: status.code(),
+        exit_code,
     })
 }
 
@@ -162,7 +213,11 @@ fn push_lifecycle(ctx: &ToolContext, notice: ProcessLifecycle) {
 }
 
 pub(crate) fn exec_tool(ctx: Arc<ToolContext>, args: String) -> ToolFuture {
-    Box::pin(async move { execute_exec(ctx, args) })
+    Box::pin(async move {
+        tokio::task::spawn_blocking(move || execute_exec(ctx, args))
+            .await
+            .unwrap_or_else(|e| ToolResult::err("exec", format!("exec task failed: {e}")))
+    })
 }
 
 fn execute_exec(ctx: Arc<ToolContext>, args: String) -> ToolResult {
@@ -217,7 +272,10 @@ fn execute_exec(ctx: Arc<ToolContext>, args: String) -> ToolResult {
             let result = if action == "kill" {
                 registry.kill(&process_id)
             } else {
-                registry.wait(&process_id)
+                let secs = crate::tools::common::parse_num_field(&args, "timeout")
+                    .unwrap_or(DEFAULT_WAIT_TIMEOUT_SECS)
+                    .clamp(1, MAX_WAIT_TIMEOUT_SECS);
+                registry.wait_timeout(&process_id, Duration::from_secs(secs))
             };
             match result {
                 Ok(output) => {
@@ -293,5 +351,38 @@ mod tests {
             output.stdout.lines().count()
         );
         assert_eq!(output.exit_code, Some(0));
+    }
+
+    #[test]
+    fn wait_closes_stdin_so_cat_exits() {
+        let registry = Arc::new(ExecRegistry::new());
+        let proc = registry.spawn("cat", &[]).expect("spawn cat");
+        registry
+            .write_stdin(&proc.process_id, b"ok\n")
+            .expect("write");
+        let output = registry
+            .wait_timeout(&proc.process_id, Duration::from_secs(2))
+            .expect("wait");
+        assert_eq!(output.exit_code, Some(0));
+        assert_eq!(output.stdout, "ok\n");
+    }
+
+    #[test]
+    fn wait_kills_stuck_child_instead_of_hanging() {
+        let registry = Arc::new(ExecRegistry::new());
+        let proc = registry
+            .spawn("sleep", &["30".into()])
+            .expect("spawn sleep");
+        let started = Instant::now();
+        let output = registry
+            .wait_timeout(&proc.process_id, Duration::from_millis(200))
+            .expect("wait timeout");
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "wait hung for {:?}",
+            started.elapsed()
+        );
+        assert!(output.exit_code.is_none());
+        assert!(output.stderr.contains("timed out"));
     }
 }
