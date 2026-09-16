@@ -26,6 +26,9 @@ jobs:
       - run: cargo test --no-default-features --features providers,builtin-tools,mcp
       - run: cargo test --all-features
       - run: cargo build --all-features --release
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check
       - run: |
           if cargo tree --no-default-features --features providers,builtin-tools,mcp -i praefectus; then
             echo "slim feature set must not pull praefectus" >&2
