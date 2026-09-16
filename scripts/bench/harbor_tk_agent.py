@@ -45,10 +45,11 @@ class TkHarborAgent(BaseAgent):
         raise FileNotFoundError("tk binary missing (set TK_BIN_MUSL or TK_BIN)")
 
     def _exec_timeout_sec(self) -> int:
-        # Harbor wraps agent.run() in wait_for(task.agent.timeout_sec), often 900s.
-        # Keep docker exec shorter so we return and Harbor can still verify.
-        requested = int(os.environ.get("BENCH_AGENT_TIMEOUT", "840"))
-        return max(60, min(requested, 840))
+        # Z.ai's GLM-5.3-Flash TB 2.1 number (84.3) used Claude Code with a
+        # 6h timeout. Default Harbor task timeout is 900s; set
+        # BENCH_AGENT_TIMEOUT / Harbor --timeout-multiplier to match.
+        requested = int(os.environ.get("BENCH_AGENT_TIMEOUT", "21600"))
+        return max(60, min(requested, 21600))
 
     async def setup(self, environment: BaseEnvironment) -> None:
         tk = self._tk_bin()
@@ -85,7 +86,7 @@ class TkHarborAgent(BaseAgent):
             cwd="/app",
             env={
                 "ZAI_API_KEY": key,
-                "TK_MAX_TURNS": os.environ.get("TK_MAX_TURNS", "120"),
+                "TK_MAX_TURNS": os.environ.get("TK_MAX_TURNS", "400"),
             },
             timeout_sec=self._exec_timeout_sec(),
         )
