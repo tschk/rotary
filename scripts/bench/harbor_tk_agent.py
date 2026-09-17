@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 import shlex
+import tempfile
 from pathlib import Path
 
 from harbor.agents.base import BaseAgent
@@ -74,18 +75,34 @@ class TkHarborAgent(BaseAgent):
             raise RuntimeError("ZAI_API_KEY is not set")
         prompt = instruction.strip()
         quoted = shlex.quote(prompt)
+        # Upload the key as a file. Harbor `env=` becomes `docker compose exec -e`
+        # and leaks the secret in `ps`.
+        with tempfile.NamedTemporaryFile("w", delete=False) as handle:
+            handle.write("ZAI_API_KEY=")
+            handle.write(key)
+            handle.write("\n")
+            key_host = Path(handle.name)
+        try:
+            await environment.exec("mkdir -p /tmp/tk", user="root")
+            await environment.upload_file(key_host, "/tmp/tk/zai.env")
+        finally:
+            key_host.unlink(missing_ok=True)
+        chmod = await environment.exec("chmod 600 /tmp/tk/zai.env", user="root")
+        if chmod.return_code != 0:
+            raise RuntimeError(chmod.stderr or chmod.stdout or "chmod zai.env failed")
         cmd = (
             "mkdir -p /tmp/tk && printf '%s\\n' "
             + quoted
             + " > /tmp/tk/prompt.txt && "
+            "set -a && . /tmp/tk/zai.env && set +a && "
             "tk exec --provider zai --model glm-5.3-flash --effort low "
-            "--cwd /app - < /tmp/tk/prompt.txt"
+            "--cwd /app - < /tmp/tk/prompt.txt; "
+            "status=$?; rm -f /tmp/tk/zai.env; exit $status"
         )
         result = await environment.exec(
             cmd,
             cwd="/app",
             env={
-                "ZAI_API_KEY": key,
                 "TK_MAX_TURNS": os.environ.get("TK_MAX_TURNS", "400"),
             },
             timeout_sec=self._exec_timeout_sec(),

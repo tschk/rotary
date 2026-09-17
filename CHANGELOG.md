@@ -4,6 +4,7 @@
 
 ### Fixed
 - `exec wait` now closes stdin and times out (default 120s, max 600s) instead of blocking the agent loop until an outer Harbor/SWE timeout.
+- Env-secret identifier scan no longer rewrites English/protobuf words (`key`, `token`). TB kv-store-grpc was generating `SetValRequest` without a `key` field because the prompt was redacted.
 
 ## [0.7.2] — 2026-09-16
 

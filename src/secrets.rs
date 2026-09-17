@@ -429,7 +429,11 @@ fn find_env_secrets(text: &str, out: &mut Vec<SecretMatch>) {
             continue;
         }
         let name = &text[start..start + run];
-        if is_sensitive_env_var(name) {
+        // Identifier scan is for env *names* like API_KEY / GH_TOKEN, not
+        // English/protobuf words (`key`, `token`, `monkey`). Those were
+        // rewriting TB proto fields (`key`/`value`) into [REDACTED:env-secret]
+        // and poisoning the kv-store-grpc task.
+        if looks_like_env_secret_name(name) {
             out.push(SecretMatch {
                 pattern: SecretPattern::EnvSecret,
                 start,
@@ -439,6 +443,13 @@ fn find_env_secrets(text: &str, out: &mut Vec<SecretMatch>) {
         }
         search_from = next_char_boundary(text, start + run);
     }
+}
+
+fn looks_like_env_secret_name(name: &str) -> bool {
+    if name.len() < 6 || !name.contains('_') {
+        return false;
+    }
+    is_sensitive_env_var(name)
 }
 
 fn find_custom(text: &str, pattern: &RegexPattern, out: &mut Vec<SecretMatch>) {
@@ -684,5 +695,15 @@ mod tests {
         let body = "set API_KEY to value";
         let m = r.find_secrets(body);
         assert!(m.iter().any(|m| m.pattern == SecretPattern::EnvSecret));
+    }
+
+    #[test]
+    fn proto_field_key_is_not_an_env_secret() {
+        let r = Redactor::new();
+        let body = "message SetValRequest { string key = 1; int32 val = 2; }";
+        assert_eq!(r.redact(body), body);
+        let json = r#"{"key":"alpha","val":42}"#;
+        assert_eq!(r.redact(json), json);
+        assert_eq!(r.redact("token count is 3"), "token count is 3");
     }
 }
