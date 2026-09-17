@@ -25,7 +25,7 @@ class TkHarborAgent(BaseAgent):
         return "tk"
 
     def version(self) -> str:
-        return "0.3.0"
+        return "0.4.0"
 
     def _tk_bin(self) -> Path:
         for candidate in (
@@ -99,18 +99,36 @@ class TkHarborAgent(BaseAgent):
             "--cwd /app - < /tmp/tk/prompt.txt; "
             "status=$?; rm -f /tmp/tk/zai.env; exit $status"
         )
+        timeout_sec = self._exec_timeout_sec()
+        env = {
+            "TK_MAX_TURNS": os.environ.get("TK_MAX_TURNS", "400"),
+        }
         result = await environment.exec(
             cmd,
             cwd="/app",
-            env={
-                "TK_MAX_TURNS": os.environ.get("TK_MAX_TURNS", "400"),
-            },
-            timeout_sec=self._exec_timeout_sec(),
+            env=env,
+            timeout_sec=timeout_sec,
         )
+        attempts = [result]
+        # One retry on crash/timeout so a stream-decode or hung wait does not
+        # freeze the Harbor reward at 0. Skip retry when tk already exited 0.
+        if result.return_code not in (0, None):
+            retry = await environment.exec(
+                cmd,
+                cwd="/app",
+                env=env,
+                timeout_sec=timeout_sec,
+            )
+            attempts.append(retry)
+            result = retry
         log = self.logs_dir / "tk-harbor.log"
-        log.write_text(
-            f"exit={result.return_code}\nstdout:\n{result.stdout or ''}\n"
-            f"stderr:\n{result.stderr or ''}\n"
-        )
+        chunks = []
+        for i, attempt in enumerate(attempts, start=1):
+            chunks.append(
+                f"attempt={i} exit={attempt.return_code}\n"
+                f"stdout:\n{attempt.stdout or ''}\n"
+                f"stderr:\n{attempt.stderr or ''}\n"
+            )
+        log.write_text("\n".join(chunks))
         # Do not raise on non-zero: Harbor should still run the verifier on
         # whatever the agent left in the workspace.
