@@ -90,11 +90,16 @@ class TkHarborAgent(BaseAgent):
         chmod = await environment.exec("chmod 600 /tmp/tk/zai.env", user="root")
         if chmod.return_code != 0:
             raise RuntimeError(chmod.stderr or chmod.stdout or "chmod zai.env failed")
+        # Harbor environment.exec timeout_sec is not reliably enforced on
+        # docker-compose trials — a stuck trial ran 26h and starved the key.
+        # Enforce the cap inside the container with coreutils timeout.
+        inner_timeout = max(60, timeout_sec - 60)
         cmd = (
             "mkdir -p /tmp/tk && printf '%s\\n' "
             + quoted
             + " > /tmp/tk/prompt.txt && "
             "set -a && . /tmp/tk/zai.env && set +a && "
+            f"timeout --signal=TERM {inner_timeout} "
             "tk exec --provider zai --model glm-5.3-flash --effort low "
             "--cwd /app - < /tmp/tk/prompt.txt; "
             "status=$?; rm -f /tmp/tk/zai.env; exit $status"
