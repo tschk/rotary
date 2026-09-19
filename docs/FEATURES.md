@@ -54,6 +54,7 @@ A scope is a work mode, not an agent name.
 |---|---|---|
 | `builtin-tools` | yes | read/write/edit/bash/grep/find/ls (stdlib + regex) |
 | `fff` | no | fff-search indexed grep/find |
+| `script` | no | sandboxed LuaJIT `script` tool (read/list/grep/json bridges) |
 | `cli` | no | clap + `rx4` binary |
 | `ipc` | no | Unix socket JSON-RPC, ACP, LSP (cancellation is always on) |
 | `computer-use` | no | Praefectus `cu_*` tools (13 tools) |
