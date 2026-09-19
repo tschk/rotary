@@ -38,6 +38,8 @@ personality = ["zkr-memory"]
 skills = ["dep:serde_yaml", "dep:dirs"]
 # Indexed grep/find via fff-search (git2/notify). Slim hosts use stdlib walk.
 fff = ["dep:fff-search"]
+# Sandboxed Lua `script` tool (read-only bridges; vendored Lua 5.4).
+script = ["dep:mlua", "dep:regex"]
 # Host-API islands — off unless a host names them.
 autoresearch = ["tokio/process"]
 marketplace = ["mcp"]
@@ -72,6 +74,8 @@ eventsource-stream = { version = "0.2", optional = true }
 futures = { version = "0.3", optional = true }
 regex = { version = "1", optional = true }
 fff-search = { version = "0.10.2-nightly.686a849", optional = true }
+# Optional — sandboxed LuaJIT for the `script` tool
+mlua = { version = "0.10", default-features = false, features = ["luajit", "vendored"], optional = true }
 
 # Optional — computer-use
 ed25519-dalek = { version = "2.1", default-features = false, features = ["rand_core", "std"], optional = true }
