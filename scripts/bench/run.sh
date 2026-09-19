@@ -257,17 +257,20 @@ collect_patch() {
   done
   rm -rf "$dest/.rx4" >/dev/null 2>&1 || true
   git -C "$dest" add -A >/dev/null 2>&1 || true
-  git -C "$dest" diff --binary "$base" -- . \
-    ":(exclude).bench_prompt.md" \
-    ":(exclude).rx4" \
-    ":(exclude).rx4/**" \
-    > "$patch_out" || true
+  local excludes=(
+    ":(exclude).bench_prompt.md"
+    ":(exclude).rx4" ":(exclude).rx4/**"
+    ":(exclude).venv" ":(exclude).venv/**"
+    ":(exclude)venv" ":(exclude)venv/**"
+    ":(exclude)node_modules" ":(exclude)node_modules/**"
+    ":(exclude)__pycache__" ":(exclude)__pycache__/**"
+    ":(exclude).pytest_cache" ":(exclude).pytest_cache/**"
+    ":(exclude)dist" ":(exclude)dist/**"
+    ":(exclude)build" ":(exclude)build/**"
+  )
+  git -C "$dest" diff --binary "$base" -- . "${excludes[@]}" > "$patch_out" || true
   if [ ! -s "$patch_out" ]; then
-    git -C "$dest" diff --binary --cached "$base" -- . \
-      ":(exclude).bench_prompt.md" \
-      ":(exclude).rx4" \
-      ":(exclude).rx4/**" \
-      > "$patch_out" || true
+    git -C "$dest" diff --binary --cached "$base" -- . "${excludes[@]}" > "$patch_out" || true
   fi
 }
 
