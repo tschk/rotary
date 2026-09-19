@@ -1,32 +1,79 @@
-//! Sandboxed Lua `script` tool: run a short Lua program in one turn with
+//! Sandboxed Lua `script` tool: run a short LuaJIT program in one turn with
 //! workspace-confined bridges (read/list/grep/json) instead of many tool
-//! round-trips. No io/os/debug libs; reads only; memory + wall-clock capped.
+//! round-trips. No io/os/debug/ffi libs, no loader; reads only inside the
+//! workspace; capped by the wall clock (mlua cannot enforce memory limits on
+//! LuaJIT).
 
-use super::common::resolve_path;
+use super::common::{lexically_normalize, resolve_path};
 use crate::agent::{ToolContext, ToolFuture, ToolResult};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 const DEFAULT_TIMEOUT_MS: u64 = 10_000;
 const MAX_TIMEOUT_MS: u64 = 30_000;
-const MEMORY_LIMIT: usize = 64 * 1024 * 1024;
 const MAX_OUTPUT: usize = 32 * 1024;
 /// Hard cap on grep hits per script run.
 const MAX_GREP_HITS: usize = 500;
+/// VM instructions between wall-clock checks in the debug hook. Count hooks
+/// force LuaJIT into the interpreter, so `while true do end` is caught too.
+const HOOK_INSTRUCTIONS: u32 = 50_000;
+
+/// Explicitly enumerated host-safe std libs. Do NOT use `StdLib::ALL_SAFE`:
+/// on the luajit backend it is every flag below FFI/DEBUG, which silently
+/// includes `io`, `os`, `package`, and `jit`. `Utf8` does not exist on luajit.
+fn safe_libs() -> mlua::StdLib {
+    mlua::StdLib::STRING | mlua::StdLib::TABLE | mlua::StdLib::MATH | mlua::StdLib::BIT
+}
+
+/// mlua's `new_with` always opens the base library (it is all-or-nothing), so
+/// the needed base functions (pcall, pairs, ipairs, tostring, tonumber, type,
+/// select, error, assert, setmetatable, rawget/rawset, unpack) come from base
+/// and we strip the base functions that reach the host instead: file loading
+/// (`dofile`/`loadfile`), arbitrary chunk + bytecode loading (`load`,
+/// `loadstring`), and the module loader (`require`, `module`). `os`, `io`,
+/// `debug`, `package`, and `ffi` are separate libraries never loaded here.
+const STRIP_ESCAPE_HATCHES: &str = r#"
+for _, name in ipairs({'dofile', 'loadfile', 'load', 'loadstring', 'require', 'module'}) do
+    _G[name] = nil
+end
+"#;
 
 struct PrintBuffer(std::sync::Mutex<Vec<String>>);
 
 /// Everything blocking (Lua VM + std fs bridges) happens on a blocking
 /// thread; the async wrapper applies the wall-clock timeout around its join.
-fn run_lua(ctx: Arc<ToolContext>, code: String) -> Result<String, String> {
-    // Sandbox: ALL_SAFE = every std lib that cannot touch the host
-    // (no io, os, debug, package).
-    let lua = mlua::Lua::new_with(mlua::StdLib::ALL_SAFE, mlua::LuaOptions::new())
-    .map_err(|e| format!("lua init: {e}"))?;
-    let _ = lua.set_memory_limit(MEMORY_LIMIT);
+/// The VM itself also aborts at the budget via the instruction-count hook, so
+/// a runaway script does not keep spinning on the blocking thread after the
+/// async side gave up.
+fn run_lua(ctx: Arc<ToolContext>, code: String, budget: Duration) -> Result<String, String> {
+    let deadline = Instant::now() + budget;
+    let lua = mlua::Lua::new_with(safe_libs(), mlua::LuaOptions::new())
+        .map_err(|e| format!("lua init: {e}"))?;
+    // mlua cannot enforce allocator limits on LuaJIT (set_memory_limit always
+    // returns MemoryControlNotAvailable there), so the sandbox relies on the
+    // wall-clock cap only — no memory limit is claimed.
+    let _ = lua.set_memory_limit(usize::MAX);
+    lua.load(STRIP_ESCAPE_HATCHES)
+        .set_name("=sandbox-bootstrap")
+        .exec()
+        .map_err(|e| format!("sandbox bootstrap failed: {e}"))?;
+    lua.set_hook(
+        mlua::HookTriggers::new().every_nth_instruction(HOOK_INSTRUCTIONS),
+        move |_, _| {
+            if Instant::now() >= deadline {
+                Err(mlua::Error::RuntimeError(format!(
+                    "script timed out after {}ms (wall-clock cap)",
+                    budget.as_millis()
+                )))
+            } else {
+                Ok(mlua::VmState::Continue)
+            }
+        },
+    );
     install_bridges(&lua, &ctx).map_err(|e| format!("bridge setup failed: {e}"))?;
 
-    let result: Result<mlua::Value, mlua::Error> =
-        lua.load(&code).set_name("script").eval();
+    let result: Result<mlua::Value, mlua::Error> = lua.load(&code).set_name("script").eval();
+    lua.remove_hook();
     let out = match result {
         Ok(val) => value_to_string(&val),
         Err(e) => return Err(format!("{e}")),
@@ -43,8 +90,9 @@ fn run_lua(ctx: Arc<ToolContext>, code: String) -> Result<String, String> {
     }
     if !out.is_empty() && out != "nil" {
         if !body.is_empty() {
-            body.push_str("result: ");
+            body.push('\n');
         }
+        body.push_str("result: ");
         body.push_str(&out);
         body.push('\n');
     }
@@ -75,14 +123,16 @@ fn script_future(ctx: Arc<ToolContext>, args: String) -> ToolFuture {
             Ok(res) => res,
             Err(e) => return ToolResult::err("script", e),
         };
-        let handle = tokio::task::spawn_blocking(move || run_lua(ctx, code));
+        let handle = tokio::task::spawn_blocking(move || {
+            run_lua(ctx, code, std::time::Duration::from_millis(timeout_ms))
+        });
         match tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), handle).await {
             Ok(Ok(Ok(body))) => ToolResult::ok("script", body),
             Ok(Ok(Err(e))) => ToolResult::err("script", e),
             Ok(Err(e)) => ToolResult::err("script", format!("join error: {e}")),
             Err(_) => ToolResult::err(
                 "script",
-                format!("script timed out after {timeout_ms}ms"),
+                format!("script timed out after {timeout_ms}ms (wall-clock cap)"),
             ),
         }
     })
@@ -94,11 +144,7 @@ mod tests {
 
     async fn run_code(tmp: &tempfile::TempDir, code: &str) -> ToolResult {
         let ctx = Arc::new(ToolContext::new(tmp.path()));
-        script_future(
-            ctx,
-            serde_json::json!({ "code": code }).to_string(),
-        )
-        .await
+        script_future(ctx, serde_json::json!({ "code": code }).to_string()).await
     }
 
     #[tokio::test]
@@ -138,20 +184,83 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rejects_io_and_os() {
+    async fn forbidden_globals_absent_and_base_intact() {
         let tmp = tempfile::TempDir::new().unwrap();
-        for forbidden in ["os.exit", "io.open", "dofile", "loadfile"] {
-            let head = forbidden.split('.').next().unwrap();
-            let r = run_code(&tmp, &format!("{head} is nil")).await;
-            assert!(r.content.contains("true"), "{forbidden} must be nil: {}", r.content);
-        }
+        // Host-reaching libs/functions must be gone from inside the sandbox.
+        let forbidden = [
+            "os",
+            "io",
+            "debug",
+            "package",
+            "dofile",
+            "loadfile",
+            "load",
+            "loadstring",
+            "require",
+            "ffi",
+        ];
+        let code = format!(
+            "local names = {{{}}}
+            for _, name in ipairs(names) do
+                if type(_G[name]) ~= 'nil' then return false end
+            end
+            return true",
+            forbidden
+                .iter()
+                .map(|n| format!("'{n}'"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        let r = run_code(&tmp, &code).await;
+        assert!(r.content.contains("result: true"), "got: {}", r.content);
+
+        // The safe base functions a script needs must still be present.
+        let needed = [
+            "pcall",
+            "pairs",
+            "ipairs",
+            "tostring",
+            "tonumber",
+            "type",
+            "select",
+            "error",
+            "assert",
+            "setmetatable",
+            "getmetatable",
+            "rawget",
+            "rawset",
+            "unpack",
+        ];
+        let code = format!(
+            "local names = {{{}}}
+            for _, name in ipairs(names) do
+                if type(_G[name]) ~= 'function' then return name end
+            end
+            return true",
+            needed
+                .iter()
+                .map(|n| format!("'{n}'"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        let r = run_code(&tmp, &code).await;
+        assert!(r.content.contains("result: true"), "got: {}", r.content);
     }
 
     #[tokio::test]
-    async fn memory_limit_blocks_allocation() {
+    async fn allocation_loop_hits_wall_clock() {
+        // mlua cannot enforce memory limits on LuaJIT, so heavy allocation is
+        // bounded by the wall clock only: the VM must abort at the budget.
         let tmp = tempfile::TempDir::new().unwrap();
-        let r = run_code(&tmp, "local t = {} for i=1,50_000_000 do t[i] = 'x' end return #t").await;
-        assert!(r.is_error, "expected memory error");
+        let ctx = Arc::new(ToolContext::new(tmp.path()));
+        let code = "local t = {} for i = 1, 10000000000 do t[i % 1000] = 'x' end return #t";
+        let r = script_future(
+            ctx,
+            serde_json::json!({ "code": code, "timeout_ms": 1000 }).to_string(),
+        )
+        .await;
+        assert!(r.is_error, "expected wall-clock error: {}", r.content);
+        assert!(r.content.contains("timed out"), "got: {}", r.content);
     }
 
     #[tokio::test]
@@ -170,19 +279,29 @@ mod tests {
     #[tokio::test]
     async fn read_confined_to_workspace() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let r = run_code(&tmp, "return read('/etc/hostname') ~= nil").await;
-        // /etc/hostname exists but is outside the workspace — must be refused.
-        assert!(r.is_error || r.content.contains("result: false") || r.content.contains("nil"), "got: {}", r.content);
+        // Absolute paths outside the workspace are refused.
+        let r = run_code(&tmp, "return read('/etc/hostname')").await;
+        assert!(r.is_error, "expected refusal: {}", r.content);
+        assert!(
+            r.content.contains("outside workspace"),
+            "got: {}",
+            r.content
+        );
+        // So are `..` escapes.
+        let r = run_code(&tmp, "return read('../../etc/hostname')").await;
+        assert!(r.is_error, "expected refusal: {}", r.content);
+        assert!(
+            r.content.contains("outside workspace"),
+            "got: {}",
+            r.content
+        );
     }
 }
 
 fn install_bridges(lua: &mlua::Lua, ctx: &Arc<ToolContext>) -> Result<(), mlua::Error> {
     lua.set_app_data(PrintBuffer(std::sync::Mutex::new(Vec::new())));
     let print = lua.create_function(|lua, args: mlua::MultiValue| {
-        let parts: Vec<String> = args
-            .into_iter()
-            .map(|a| value_to_string(&a))
-            .collect();
+        let parts: Vec<String> = args.into_iter().map(|a| value_to_string(&a)).collect();
         if let Some(buf) = lua.app_data_ref::<PrintBuffer>() {
             if let Ok(mut v) = buf.0.lock() {
                 v.push(parts.join("\t"));
@@ -194,7 +313,7 @@ fn install_bridges(lua: &mlua::Lua, ctx: &Arc<ToolContext>) -> Result<(), mlua::
 
     let root = ctx.clone();
     let read = lua.create_function(move |_, path: String| {
-        let full = resolve_path(&root, &path, false).map_err(mlua::Error::external)?;
+        let full = confined_path(&root, &path).map_err(mlua::Error::external)?;
         match std::fs::read_to_string(&full) {
             Ok(s) => Ok(Some(s)),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
@@ -205,9 +324,9 @@ fn install_bridges(lua: &mlua::Lua, ctx: &Arc<ToolContext>) -> Result<(), mlua::
 
     let root = ctx.clone();
     let list = lua.create_function(move |lua, path: String| {
-        let full = resolve_path(&root, &path, false).map_err(mlua::Error::external)?;
-        let entries =
-            std::fs::read_dir(&full).map_err(|e| mlua::Error::external(format!("list {path}: {e}")))?;
+        let full = confined_path(&root, &path).map_err(mlua::Error::external)?;
+        let entries = std::fs::read_dir(&full)
+            .map_err(|e| mlua::Error::external(format!("list {path}: {e}")))?;
         let t = lua.create_table()?;
         for (i, entry) in entries.flatten().enumerate() {
             let row = lua.create_table()?;
@@ -223,7 +342,7 @@ fn install_bridges(lua: &mlua::Lua, ctx: &Arc<ToolContext>) -> Result<(), mlua::
     let grep = lua.create_function(
         move |lua, (pattern, path, limit): (String, String, Option<u32>)| {
             let re = regex::Regex::new(&pattern).map_err(mlua::Error::external)?;
-            let full = resolve_path(&root, &path, false).map_err(mlua::Error::external)?;
+            let full = confined_path(&root, &path).map_err(mlua::Error::external)?;
             let limit = (limit.unwrap_or(200).max(1) as usize).min(MAX_GREP_HITS);
             let mut hits = Vec::new();
             collect_grep(&re, &full, &full, limit, &mut hits);
@@ -246,8 +365,7 @@ fn install_bridges(lua: &mlua::Lua, ctx: &Arc<ToolContext>) -> Result<(), mlua::
         serde_json::to_string(&json).map_err(mlua::Error::external)
     })?;
     let decode = lua.create_function(|lua, s: String| {
-        let json: serde_json::Value =
-            serde_json::from_str(&s).map_err(mlua::Error::external)?;
+        let json: serde_json::Value = serde_json::from_str(&s).map_err(mlua::Error::external)?;
         json_to_lua(lua, &json)
     })?;
     json_t.set("encode", encode)?;
@@ -263,7 +381,25 @@ struct GrepHit {
     text: String,
 }
 
-fn collect_grep(re: &regex::Regex, root: &std::path::Path, dir: &std::path::Path, limit: usize, out: &mut Vec<GrepHit>) {
+/// Resolve `path` and refuse anything that leaves the workspace (absolute
+/// paths, `..` escapes, and symlinks pointing out — `resolve_path`
+/// canonicalizes, so the check sees the real target).
+fn confined_path(root: &Arc<ToolContext>, path: &str) -> Result<std::path::PathBuf, String> {
+    let full = lexically_normalize(&resolve_path(root, path, false)?);
+    let base = lexically_normalize(&root.workspace_root);
+    if !full.starts_with(&base) {
+        return Err(format!("path outside workspace: {path}"));
+    }
+    Ok(full)
+}
+
+fn collect_grep(
+    re: &regex::Regex,
+    root: &std::path::Path,
+    dir: &std::path::Path,
+    limit: usize,
+    out: &mut Vec<GrepHit>,
+) {
     if out.len() >= limit {
         return;
     }
@@ -281,9 +417,7 @@ fn collect_grep(re: &regex::Regex, root: &std::path::Path, dir: &std::path::Path
         }
         if p.is_dir() {
             collect_grep(re, root, &p, limit, out);
-        } else if p.is_file()
-            && p.metadata().map(|m| m.len() < 1_000_000).unwrap_or(false)
-        {
+        } else if p.is_file() && p.metadata().map(|m| m.len() < 1_000_000).unwrap_or(false) {
             let Ok(content) = std::fs::read_to_string(&p) else {
                 continue;
             };
@@ -384,7 +518,7 @@ fn json_to_lua(lua: &mlua::Lua, json: &serde_json::Value) -> Result<mlua::Value,
 pub(crate) fn script_tool() -> crate::agent::ToolDefinition {
     crate::agent::ToolDefinition::new_fn(
         "script",
-        "Run a short sandboxed Lua 5.4 program in one turn and get its output. Use for multi-step data processing, parsing, numeric verification, and bulk file inspection without extra tool round-trips. Available: read(path), list(path), grep(pattern, path, limit?) -> table of {path,line,text}, json.encode/json.decode, print(...), plus the standard string/table/math libs. No io/os/network; reads only inside the workspace; memory-capped and wall-clock-capped (timeout_ms, default 10000, max 30000). Return a value to see it as `result:`.",
+        "Run a short sandboxed LuaJIT (Lua 5.1) program in one turn and get its output. Use for multi-step data processing, parsing, numeric verification, and bulk file inspection without extra tool round-trips. Available: read(path), list(path), grep(pattern, path, limit?) -> table of {path,line,text}, json.encode/json.decode, print(...), plus the string/table/math/bit libs. No io/os/network/ffi and no loader (dofile/loadfile/require are removed); reads only inside the workspace; wall-clock-capped (timeout_ms, default 10000, max 30000) with no memory limit. Return a value to see it as `result:`.",
         r#"{"type":"object","properties":{"code":{"type":"string","description":"Lua source. Example: local hits = grep('TODO', 'src'); print(#hits .. ' hits'); return json.encode(hits[1])"},"timeout_ms":{"type":"integer","description":"Wall-clock cap in ms (default 10000, max 30000)"}},"required":["code"]}"#,
         script_future,
     )

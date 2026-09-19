@@ -38,7 +38,7 @@ personality = ["zkr-memory"]
 skills = ["dep:serde_yaml", "dep:dirs"]
 # Indexed grep/find via fff-search (git2/notify). Slim hosts use stdlib walk.
 fff = ["dep:fff-search"]
-# Sandboxed Lua `script` tool (read-only bridges; vendored Lua 5.4).
+# Sandboxed Lua `script` tool (read-only bridges; vendored LuaJIT, Lua 5.1).
 script = ["dep:mlua", "dep:regex"]
 # Host-API islands — off unless a host names them.
 autoresearch = ["tokio/process"]
