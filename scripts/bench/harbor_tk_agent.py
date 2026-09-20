@@ -9,6 +9,7 @@ stays under typical Harbor agent timeouts so the trial can still verify.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import shlex
 import tempfile
@@ -115,9 +116,14 @@ class TkHarborAgent(BaseAgent):
             timeout_sec=timeout_sec,
         )
         attempts = [result]
-        # One retry on crash/timeout so a stream-decode or hung wait does not
-        # freeze the Harbor reward at 0. Skip retry when tk already exited 0.
-        if result.return_code not in (0, None):
+        # Two retries on crash/timeout so a stream-decode, hung wait, or Z.ai
+        # 429 burst does not freeze the Harbor reward at 0. The sleep staggers
+        # the retry past rate-limit windows. Skip retry when tk exited 0.
+        max_retries = int(os.environ.get("TK_AGENT_RETRIES", "2"))
+        for attempt in range(1, max_retries + 1):
+            if result.return_code in (0, None):
+                break
+            await asyncio.sleep(30 * attempt)
             retry = await environment.exec(
                 cmd,
                 cwd="/app",
