@@ -732,6 +732,52 @@ impl Agent {
         self.provider = Some(provider);
     }
 
+    /// Snapshot the authority that a model-requested subagent may inherit.
+    ///
+    /// The snapshot intentionally carries live host gates and confinement, but
+    /// not transcript or prompt content. Pass it to [`SubagentManager`] with
+    /// [`SubagentManager::with_authority`](crate::subagent::SubagentManager::with_authority)
+    /// when a host wants its own manager to obey this agent's authority.
+    pub fn subagent_authority(&self) -> crate::subagent::SubagentAuthority {
+        crate::subagent::SubagentAuthority {
+            policy: self.policy.clone(),
+            scope: self.scope_profile.as_ref().map(|profile| profile.scope),
+            authorizer: self.authorizer.clone(),
+            approver: self.approver.clone(),
+            async_approver: self.async_approver.clone(),
+            plan_approver: self.plan_approver.clone(),
+            sandbox: self.sandbox.clone(),
+            os_sandbox: self.os_sandbox.clone(),
+            os_sandbox_failed: self.os_sandbox_failed,
+            budget: self.remaining_subagent_budget(),
+            max_tool_iterations: self.max_tool_iterations,
+        }
+    }
+
+    pub(crate) fn inherit_subagent_authority(
+        &mut self,
+        authority: &crate::subagent::SubagentAuthority,
+        policy: Policy,
+        budget: Option<AgentBudget>,
+        max_tool_iterations: usize,
+    ) {
+        self.policy = policy;
+        if let Some(scope) = authority.scope {
+            self.scope = scope;
+            self.scope_profile = Some(mode::profile(scope));
+        }
+        self.authorizer = authority.authorizer.clone();
+        self.approver = authority.approver.clone();
+        self.async_approver = authority.async_approver.clone();
+        self.plan_approver = authority.plan_approver.clone();
+        self.sandbox = authority.sandbox.clone();
+        self.os_sandbox = authority.os_sandbox.clone();
+        self.os_sandbox_failed = authority.os_sandbox_failed;
+        self.budget = budget;
+        self.max_tool_iterations = max_tool_iterations.max(1);
+        self.refresh_system_prompt();
+    }
+
     /// Enable the engine-owned todo tool and configure confidence gating.
     pub fn set_todo_config(&mut self, config: TodoConfig) {
         self.todo_config = Some(config);
@@ -921,6 +967,26 @@ impl Agent {
 
     pub fn set_budget(&mut self, budget: AgentBudget) {
         self.budget = Some(budget);
+    }
+
+    fn remaining_subagent_budget(&self) -> Option<AgentBudget> {
+        let budget = self.budget.as_ref()?;
+        let max_cost = budget
+            .effective_max_cost()
+            .map(|max| (max - self.session_cost.total_cost()).max(0.0));
+        let max_duration_seconds = budget.max_duration_seconds.map(|max| {
+            let elapsed = self
+                .budget_start
+                .map(|start| start.elapsed().as_secs())
+                .unwrap_or(0);
+            max.saturating_sub(elapsed)
+        });
+        Some(AgentBudget {
+            max_cost,
+            max_duration_seconds,
+            reserve_budget: None,
+            reserve_budget_fraction: None,
+        })
     }
 
     pub fn set_pricing_registry(&mut self, registry: PricingRegistry) {
@@ -2228,6 +2294,8 @@ impl Agent {
 
     fn tool_context(&self) -> ToolContext {
         let mut tool_ctx = ToolContext::new(self.workspace_root.clone());
+        tool_ctx.provider = self.provider.clone();
+        tool_ctx.tools = Some(Arc::clone(&self.tools));
         tool_ctx.os_sandbox_required = self.policy.enable_os_sandbox && self.os_sandbox.is_none();
         tool_ctx.cancellation = self.turn_cancellation.reset();
         tool_ctx.hashline_sight = Arc::clone(&self.hashline_sight);
@@ -2245,6 +2313,7 @@ impl Agent {
         tool_ctx.permission_asks = Some(Arc::clone(&self.permission_asks));
         tool_ctx.patch_hunks = Some(Arc::clone(&self.patch_hunks));
         tool_ctx.process_lifecycle = Some(Arc::clone(&self.process_lifecycle));
+        tool_ctx.subagent_authority = Some(self.subagent_authority());
         #[cfg(feature = "ipc")]
         {
             tool_ctx.lsp = Some(Arc::clone(&self.lsp));

@@ -244,8 +244,9 @@ pub use snapshot::{FileSnapshot, FileVersionGuard, SnapshotStore};
 #[cfg(feature = "sse")]
 pub use sse::{SseError, SseEvent, SseParser};
 pub use subagent::{
-    SubagentBudget, SubagentConfig, SubagentError, SubagentEvent, SubagentHandle, SubagentLimits,
-    SubagentManager, SubagentResult, SubagentStatus, SubagentSubscriber,
+    SubagentAuthority, SubagentBudget, SubagentConfig, SubagentError, SubagentEvent,
+    SubagentHandle, SubagentLimits, SubagentManager, SubagentResult, SubagentStatus,
+    SubagentSubscriber,
 };
 pub use subtask::{
     claim_complete, ClaimOutcome, Evidence, EvidenceLedger, HostAdjudication, Subtask,

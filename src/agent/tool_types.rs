@@ -134,6 +134,9 @@ pub struct ToolContext {
     pub provider: Option<Arc<dyn Provider>>,
     /// Optional tool registry for nested agent runs.
     pub tools: Option<Arc<ToolRegistry>>,
+    /// Authority snapshot inherited by model-requested subagents. The agent
+    /// populates this; tool implementations must not synthesize one.
+    pub subagent_authority: Option<crate::subagent::SubagentAuthority>,
     /// Tools may request a scope switch; Agent applies after the tool batch.
     pub pending_scope: Option<Arc<parking_lot::Mutex<Option<Scope>>>>,
     /// Opt-in engine-owned todo state shared with the builtin todo executor.
@@ -186,6 +189,7 @@ impl ToolContext {
             os_sandbox_required: false,
             provider: None,
             tools: None,
+            subagent_authority: None,
             pending_scope: None,
             todo_state: None,
             todo_config: None,
