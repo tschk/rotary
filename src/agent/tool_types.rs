@@ -329,6 +329,10 @@ impl ToolRegistry {
         self.tools.len()
     }
 
+    pub(crate) fn remove(&self, name: &str) -> Option<ToolDefinition> {
+        self.tools.remove(name).map(|(_, tool)| tool)
+    }
+
     pub fn definitions(&self) -> Vec<serde_json::Value> {
         let mut definitions: Vec<serde_json::Value> = self
             .tools
