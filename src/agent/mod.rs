@@ -2922,15 +2922,24 @@ mod tests {
         }
         agent.record_message(Message::user("recent tail"));
         agent.compact("test");
-        let msgs = agent.messages.read();
-        assert!(msgs.len() < 42);
-        assert!(msgs.iter().any(|m| m.content.contains("recent tail")));
-        assert!(msgs
-            .iter()
-            .any(|m| m.role == Role::System && m.content == "sys"));
+        let (message_count, has_recent_tail, has_system) = {
+            let messages = agent.messages.read();
+            (
+                messages.len(),
+                messages
+                    .iter()
+                    .any(|message| message.content.contains("recent tail")),
+                messages
+                    .iter()
+                    .any(|message| message.role == Role::System && message.content == "sys"),
+            )
+        };
+        assert!(message_count < 42);
+        assert!(has_recent_tail);
+        assert!(has_system);
         let session = agent.session.read().messages();
         assert!(
-            session.len() > msgs.len(),
+            session.len() > message_count,
             "projection compact must leave the session intact"
         );
         let raven = dir.path().join(".rx4").join("raven.jsonl");
