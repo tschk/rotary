@@ -178,6 +178,13 @@ pub fn register_builtin_tools(registry: &ToolRegistry) {
             ToolEffect::Read,
         ),
         (
+            "retrieve_context_artifact",
+            "Retrieve a bounded line range from a session artifact by opaque reference. Use query to return matching lines only. Artifacts are created for oversized tool output and compacted history.",
+            r#"{"type":"object","properties":{"reference":{"type":"string","description":"Opaque context artifact reference from a tool result or compaction note."},"start_line":{"type":"integer","minimum":1,"description":"First inclusive line; defaults to 1."},"end_line":{"type":"integer","minimum":1,"description":"Last inclusive line; defaults to the artifact end."},"query":{"type":"string","description":"Optional literal substring filter."},"max_bytes":{"type":"integer","minimum":1,"maximum":16384,"description":"Maximum returned UTF-8 bytes; defaults to 8192."}},"required":["reference"]}"#,
+            crate::context_artifact::retrieve_tool,
+            ToolEffect::Read,
+        ),
+        (
             "web_fetch",
             "HTTP GET a URL and return response text (truncated). Requires providers feature.",
             r#"{"type":"object","properties":{"url":{"type":"string"},"max_bytes":{"type":"integer"}},"required":["url"]}"#,
@@ -424,6 +431,7 @@ mod tests {
             "grep",
             "find",
             "ls",
+            "retrieve_context_artifact",
             "web_fetch",
             "todo",
             "spawn_agent",

@@ -1958,7 +1958,8 @@ impl Agent {
 
             while let Some(joined) = join_set.join_next().await {
                 match joined {
-                    Ok((idx, call, result)) => {
+                    Ok((idx, call, mut result)) => {
+                        self.spill_tool_result(ctx, &mut result);
                         if result.requires_approval() {
                             self.emit(Event::ApprovalRequired(
                                 crate::permissions::ApprovalRequest::from_call(
@@ -2044,22 +2045,54 @@ impl Agent {
             &self.extra_allowed_tools,
         )
         .await;
-        if result.content.len() > crate::tools::spill::DEFAULT_PREVIEW_BYTES {
-            let spill_dir = ctx.workspace_root.join(".rx4").join("spill");
-            let spilled = crate::tools::spill::bound_tool_output(
-                &result.content,
-                crate::tools::spill::DEFAULT_PREVIEW_BYTES,
-                &spill_dir,
-            );
-            result.spill = Some(spilled.notice());
-            self.emit(Event::ToolSpill {
-                status: spilled.status,
-                locator: spilled.locator.clone(),
-                original_bytes: spilled.original_bytes,
-            });
-            result.content = spilled.preview;
-        }
+        self.spill_tool_result(ctx, &mut result);
         (call, result)
+    }
+
+    fn spill_tool_result(&self, ctx: &ToolContext, result: &mut ToolResult) {
+        if result.content.len() > crate::tools::spill::DEFAULT_PREVIEW_BYTES {
+            match self
+                .context_artifact_store()
+                .store(crate::session::ContextArtifactKind::Spill, &result.content)
+            {
+                Ok(artifact) => {
+                    let preview = crate::tools::spill::preview_with_reference(
+                        &result.content,
+                        crate::tools::spill::DEFAULT_PREVIEW_BYTES,
+                        Some(&artifact.reference),
+                    );
+                    result.spill = Some(crate::tools::spill::SpillNotice {
+                        status: crate::tools::spill::SpillStatus::Spilled,
+                        locator: artifact.reference.clone(),
+                        original_bytes: artifact.bytes,
+                    });
+                    self.emit(Event::ToolSpill {
+                        status: crate::tools::spill::SpillStatus::Spilled,
+                        locator: artifact.reference,
+                        original_bytes: artifact.bytes,
+                    });
+                    result.content = preview;
+                }
+                Err(error) => {
+                    warn!("failed to store session artifact for tool spill: {error}");
+                    // Preserve the existing spill location as a fallback for
+                    // hosts that cannot persist the session artifact metadata.
+                    let spill_dir = ctx.workspace_root.join(".rx4").join("spill");
+                    let spilled = crate::tools::spill::bound_tool_output(
+                        &result.content,
+                        crate::tools::spill::DEFAULT_PREVIEW_BYTES,
+                        &spill_dir,
+                    );
+                    result.spill = Some(spilled.notice());
+                    self.emit(Event::ToolSpill {
+                        status: spilled.status,
+                        locator: spilled.locator.clone(),
+                        original_bytes: spilled.original_bytes,
+                    });
+                    result.content = spilled.preview;
+                }
+            }
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -2195,12 +2228,13 @@ impl Agent {
             return;
         }
         let archived_ids = self.session.read().ids_matching(&proj.archived);
-        self.archive_raven(&proj.archived);
+        let artifact_reference = self.archive_raven(&proj.archived);
         let summary = if proj.summary.is_empty() {
             String::new()
         } else {
             format!("[context compacted] {}", proj.summary)
         };
+        let summary = compacted_history_note(summary, artifact_reference.as_deref());
         self.session
             .write()
             .record_projection(crate::session::SessionProjection {
@@ -2245,6 +2279,7 @@ impl Agent {
         tool_ctx.permission_asks = Some(Arc::clone(&self.permission_asks));
         tool_ctx.patch_hunks = Some(Arc::clone(&self.patch_hunks));
         tool_ctx.process_lifecycle = Some(Arc::clone(&self.process_lifecycle));
+        tool_ctx.context_artifacts = Some(Arc::new(self.context_artifact_store()));
         #[cfg(feature = "ipc")]
         {
             tool_ctx.lsp = Some(Arc::clone(&self.lsp));
@@ -2256,6 +2291,13 @@ impl Agent {
             tool_ctx = tool_ctx.with_os_sandbox(os_sandbox);
         }
         tool_ctx
+    }
+
+    fn context_artifact_store(&self) -> crate::context_artifact::ContextArtifactStore {
+        crate::context_artifact::ContextArtifactStore::new(
+            self.workspace_root.clone(),
+            Arc::clone(&self.session),
+        )
     }
 
     fn emit_turn_end(
@@ -2481,10 +2523,13 @@ impl Agent {
         let removed_end = (system_end + result.removed_count).min(snapshot.len());
         let archived = snapshot[system_end..removed_end].to_vec();
         let archived_ids = self.session.read().ids_matching(&archived);
-        self.archive_raven(&archived);
-        let summary = format!(
-            "[context compacted] {} Markers preserved: {:?}",
-            result.summary, result.markers_preserved
+        let artifact_reference = self.archive_raven(&archived);
+        let summary = compacted_history_note(
+            format!(
+                "[context compacted] {} Markers preserved: {:?}",
+                result.summary, result.markers_preserved
+            ),
+            artifact_reference.as_deref(),
         );
         self.session
             .write()
@@ -2506,15 +2551,40 @@ impl Agent {
         Ok(())
     }
 
-    fn archive_raven(&self, archived: &[Message]) {
+    fn archive_raven(&self, archived: &[Message]) -> Option<String> {
         if archived.is_empty() {
-            return;
+            return None;
         }
         let archive = RavenArchive::from_turns(archived);
+        let reference = match self.context_artifact_store().store(
+            crate::session::ContextArtifactKind::CompactedHistory,
+            &archive.to_jsonl(),
+        ) {
+            Ok(artifact) => Some(artifact.reference),
+            Err(error) => {
+                warn!("failed to store compacted history artifact: {error}");
+                None
+            }
+        };
+        // Keep the legacy aggregate archive for host recovery compatibility.
         let path = self.workspace_root.join(".rx4").join("raven.jsonl");
         if let Err(error) = archive.write_to(&path) {
             warn!("failed to write raven archive: {error}");
         }
+        reference
+    }
+}
+
+fn compacted_history_note(summary: String, reference: Option<&str>) -> String {
+    let Some(reference) = reference else {
+        return summary;
+    };
+    if summary.is_empty() {
+        format!("[compacted history available: retrieve_context_artifact reference {reference}]")
+    } else {
+        format!(
+            "{summary}\n[compacted history available: retrieve_context_artifact reference {reference}]"
+        )
     }
 }
 
@@ -2619,6 +2689,15 @@ mod tests {
         .with_effect(ToolEffect::Read)
     }
 
+    fn oversized_output_tool(_ctx: Arc<ToolContext>, _args: String) -> ToolFuture {
+        Box::pin(async { ToolResult::ok("oversized_output", "needle\n".repeat(2_000)) })
+    }
+
+    fn oversized_read_tool(name: &str) -> ToolDefinition {
+        ToolDefinition::new_fn(name, "test", "{}", oversized_output_tool)
+            .with_effect(ToolEffect::Read)
+    }
+
     #[tokio::test]
     async fn parallel_read_tools_run_concurrently() {
         PARALLEL_DELAY_CALLS.store(0, Ordering::SeqCst);
@@ -2647,6 +2726,94 @@ mod tests {
         assert!(results.iter().all(|r| !r.is_error));
         assert_eq!(PARALLEL_DELAY_CALLS.load(Ordering::SeqCst), 2);
         assert!(start.elapsed() < Duration::from_millis(70));
+    }
+
+    #[tokio::test]
+    async fn spill_is_retrievable_through_its_session_reference() {
+        let dir = tempfile::tempdir().unwrap();
+        let registry = ToolRegistry::new();
+        crate::tools::register_builtin_tools(&registry);
+        registry.register(oversized_read_tool("oversized_output"));
+        let mut agent = Agent::new();
+        agent.set_workspace_root(dir.path());
+        agent.set_tools(registry);
+        agent.set_policy(Policy::full_access());
+        let ctx = Arc::new(agent.tool_context());
+        let (_, spilled) = agent
+            .execute_single_tool(
+                &ToolCall {
+                    id: "spill-call".into(),
+                    name: "oversized_output".into(),
+                    arguments: "{}".into(),
+                },
+                &ctx,
+            )
+            .await;
+        let reference = spilled.spill.unwrap().locator;
+        assert!(reference.starts_with("ctxa-"));
+        assert!(spilled.content.contains(&reference));
+        assert!(!spilled.content.contains(".rx4/spill"));
+
+        let (_, retrieved) = agent
+            .execute_single_tool(
+                &ToolCall {
+                    id: "retrieve-call".into(),
+                    name: "retrieve_context_artifact".into(),
+                    arguments: serde_json::json!({
+                        "reference": reference,
+                        "query": "needle",
+                        "max_bytes": 512,
+                    })
+                    .to_string(),
+                },
+                &ctx,
+            )
+            .await;
+        assert!(!retrieved.is_error, "{}", retrieved.content);
+        assert!(retrieved.content.contains("1: needle"));
+        assert!(agent
+            .session
+            .read()
+            .artifacts
+            .iter()
+            .any(|artifact| artifact.kind == crate::session::ContextArtifactKind::Spill));
+    }
+
+    #[tokio::test]
+    async fn parallel_read_spills_are_session_artifacts() {
+        let dir = tempfile::tempdir().unwrap();
+        let registry = ToolRegistry::new();
+        registry.register(oversized_read_tool("large-a"));
+        registry.register(oversized_read_tool("large-b"));
+        let mut agent = Agent::new();
+        agent.set_workspace_root(dir.path());
+        agent.set_tools(registry);
+        agent.set_policy(Policy::full_access());
+        let ctx = Arc::new(agent.tool_context());
+        let results = agent
+            .execute_tools_parallel(
+                &[
+                    ToolCall {
+                        id: "a".into(),
+                        name: "large-a".into(),
+                        arguments: "{}".into(),
+                    },
+                    ToolCall {
+                        id: "b".into(),
+                        name: "large-b".into(),
+                        arguments: "{}".into(),
+                    },
+                ],
+                &ctx,
+            )
+            .await;
+        assert!(results.iter().all(|result| {
+            result
+                .spill
+                .as_ref()
+                .is_some_and(|spill| spill.locator.starts_with("ctxa-"))
+        }));
+        assert_eq!(agent.session.read().artifacts.len(), 2);
     }
 
     #[test]
@@ -2740,8 +2907,8 @@ mod tests {
         assert_eq!(CACHE_READ_CALLS.load(Ordering::SeqCst), 2);
     }
 
-    #[test]
-    fn compact_uses_token_aware_compaction() {
+    #[tokio::test]
+    async fn compact_uses_token_aware_compaction() {
         let dir = tempfile::tempdir().unwrap();
         let mut agent = Agent::new();
         agent.set_workspace_root(dir.path());
@@ -2770,6 +2937,28 @@ mod tests {
         assert!(raven.exists(), "raven archive was not written");
         let on_disk = std::fs::read_to_string(&raven).unwrap();
         assert!(!on_disk.is_empty());
+        let artifact = agent
+            .session
+            .read()
+            .artifacts
+            .iter()
+            .find(|artifact| artifact.kind == crate::session::ContextArtifactKind::CompactedHistory)
+            .cloned()
+            .expect("compaction should record a retrievable artifact");
+        assert!(agent
+            .session
+            .read()
+            .projections
+            .iter()
+            .any(|projection| projection.summary.contains(&artifact.reference)));
+        let retrieved = crate::context_artifact::retrieve_tool(
+            Arc::new(agent.tool_context()),
+            serde_json::json!({"reference": artifact.reference, "query": "old message 0"})
+                .to_string(),
+        )
+        .await;
+        assert!(!retrieved.is_error, "{}", retrieved.content);
+        assert!(retrieved.content.contains("old message 0"));
     }
 
     #[test]

@@ -134,6 +134,8 @@ pub struct ToolContext {
     pub provider: Option<Arc<dyn Provider>>,
     /// Optional tool registry for nested agent runs.
     pub tools: Option<Arc<ToolRegistry>>,
+    /// Session-scoped artifacts retained outside the provider context.
+    pub context_artifacts: Option<Arc<crate::context_artifact::ContextArtifactStore>>,
     /// Tools may request a scope switch; Agent applies after the tool batch.
     pub pending_scope: Option<Arc<parking_lot::Mutex<Option<Scope>>>>,
     /// Opt-in engine-owned todo state shared with the builtin todo executor.
@@ -186,6 +188,7 @@ impl ToolContext {
             os_sandbox_required: false,
             provider: None,
             tools: None,
+            context_artifacts: None,
             pending_scope: None,
             todo_state: None,
             todo_config: None,
