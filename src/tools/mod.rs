@@ -6,6 +6,7 @@ pub(crate) mod common;
 pub mod exec;
 mod extended;
 pub(crate) mod fs;
+mod pipeline;
 pub mod spill;
 
 use crate::agent::{ToolContext, ToolDefinition, ToolEffect, ToolRegistry, ToolResult};
@@ -240,6 +241,13 @@ pub fn register_builtin_tools(registry: &ToolRegistry) {
             exec::exec_tool,
             ToolEffect::Process,
         ),
+        (
+            "tool_pipeline",
+            "Run a bounded declarative JSON tool pipeline through the Agent's normal tool gates. This is not arbitrary code: steps name registered tools, may reference only prior step output with {\"$ref\":\"step_id\"}, and output must explicitly select concise step results. Max 12 steps, 4 concurrent read/network steps, 30 seconds, 8 KiB expanded arguments per step, and 4 KiB total returned output. The Agent executes this tool; direct registry execution is unsupported.",
+            r#"{"type":"object","properties":{"steps":{"type":"array","minItems":1,"maxItems":12,"items":{"type":"object","properties":{"id":{"type":"string","description":"Unique step id: letters, digits, _ or -."},"tool":{"type":"string","description":"Registered tool name; tool_pipeline itself is forbidden."},"arguments":{"description":"JSON arguments for the tool. A value exactly shaped as {\"$ref\":\"prior_step_id\"} inserts that prior result's bounded content."}},"required":["id","tool","arguments"],"additionalProperties":false}},"output":{"type":"object","properties":{"select":{"type":"array","minItems":1,"items":{"type":"object","properties":{"step":{"type":"string"},"max_bytes":{"type":"integer","minimum":1,"maximum":1024}},"required":["step"],"additionalProperties":false}}},"required":["select"],"additionalProperties":false}},"required":["steps","output"],"additionalProperties":false}"#,
+            pipeline::exec_tool_pipeline,
+            ToolEffect::Process,
+        ),
     ];
 
     for (name, desc, params, exec, effect) in tools {
@@ -433,6 +441,7 @@ mod tests {
             "lsp_definition",
             "lsp_references",
             "exec",
+            "tool_pipeline",
         ];
 
         assert_eq!(registry.count(), expected_tools.len());
@@ -445,6 +454,28 @@ mod tests {
                 "Missing tool: {tool}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn tool_pipeline_direct_registry_execution_fails_closed() {
+        let registry = ToolRegistry::new();
+        super::register_builtin_tools(&registry);
+        let ctx = Arc::new(ToolContext::new("."));
+
+        let result = registry
+            .execute(
+                "tool_pipeline",
+                &ctx,
+                r#"{"steps":[],"output":{"select":[]}}"#,
+            )
+            .await
+            .expect("registered pipeline marker");
+
+        assert!(result.is_error);
+        assert_eq!(
+            result.content,
+            "tool_pipeline requires Agent loop execution"
+        );
     }
 
     #[tokio::test]
