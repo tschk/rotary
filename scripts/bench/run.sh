@@ -313,9 +313,13 @@ harbor_try_codex() {
   [ "$DOCKER" = up ] || return 1
   model=$(json_get "$mid" "['codex']['model']")
   mkdir -p "$JOBS_DIR"
+  # Cap each task env's memory: one runaway task process must not
+  # thrash the host for every concurrent trial (8GB boxes).
   harbor run --dataset swebench@verified --agent codex --model "$model" \
+    --override-memory-mb "${BENCH_ENV_MEM_MB:-3072}" \
     --n-tasks "$N" --jobs-dir "$JOBS_DIR/harbor-$mid" \
     || harbor run -d swe-bench/swe-bench-verified -a codex -m "$model" \
+         --override-memory-mb "${BENCH_ENV_MEM_MB:-3072}" \
          --n-tasks "$N" -o "$JOBS_DIR/harbor-$mid"
 }
 
