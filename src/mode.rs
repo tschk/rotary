@@ -165,7 +165,7 @@ pub fn profile(scope: Scope) -> Profile {
         },
         Scope::ComputerUse => Profile {
             scope,
-            system_addendum: "Drive the desktop carefully via computer-use tools (embedded rs_peekaboo). Observe with see/image before click/type. Prefer reversible actions. Host may elevate to full_access.",
+            system_addendum: "Drive the desktop through the cu_* tools, background-first: observe with cu_see (cu_list what=surfaces lists background surface ids; cu_see surface=<id> observes one without activating it), then act on observed elements with cu_click (semantic invoke) or set values. These never move the cursor or steal focus. Foreground-bound paths (cu_app launch/switch, cu_window focus, coordinate cu_click) are disabled unless the host set PRAEFECTUS_ALLOW_GLOBAL_INPUT=1; when enabled they seize the user's desktop, so use them only when no background route exists and say why. Never drive the UI through shell commands (open -a, osascript, cliclick). Prefer reversible actions. Host may elevate to full_access.",
             // Safer default; hosts opt into FullAccess via --full-access / set_policy.
             policy: Policy::workspace_write(),
             allowed_tools: Some(COMPUTER_USE_TOOLS),
