@@ -1,10 +1,10 @@
-//! Computer-use tools via rs_peekaboo (crates.io dep — no FFI, no vendoring).
+//! Computer-use tools via Praefectus (crates.io dep — no FFI, no vendoring).
 
 use crate::agent::{ToolDefinition, ToolEffect, ToolExecutor, ToolRegistry, ToolResult};
-use crate::computer_use_bridge::ComputerUseBridge;
+use crate::computer_use_bridge::{require_background_route, ComputerUseBridge};
 use praefectus::{
     Action, ApplicationOperation, CancellationToken, Direction, MouseButton, SafetyClass,
-    TargetRef, VerificationPolicy, WindowOperation,
+    SurfaceRef, TargetRef, VerificationPolicy, WindowOperation,
 };
 use serde_json::Value;
 use std::sync::{Arc, OnceLock};
@@ -28,8 +28,8 @@ pub fn register_tools(registry: &ToolRegistry) {
         ),
         (
             "cu_see",
-            "Observe the active UI as a bounded semantic snapshot.",
-            r#"{"type":"object","properties":{"path":{"type":"string"}}}"#,
+            "Observe the active UI, or a background surface by id, as a bounded semantic snapshot. Background observation never activates the app.",
+            r#"{"type":"object","properties":{"path":{"type":"string"},"surface":{"type":"string"}}}"#,
             ToolEffect::Write,
         ),
         (
@@ -40,43 +40,43 @@ pub fn register_tools(registry: &ToolRegistry) {
         ),
         (
             "cu_click",
-            "Invoke a semantic element tag or click freshly observed coordinates.",
+            "Invoke an observed semantic element tag (stays in the background, never moves the cursor). Coordinate clicks are a last resort and seize the pointer.",
             r#"{"type":"object","properties":{"coords":{"type":"string"},"x":{"type":"integer"},"y":{"type":"integer"},"index":{"type":"integer"},"snapshot":{"type":"string"},"on":{"type":"string"},"button":{"type":"string"},"count":{"type":"integer"}}}"#,
             ToolEffect::Process,
         ),
         (
             "cu_type",
-            "Type text into the exactly observed focused element.",
+            "Type text into the exactly observed focused element of the frontmost app.",
             r#"{"type":"object","properties":{"text":{"type":"string"},"clear":{"type":"boolean"},"return":{"type":"boolean"},"delay_ms":{"type":"integer"}},"required":["text"]}"#,
             ToolEffect::Process,
         ),
         (
             "cu_hotkey",
-            "Send a hotkey to the exactly observed focused element.",
+            "Send a hotkey to the exactly observed focused element of the frontmost app.",
             r#"{"type":"object","properties":{"keys":{"type":"string"}},"required":["keys"]}"#,
             ToolEffect::Process,
         ),
         (
             "cu_scroll",
-            "Scroll the exactly observed focused element.",
+            "Scroll the exactly observed focused element of the frontmost app.",
             r#"{"type":"object","properties":{"direction":{"type":"string"},"amount":{"type":"integer"}}}"#,
             ToolEffect::Process,
         ),
         (
             "cu_window",
-            "List, focus, close, or minimize windows.",
+            "List windows, or focus, close, or minimize one. Focus steals the user's foreground; use it only when no background route exists.",
             r#"{"type":"object","properties":{"action":{"type":"string"},"app":{"type":"string"},"title":{"type":"string"}}}"#,
             ToolEffect::Process,
         ),
         (
             "cu_app",
-            "List, launch, switch, or quit applications.",
+            "List applications, or launch, switch to, or quit one. Switching steals the user's foreground; use it only when no background route exists.",
             r#"{"type":"object","properties":{"action":{"type":"string"},"name":{"type":"string"}}}"#,
             ToolEffect::Process,
         ),
         (
             "cu_list",
-            "List applications, windows, or screens.",
+            "List applications, windows, screens, or background surfaces (use a surface id with cu_see surface=<id>).",
             r#"{"type":"object","properties":{"what":{"type":"string"}}}"#,
             ToolEffect::Read,
         ),
@@ -171,10 +171,23 @@ fn execute_named(
             if let Some(path) = args.get("path").and_then(Value::as_str) {
                 screenshot(bridge, ctx, path, &cancellation)?;
             }
-            let observation = bridge
-                .observer()
-                .observe_semantic(&cancellation, deadline)
-                .map_err(|error| error.to_string())?;
+            let observation = if let Some(surface) = args.get("surface").and_then(Value::as_str) {
+                bridge
+                    .observer()
+                    .observe_surface(
+                        &SurfaceRef {
+                            id: surface.to_string(),
+                        },
+                        &cancellation,
+                        deadline,
+                    )
+                    .map_err(|error| error.to_string())?
+            } else {
+                bridge
+                    .observer()
+                    .observe_semantic(&cancellation, deadline)
+                    .map_err(|error| error.to_string())?
+            };
             bridge.set_observation(observation.clone());
             serde_json::to_value(observation).map_err(|error| error.to_string())
         }
@@ -295,6 +308,10 @@ fn click(
         .unwrap_or(u32::MAX)
         .max(1);
     if args.get("coords").is_some() || args.get("x").is_some() || args.get("y").is_some() {
+        require_background_route(
+            ComputerUseBridge::foreground_input_allowed(),
+            "coordinate clicks",
+        )?;
         let (x, y) = coordinates(args)?;
         let observation = bridge
             .observer()
@@ -378,25 +395,37 @@ fn window(
             .observer()
             .list_windows(cancellation, deadline)
             .map_err(|error| error.to_string()),
-        action => bridge.execute(
-            Action::Window {
-                operation: match action {
-                    "focus" => WindowOperation::Focus,
-                    "close" => WindowOperation::Close,
-                    "minimize" => WindowOperation::Minimize,
-                    _ => return Err("window action must be list, focus, close, or minimize".into()),
+        action => {
+            if action == "focus" {
+                require_background_route(
+                    ComputerUseBridge::foreground_input_allowed(),
+                    "window focus",
+                )?;
+            }
+            bridge.execute(
+                Action::Window {
+                    operation: match action {
+                        "focus" => WindowOperation::Focus,
+                        "close" => WindowOperation::Close,
+                        "minimize" => WindowOperation::Minimize,
+                        _ => {
+                            return Err(
+                                "window action must be list, focus, close, or minimize".into()
+                            )
+                        }
+                    },
+                    app: args.get("app").and_then(Value::as_str).map(str::to_string),
+                    title: args
+                        .get("title")
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
                 },
-                app: args.get("app").and_then(Value::as_str).map(str::to_string),
-                title: args
-                    .get("title")
-                    .and_then(Value::as_str)
-                    .map(str::to_string),
-            },
-            TargetRef::None,
-            VerificationPolicy::None,
-            SafetyClass::Reversible,
-            cancellation,
-        ),
+                TargetRef::None,
+                VerificationPolicy::None,
+                SafetyClass::Reversible,
+                cancellation,
+            )
+        }
     }
 }
 
@@ -411,21 +440,29 @@ fn application(
             .observer()
             .list_applications(cancellation, deadline)
             .map_err(|error| error.to_string()),
-        action => bridge.execute(
-            Action::Application {
-                operation: match action {
-                    "launch" => ApplicationOperation::Launch,
-                    "switch" => ApplicationOperation::Switch,
-                    "quit" => ApplicationOperation::Quit,
-                    _ => return Err("app action must be list, launch, switch, or quit".into()),
+        action => {
+            if matches!(action, "launch" | "switch") {
+                require_background_route(
+                    ComputerUseBridge::foreground_input_allowed(),
+                    "app launch/switch",
+                )?;
+            }
+            bridge.execute(
+                Action::Application {
+                    operation: match action {
+                        "launch" => ApplicationOperation::Launch,
+                        "switch" => ApplicationOperation::Switch,
+                        "quit" => ApplicationOperation::Quit,
+                        _ => return Err("app action must be list, launch, switch, or quit".into()),
+                    },
+                    name: required_string(args, "name")?.to_string(),
                 },
-                name: required_string(args, "name")?.to_string(),
-            },
-            TargetRef::None,
-            VerificationPolicy::None,
-            SafetyClass::External,
-            cancellation,
-        ),
+                TargetRef::None,
+                VerificationPolicy::None,
+                SafetyClass::External,
+                cancellation,
+            )
+        }
     }
 }
 
@@ -452,7 +489,14 @@ fn list(
                 .displays,
         )
         .map_err(|error| error.to_string()),
-        _ => Err("what must be apps, windows, or screens".to_string()),
+        "surfaces" => serde_json::to_value(
+            bridge
+                .observer()
+                .list_surfaces(cancellation, deadline)
+                .map_err(|error| error.to_string())?,
+        )
+        .map_err(|error| error.to_string()),
+        _ => Err("what must be apps, windows, screens, or surfaces".to_string()),
     }
 }
 
