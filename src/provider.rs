@@ -180,6 +180,8 @@ pub struct OpenAIProvider {
     provider_id: String,
     provider_name: String,
     prompt_cache: crate::prompt_cache::PromptCacheConfig,
+    /// Headers every request carries (gateway routing, beta flags).
+    extra_headers: reqwest::header::HeaderMap,
 }
 
 #[cfg(feature = "providers")]
@@ -226,7 +228,45 @@ impl OpenAIProvider {
             provider_id: provider_id_str,
             provider_name: provider_name.into(),
             prompt_cache,
+            extra_headers: reqwest::header::HeaderMap::new(),
         }
+    }
+
+    /// Attach a header to every request. Gateways such as OpenCode Zen route
+    /// and cache by session, and reject requests that omit the header.
+    pub fn with_header(mut self, name: &'static str, value: impl Into<String>) -> Self {
+        let value = value.into();
+        match reqwest::header::HeaderValue::from_str(&value) {
+            Ok(value) => {
+                self.extra_headers
+                    .insert(reqwest::header::HeaderName::from_static(name), value);
+            }
+            Err(error) => {
+                debug!("dropping header {name}: {error}");
+            }
+        }
+        self
+    }
+
+    /// Request for one endpoint, carrying auth and any extra headers.
+    fn request(&self, body: &serde_json::Value, endpoint: &str) -> reqwest::RequestBuilder {
+        let mut req = self
+            .client
+            .post(format!("{}/{endpoint}", self.base_url))
+            .json(body);
+        if !self.extra_headers.is_empty() {
+            req = req.headers(self.extra_headers.clone());
+        }
+        if !self.api_key.is_empty() {
+            if self.provider_id == "anthropic" {
+                req = req
+                    .header("x-api-key", &self.api_key)
+                    .header("anthropic-version", "2023-06-01");
+            } else {
+                req = req.bearer_auth(&self.api_key);
+            }
+        }
+        req
     }
 
     /// Override prompt-cache configuration (Anthropic cache_control markers).
@@ -323,22 +363,8 @@ impl Provider for OpenAIProvider {
         } else {
             "chat/completions"
         };
-        let mut req = self
-            .client
-            .post(format!("{}/{}", self.base_url, endpoint))
-            .json(&body);
-
-        if !self.api_key.is_empty() {
-            if self.provider_id == "anthropic" {
-                req = req
-                    .header("x-api-key", &self.api_key)
-                    .header("anthropic-version", "2023-06-01");
-            } else {
-                req = req.bearer_auth(&self.api_key);
-            }
-        }
-
-        let response = req
+        let response = self
+            .request(&body, endpoint)
             .send()
             .await
             .map_err(|e| ProviderError::Http(e.to_string()))?;
@@ -784,6 +810,37 @@ mod tests {
         assert_eq!(assistant.content, "thinking");
         assert_eq!(assistant.tool_call_id, None);
         assert_eq!(assistant.tool_calls.len(), 1);
+    }
+
+    #[cfg(feature = "providers")]
+    #[test]
+    fn extra_headers_ride_every_request() {
+        let provider = OpenAIProvider::with_base_url(
+            "https://example.test/v1",
+            "test-key",
+            "opencode-go",
+            "OpenCode Zen Go",
+        )
+        .with_header("x-opencode-session", "tk-test-session");
+        let request = provider
+            .request(
+                &serde_json::json!({"model": "glm-5.3-flash"}),
+                "chat/completions",
+            )
+            .build()
+            .expect("request");
+        assert_eq!(
+            request
+                .headers()
+                .get("x-opencode-session")
+                .and_then(|value| value.to_str().ok()),
+            Some("tk-test-session")
+        );
+        assert!(request.headers().contains_key("authorization"));
+        assert_eq!(
+            request.url().as_str(),
+            "https://example.test/v1/chat/completions"
+        );
     }
 
     #[cfg(feature = "providers")]
