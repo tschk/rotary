@@ -141,7 +141,7 @@ impl Agent {
                         .cancellation
                         .run(tokio::time::timeout(
                             remaining,
-                            Box::pin(self.execute_tools_parallel(&batch, ctx)),
+                            Box::pin(self.execute_tools_sync(&batch, ctx)),
                         ))
                         .await
                     {

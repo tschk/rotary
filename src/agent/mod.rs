@@ -111,6 +111,15 @@ pub enum Event {
     },
     ToolExecutionStart(ToolCall),
     ToolExecutionEnd(ToolResult),
+    /// A call exceeded the sync window and keeps running in the background.
+    /// The model already received a `[running in background]` placeholder.
+    ToolBackgrounded(ToolCall),
+    /// A backgrounded call finished and its result was delivered to the model
+    /// as a `<background_result>` message.
+    BackgroundResultArrived {
+        call: ToolCall,
+        is_error: bool,
+    },
     /// The session todo list changed through the opt-in engine todo tool.
     TodoUpdated {
         /// Full replacement state, suitable for hosts to render directly.
@@ -314,6 +323,178 @@ pub fn wipe_planning_tokens(messages: &mut Vec<Message>) {
 
 pub type Subscriber = Arc<dyn Fn(&Event) + Send + Sync>;
 
+/// Configuration for default-async tool execution.
+///
+/// Enabled by default: a call that is still running after `sync_window`
+/// hands the model a `[running in background]` placeholder and keeps
+/// executing, so the loop can keep reasoning and running other calls while
+/// slow tools finish. The real result is delivered later as a
+/// `<background_result>` message and the turn never completes while calls
+/// are still pending. Set `enabled: false` for fully synchronous behaviour.
+#[derive(Debug, Clone)]
+pub struct AsyncToolsConfig {
+    /// Background slow calls instead of blocking the loop (default `true`).
+    pub enabled: bool,
+    /// How long a call may run synchronously before it is backgrounded
+    /// (default 250ms). Calls that finish inside the window behave exactly
+    /// like synchronous calls. Only parallel-capable effects (Read/Network)
+    /// are ever backgrounded; Write/Process calls always run to completion
+    /// so later batches observe their effects.
+    pub sync_window: std::time::Duration,
+}
+
+impl Default for AsyncToolsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            sync_window: std::time::Duration::from_millis(250),
+        }
+    }
+}
+
+/// One tool call that was backgrounded after outliving the sync window.
+struct BackgroundCall {
+    call: ToolCall,
+    /// Result slot in the callset that hedged this call, while that callset
+    /// has not returned to the model yet. `None` once the placeholder has
+    /// been recorded as the call's tool message.
+    open_slot: Option<usize>,
+    handle: tokio::task::JoinHandle<()>,
+    rx: tokio::sync::mpsc::Receiver<(ToolCall, ToolResult)>,
+}
+
+/// Calls backgrounded during the current turn. Dropping the queue aborts any
+/// still-running tasks, so error/cancel paths never leak detached work; the
+/// turn loop drains the queue before completing.
+#[derive(Default)]
+struct BackgroundQueue {
+    calls: Vec<BackgroundCall>,
+}
+
+impl Drop for BackgroundQueue {
+    fn drop(&mut self) {
+        for pending in self.calls.drain(..) {
+            pending.handle.abort();
+        }
+    }
+}
+
+impl BackgroundQueue {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.calls.is_empty()
+    }
+
+    fn push(&mut self, pending: BackgroundCall) {
+        self.calls.push(pending);
+    }
+
+    /// Remove calls whose tasks already finished, returning their results.
+    /// Tasks that died without sending (panic) become error results.
+    fn reap_finished(&mut self) -> Vec<(ToolCall, ToolResult)> {
+        let mut finished = Vec::new();
+        let mut idx = 0;
+        while idx < self.calls.len() {
+            match self.calls[idx].rx.try_recv() {
+                Ok((call, result)) => {
+                    let pending = self.calls.swap_remove(idx);
+                    pending.handle.abort();
+                    finished.push((call, result));
+                }
+                Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                    let pending = self.calls.swap_remove(idx);
+                    let id = pending.call.id.clone();
+                    finished.push((
+                        pending.call,
+                        ToolResult::err(id, "background tool task failed"),
+                    ));
+                }
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
+                    idx += 1;
+                }
+            }
+        }
+        finished
+    }
+
+    /// Calls hedged in the current callset that finished while later batches
+    /// ran: their real result replaces the placeholder before anything is
+    /// recorded.
+    fn reclaim_open(&mut self) -> Vec<(usize, ToolResult)> {
+        let mut reclaimed = Vec::new();
+        let mut idx = 0;
+        while idx < self.calls.len() {
+            match self.calls[idx].rx.try_recv() {
+                Ok((_, result)) => {
+                    let pending = self.calls.swap_remove(idx);
+                    pending.handle.abort();
+                    if let Some(slot) = pending.open_slot {
+                        reclaimed.push((slot, result));
+                    }
+                }
+                Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                    let pending = self.calls.swap_remove(idx);
+                    if let Some(slot) = pending.open_slot {
+                        let id = pending.call.id.clone();
+                        reclaimed.push((slot, ToolResult::err(id, "background tool task failed")));
+                    }
+                }
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
+                    idx += 1;
+                }
+            }
+        }
+        reclaimed
+    }
+
+    /// The callset returned a placeholder to the model; future completions
+    /// are delivered as `<background_result>` messages instead of slots.
+    fn close_open_slots(&mut self) {
+        for pending in &mut self.calls {
+            pending.open_slot = None;
+        }
+    }
+
+    /// Wait for every pending call and return their results. Used when the
+    /// turn completes so no call outlives it.
+    async fn drain_all(&mut self) -> Vec<(ToolCall, ToolResult)> {
+        let mut results = Vec::new();
+        while let Some(mut pending) = self.calls.pop() {
+            let outcome = pending.rx.recv().await;
+            pending.handle.abort();
+            match outcome {
+                Some((call, result)) => results.push((call, result)),
+                None => results.push((
+                    pending.call.clone(),
+                    ToolResult::err(&pending.call.id, "background tool task failed"),
+                )),
+            }
+        }
+        results
+    }
+}
+
+/// Placeholder returned to the model while a call keeps running.
+fn background_placeholder(call: &ToolCall) -> ToolResult {
+    ToolResult::ok(
+        &call.id,
+        format!(
+            "[running in background] {} has not finished yet. Continue with other work; its result \
+             will arrive in a <background_result> message (call id {}). Do not re-issue this call.",
+            normalize_tool_name(&call.name),
+            call.id
+        ),
+    )
+}
+
+/// Text appended to the system prompt while default-async execution is on so
+/// the model knows what a placeholder means and what to do with it.
+const ASYNC_TOOLS_PROMPT_NOTE: &str = "\n\n<async_tools>Tool calls that take longer than a moment return a `[running in background]` placeholder immediately and keep executing. Keep reasoning or run other tools meanwhile; each finished call arrives as a <background_result> message carrying its call id. Never re-issue a call that is still running in the background.</async_tools>";
+
+/// Budget caps for a single agent session.
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct AgentBudget {
     pub max_cost: Option<f64>,
@@ -385,6 +566,12 @@ pub struct Agent {
     /// A fresh [`ToolGuardrails`] is built from this config for each
     /// `prompt()`, so observations never leak between turns.
     pub guardrails: Option<GuardrailConfig>,
+    /// Default-async tool execution. When enabled (the default), a call that
+    /// is still running after [`AsyncToolsConfig::sync_window`] hands the
+    /// model a placeholder and keeps executing in the background; the real
+    /// result arrives later as a `<background_result>` message. The turn
+    /// never completes while background calls are still pending.
+    pub async_tools: AsyncToolsConfig,
     /// Self-healing re-prompt budget. `None` (the default) means a failing
     /// tool is reported to the model without extra coaching, which is the
     /// historical behaviour.
@@ -488,6 +675,7 @@ impl Agent {
             plan_approver: None,
             guardrails: None,
             self_healing: None,
+            async_tools: AsyncToolsConfig::default(),
             authorizer: None,
             provider: None,
             max_tool_iterations: 50,
@@ -1433,6 +1621,9 @@ impl Agent {
         // Current providers expose a terminal `Done` marker but not a portable
         // finish reason yet. Keep this optional metadata honest until they do.
         let last_finish_reason: Option<String> = None;
+        // Backgrounded tool calls for this turn. Dropped (aborted) on early
+        // error paths; drained before the turn completes.
+        let mut background = BackgroundQueue::new();
 
         for iteration in 0..self.max_tool_iterations {
             if let Some(reason) = self.check_budget() {
@@ -1443,9 +1634,23 @@ impl Agent {
             }
             self.emit(Event::TurnStart { turn: iteration });
 
+            // Deliver results from backgrounded calls that finished since the
+            // last model round, so this round sees them.
+            for (call, result) in background.reap_finished() {
+                let mut result = result;
+                self.spill_tool_result(&ctx, &mut result);
+                self.deliver_background_result(&call, &result);
+            }
+
             let messages = self.request_messages_with_todo_state();
-            let base_system =
+            let mut base_system =
                 turn::append_active_skills(self.system_prompt.clone(), active_skills.as_deref());
+            if self.async_tools.enabled {
+                base_system = Some(match base_system {
+                    Some(prompt) => format!("{prompt}{ASYNC_TOOLS_PROMPT_NOTE}"),
+                    None => ASYNC_TOOLS_PROMPT_NOTE.trim_start_matches('\n').to_string(),
+                });
+            }
             #[cfg(feature = "graph-memory")]
             let base_system = self.append_semantic_recalls(base_system, &safe_text);
             #[cfg(feature = "zkr-memory")]
@@ -1650,6 +1855,18 @@ impl Agent {
             }
 
             if tool_calls.is_empty() {
+                // The model is done, but backgrounded calls may still be
+                // running. Never end the turn with open loops: wait for them,
+                // deliver their results, and give the model one more round to
+                // react before actually completing.
+                if !background.is_empty() {
+                    for (call, result) in background.drain_all().await {
+                        let mut result = result;
+                        self.spill_tool_result(&ctx, &mut result);
+                        self.deliver_background_result(&call, &result);
+                    }
+                    continue;
+                }
                 if self.guardrails.is_some() && check_empty_turn(&assistant_content) {
                     let action = recover_empty_turn(empty_turns, 3);
                     empty_turns += 1;
@@ -1827,7 +2044,7 @@ impl Agent {
                 }
             }
 
-            let results = self.execute_tools_parallel(&tool_calls, &ctx).await;
+            let results = self.execute_tools(&tool_calls, &ctx, &mut background).await;
             self.flush_tool_side_events();
             if let Some(updates) = &ctx.todo_updates {
                 for update in std::mem::take(&mut *updates.lock()) {
@@ -1953,11 +2170,50 @@ impl Agent {
         Ok(())
     }
 
-    /// Execute tool calls: parallel batches for Read/Network, serial for Write/Process.
-    async fn execute_tools_parallel(
+    fn apply_before_tool_hooks(&self, call: &ToolCall) -> Result<ToolCall, String> {
+        match &self.hooks {
+            Some(hooks) => hooks.run_before_tool(call),
+            None => Ok(call.clone()),
+        }
+    }
+
+    /// Execute tool calls: parallel batches for Read/Network, serial for
+    /// Write/Process. With default-async execution enabled, a call that
+    /// outlives [`AsyncToolsConfig::sync_window`] hands the model a
+    /// placeholder and keeps running: it moves onto `background` and its real
+    /// result is delivered later as a `<background_result>` message. A hedged
+    /// call that finishes while later batches of the same callset run gets its
+    /// real result back in place of the placeholder.
+    async fn execute_tools(
         &self,
         calls: &[ToolCall],
         ctx: &Arc<ToolContext>,
+        background: &mut BackgroundQueue,
+    ) -> Vec<ToolResult> {
+        self.execute_tools_inner(calls, ctx, background, self.async_tools.enabled)
+            .await
+    }
+
+    /// Fully synchronous execution for callers that must observe completed
+    /// results in place (pipeline steps): hedging is disabled, so no
+    /// placeholder is ever produced and no background reference can leak
+    /// into later steps' argument expansion.
+    async fn execute_tools_sync(
+        &self,
+        calls: &[ToolCall],
+        ctx: &Arc<ToolContext>,
+    ) -> Vec<ToolResult> {
+        let mut background = BackgroundQueue::new();
+        self.execute_tools_inner(calls, ctx, &mut background, false)
+            .await
+    }
+
+    async fn execute_tools_inner(
+        &self,
+        calls: &[ToolCall],
+        ctx: &Arc<ToolContext>,
+        background: &mut BackgroundQueue,
+        allow_hedge: bool,
     ) -> Vec<ToolResult> {
         let classified: Vec<(String, String, ToolEffect)> = calls
             .iter()
@@ -1968,40 +2224,54 @@ impl Agent {
             })
             .collect();
         let batches = schedule_tool_calls(&classified);
+        let hedging = allow_hedge;
+        let sync_window = self.async_tools.sync_window;
+        // Only parallel-capable effects (Read/Network) may hedge past the sync
+        // window. Write/Process calls get one batch each precisely because
+        // later batches may depend on their completion; backgrounding them
+        // would let the next batch start while a write or process still runs,
+        // breaking the serial guarantee these batches exist to provide.
+        let hedgeable: Vec<bool> = classified
+            .iter()
+            .map(|(name, args, registered)| {
+                crate::guardrails::reclassify_effect(name, args, *registered).supports_parallel()
+            })
+            .collect();
         let mut results: Vec<Option<ToolResult>> = vec![None; calls.len()];
-        let mut join_failures: Vec<Option<String>> = vec![None; calls.len()];
+        let mut cancelled = false;
 
         for batch in batches {
-            if batch.len() == 1 {
-                let idx = batch[0];
-                let original = &calls[idx];
-                self.emit(Event::ToolExecutionStart(redact_tool_call(original)));
-                let (call, result) = self.execute_single_tool(original, ctx).await;
-                if result.requires_approval() {
-                    self.emit(Event::ApprovalRequired(
-                        crate::permissions::ApprovalRequest::from_call(
-                            &redact_tool_call(&call),
-                            &self.policy,
-                        ),
-                    ));
-                }
-                self.emit(Event::ToolExecutionEnd(result.clone()));
-                results[idx] = Some(result);
-                continue;
+            // Every call spawns into its own task so hedging can leave it
+            // running past the sync window without blocking its batch-mates.
+            struct BatchTask {
+                idx: usize,
+                call: ToolCall,
+                handle: tokio::task::JoinHandle<()>,
+                rx: tokio::sync::mpsc::Receiver<(ToolCall, ToolResult)>,
             }
-
-            let tools = Arc::clone(&self.tools);
-            let policy = self.policy.clone();
-            let scope_profile = self.scope_profile.clone();
-            let approver = self.approver.clone();
-            let async_approver = self.async_approver.clone();
-            let authorizer = self.authorizer.clone();
-            let tool_cache = self.tool_cache.clone();
-            let extra_allowed_tools = self.extra_allowed_tools.clone();
-            let mut join_set = tokio::task::JoinSet::new();
+            let mut tasks: Vec<BatchTask> = Vec::new();
 
             for idx in batch {
                 let original = &calls[idx];
+                // Pipelines are Agent-owned and always synchronous: route them
+                // through the gated single-call path (hooks, policy,
+                // approval, dispatch, spill) before any hedging machinery, so
+                // every step observes its inputs' completed results.
+                if normalize_tool_name(&original.name) == "tool_pipeline" {
+                    self.emit(Event::ToolExecutionStart(redact_tool_call(original)));
+                    let (call, result) = self.execute_single_tool(original, ctx).await;
+                    if result.requires_approval() {
+                        self.emit(Event::ApprovalRequired(
+                            crate::permissions::ApprovalRequest::from_call(
+                                &redact_tool_call(&call),
+                                &self.policy,
+                            ),
+                        ));
+                    }
+                    self.emit(Event::ToolExecutionEnd(result.clone()));
+                    results[idx] = Some(result);
+                    continue;
+                }
                 let call = match self.apply_before_tool_hooks(original) {
                     Ok(c) => c,
                     Err(reason) => {
@@ -2012,6 +2282,13 @@ impl Agent {
                         continue;
                     }
                 };
+                if let Some(reason) = self.write_path_denial(&call, ctx) {
+                    self.emit(Event::ToolExecutionStart(redact_tool_call(&call)));
+                    let result = ToolResult::err(&call.id, reason);
+                    self.emit(Event::ToolExecutionEnd(result.clone()));
+                    results[idx] = Some(result);
+                    continue;
+                }
                 self.emit(Event::ToolExecutionStart(redact_tool_call(&call)));
                 if self.cassette_replay {
                     let result = crate::cassette::simulate_tool(&call);
@@ -2020,15 +2297,17 @@ impl Agent {
                     continue;
                 }
                 let ctx = Arc::clone(ctx);
-                let tools = Arc::clone(&tools);
-                let policy = policy.clone();
-                let scope_profile = scope_profile.clone();
-                let approver = approver.clone();
-                let async_approver = async_approver.clone();
-                let authorizer = authorizer.clone();
-                let tool_cache = tool_cache.clone();
-                let extra_allowed_tools = extra_allowed_tools.clone();
-                join_set.spawn(async move {
+                let tools = Arc::clone(&self.tools);
+                let policy = self.policy.clone();
+                let scope_profile = self.scope_profile.clone();
+                let approver = self.approver.clone();
+                let async_approver = self.async_approver.clone();
+                let authorizer = self.authorizer.clone();
+                let tool_cache = self.tool_cache.clone();
+                let extra_allowed_tools = self.extra_allowed_tools.clone();
+                let (tx, rx) = tokio::sync::mpsc::channel(1);
+                let task_call = call.clone();
+                let handle = tokio::spawn(async move {
                     let result = Agent::run_tool_call(
                         &tools,
                         &policy,
@@ -2037,18 +2316,55 @@ impl Agent {
                         approver.clone(),
                         async_approver.as_deref(),
                         &tool_cache,
-                        &call,
+                        &task_call,
                         &ctx,
                         &extra_allowed_tools,
                     )
                     .await;
-                    (idx, call, result)
+                    let _ = tx.send((task_call, result)).await;
+                });
+                tasks.push(BatchTask {
+                    idx,
+                    call,
+                    handle,
+                    rx,
                 });
             }
 
-            while let Some(joined) = join_set.join_next().await {
-                match joined {
-                    Ok((idx, call, mut result)) => {
+            while let Some(mut task) = tasks.pop() {
+                let outcome = if hedging && hedgeable[task.idx] {
+                    match ctx
+                        .cancellation
+                        .run(tokio::time::timeout(sync_window, task.rx.recv()))
+                        .await
+                    {
+                        // Window elapsed: leave the task running, hand the
+                        // model a placeholder, queue the call for delivery.
+                        Ok(Err(_elapsed)) => None,
+                        // Turn cancelled: stop the whole batch. Anything
+                        // already queued is aborted when the queue drops.
+                        Err(_cancelled) => {
+                            task.handle.abort();
+                            for rest in tasks.drain(..) {
+                                rest.handle.abort();
+                            }
+                            results[task.idx] =
+                                Some(ToolResult::err(&task.call.id, "turn cancelled"));
+                            cancelled = true;
+                            break;
+                        }
+                        Ok(Ok(Some((call, result)))) => Some(Ok((call, result))),
+                        Ok(Ok(None)) => Some(Err("background tool task failed")),
+                    }
+                } else {
+                    match task.rx.recv().await {
+                        Some((call, result)) => Some(Ok((call, result))),
+                        None => Some(Err("background tool task failed")),
+                    }
+                };
+                match outcome {
+                    Some(Ok((call, result))) => {
+                        let mut result = result;
                         self.spill_tool_result(ctx, &mut result);
                         if result.requires_approval() {
                             self.emit(Event::ApprovalRequired(
@@ -2059,21 +2375,41 @@ impl Agent {
                             ));
                         }
                         self.emit(Event::ToolExecutionEnd(result.clone()));
-                        results[idx] = Some(result);
+                        results[task.idx] = Some(result);
                     }
-                    Err(e) => {
-                        warn!("parallel tool task join error: {e}");
-                        if let Some((idx, _)) = results
-                            .iter()
-                            .enumerate()
-                            .find(|(_, result)| result.is_none())
-                        {
-                            join_failures[idx] = Some(format!("parallel tool task failed: {e}"));
-                        }
+                    Some(Err(reason)) => {
+                        let result = ToolResult::err(&task.call.id, reason);
+                        self.emit(Event::ToolExecutionEnd(result.clone()));
+                        results[task.idx] = Some(result);
+                    }
+                    None => {
+                        let placeholder = background_placeholder(&task.call);
+                        self.emit(Event::ToolExecutionEnd(placeholder.clone()));
+                        self.emit(Event::ToolBackgrounded(redact_tool_call(&task.call)));
+                        results[task.idx] = Some(placeholder);
+                        background.push(BackgroundCall {
+                            call: task.call,
+                            open_slot: Some(task.idx),
+                            handle: task.handle,
+                            rx: task.rx,
+                        });
                     }
                 }
             }
+            if cancelled {
+                break;
+            }
         }
+
+        // A hedged call may have finished while later batches ran: swap its
+        // placeholder back out for the real result before anything is
+        // recorded, then freeze the remaining slots for message delivery.
+        for (slot, result) in background.reclaim_open() {
+            let mut result = result;
+            self.spill_tool_result(ctx, &mut result);
+            results[slot] = Some(result);
+        }
+        background.close_open_slots();
 
         results
             .into_iter()
@@ -2082,22 +2418,42 @@ impl Agent {
                 r.unwrap_or_else(|| {
                     ToolResult::err(
                         calls.get(i).map(|c| c.id.as_str()).unwrap_or(""),
-                        join_failures[i]
-                            .as_deref()
-                            .unwrap_or("tool execution failed"),
+                        "tool execution failed",
                     )
                 })
             })
             .collect()
     }
 
-    fn apply_before_tool_hooks(&self, call: &ToolCall) -> Result<ToolCall, String> {
-        match &self.hooks {
-            Some(hooks) => hooks.run_before_tool(call),
-            None => Ok(call.clone()),
+    /// Enforce the write-path schedule for a call before it runs.
+    fn write_path_denial(&self, call: &ToolCall, ctx: &Arc<ToolContext>) -> Option<String> {
+        if crate::permissions::is_write_tool(&call.name) {
+            if let Some(path) = crate::tools::common::parse_str_field(&call.arguments, "path") {
+                if !self.write_paths.allows(&ctx.workspace_root, &path) {
+                    return Some("write path denied by schedule".to_string());
+                }
+            }
         }
+        None
     }
 
+    /// Record a finished background call's result and tell the model.
+    fn deliver_background_result(&self, call: &ToolCall, result: &ToolResult) {
+        let tool = normalize_tool_name(&call.name).to_string();
+        let status = if result.is_error { "error" } else { "done" };
+        let message = Message::user(format!(
+            "<background_result call=\"{}\" tool=\"{}\" status=\"{}\">\n{}\n</background_result>",
+            call.id, tool, status, result.content
+        ));
+        self.record_message(message);
+        self.emit(Event::BackgroundResultArrived {
+            call: redact_tool_call(call),
+            is_error: result.is_error,
+        });
+    }
+
+    /// Execute one call synchronously: hooks, write-path schedule, pipeline
+    /// dispatch, spill bound, policy/approvals.
     async fn execute_single_tool(
         &self,
         call: &ToolCall,
@@ -2110,13 +2466,9 @@ impl Agent {
                 return (call.clone(), ToolResult::err(&id, reason));
             }
         };
-        if crate::permissions::is_write_tool(&call.name) {
-            if let Some(path) = crate::tools::common::parse_str_field(&call.arguments, "path") {
-                if !self.write_paths.allows(&ctx.workspace_root, &path) {
-                    let id = call.id.clone();
-                    return (call, ToolResult::err(&id, "write path denied by schedule"));
-                }
-            }
+        if let Some(reason) = self.write_path_denial(&call, ctx) {
+            let id = call.id.clone();
+            return (call, ToolResult::err(id, reason));
         }
         if self.cassette_replay {
             let result = crate::cassette::simulate_tool(&call);
@@ -2826,11 +3178,309 @@ mod tests {
             },
         ];
         let start = std::time::Instant::now();
-        let results = agent.execute_tools_parallel(&calls, &ctx).await;
+        let results = agent
+            .execute_tools(&calls, &ctx, &mut BackgroundQueue::new())
+            .await;
         assert_eq!(results.len(), 2);
         assert!(results.iter().all(|r| !r.is_error));
         assert_eq!(PARALLEL_DELAY_CALLS.load(Ordering::SeqCst), 2);
         assert!(start.elapsed() < Duration::from_millis(70));
+    }
+
+    // ── Default-async tool calls ──────────────────────────────────────────
+
+    #[cfg(feature = "providers")]
+    static SLOW_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+    #[cfg(feature = "providers")]
+    fn slow_tool(name: &str, millis: u64) -> ToolDefinition {
+        ToolDefinition::new_boxed(
+            name,
+            "slow tool",
+            "{}",
+            Box::new(move |_ctx, _args| {
+                Box::pin(async move {
+                    SLOW_CALLS.fetch_add(1, Ordering::SeqCst);
+                    tokio::time::sleep(Duration::from_millis(millis)).await;
+                    ToolResult::ok("id", "slow-done")
+                })
+            }),
+        )
+        .with_effect(ToolEffect::Read)
+    }
+
+    /// Round 0 asks for one tool call; every later round answers with plain
+    /// text. Records the message contents it saw on each round.
+    #[cfg(feature = "providers")]
+    struct AsyncTurnProvider {
+        call: ToolCall,
+        rounds: Arc<AtomicUsize>,
+        seen: Arc<parking_lot::Mutex<Vec<Vec<String>>>>,
+    }
+
+    #[cfg(feature = "providers")]
+    #[async_trait::async_trait]
+    impl crate::provider::Provider for AsyncTurnProvider {
+        fn id(&self) -> &str {
+            "async-turn"
+        }
+
+        fn name(&self) -> &str {
+            "async-turn"
+        }
+
+        async fn stream(
+            &self,
+            messages: &[Message],
+            _system: &Option<String>,
+            _model: &str,
+            _tools: &[serde_json::Value],
+            _reasoning_effort: Option<&str>,
+        ) -> Result<crate::provider::StreamResult, crate::provider::ProviderError> {
+            self.seen
+                .lock()
+                .push(messages.iter().map(|m| m.content.clone()).collect());
+            let round = self.rounds.fetch_add(1, Ordering::SeqCst);
+            if round == 0 {
+                Ok(Box::new(futures::stream::iter([
+                    Ok(crate::provider::StreamEvent::ToolCall(self.call.clone())),
+                    Ok(crate::provider::StreamEvent::Done),
+                ])))
+            } else {
+                Ok(Box::new(futures::stream::iter([
+                    Ok(crate::provider::StreamEvent::Delta("all done".into())),
+                    Ok(crate::provider::StreamEvent::Done),
+                ])))
+            }
+        }
+    }
+
+    #[cfg(feature = "providers")]
+    #[tokio::test]
+    async fn slow_call_backgrounds_then_delivers_result() {
+        SLOW_CALLS.store(0, Ordering::SeqCst);
+        let registry = ToolRegistry::new();
+        registry.register(slow_tool("slow", 250));
+        let mut agent = Agent::new();
+        agent.set_tools(registry);
+        agent.set_policy(Policy::full_access());
+        agent.async_tools.sync_window = Duration::from_millis(30);
+        let rounds = Arc::new(AtomicUsize::new(0));
+        let seen = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        agent.set_provider(Arc::new(AsyncTurnProvider {
+            call: ToolCall {
+                id: "bg_1".into(),
+                name: "slow".into(),
+                arguments: "{}".into(),
+            },
+            rounds: Arc::clone(&rounds),
+            seen: Arc::clone(&seen),
+        }));
+        let events = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let sink = Arc::clone(&events);
+        agent.subscribe(move |event| match event {
+            Event::ToolBackgrounded(_) => sink.lock().push("backgrounded".into()),
+            Event::BackgroundResultArrived { is_error, .. } => {
+                sink.lock().push(format!("arrived:{is_error}"))
+            }
+            _ => {}
+        });
+        agent.prompt("kick off the slow thing").await.unwrap();
+
+        assert_eq!(SLOW_CALLS.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            rounds.load(Ordering::SeqCst),
+            3,
+            "tool round + collection round + final round"
+        );
+        let messages = agent.messages_handle().read().clone();
+        assert!(
+            messages
+                .iter()
+                .any(|m| m.role == Role::Tool && m.content.contains("[running in background]")),
+            "placeholder tool message expected"
+        );
+        assert!(
+            messages.iter().any(|m| m.role == Role::User
+                && m.content.contains("<background_result")
+                && m.content.contains("slow-done")),
+            "delivered background result expected"
+        );
+        let seen = seen.lock();
+        assert!(seen.len() >= 3);
+        assert!(
+            seen[seen.len() - 1]
+                .iter()
+                .any(|c| c.contains("<background_result")),
+            "model must see the delivered result on its final round"
+        );
+        let events = events.lock();
+        assert!(events.contains(&"backgrounded".to_string()));
+        assert!(events.contains(&"arrived:false".to_string()));
+    }
+
+    #[cfg(feature = "providers")]
+    #[tokio::test]
+    async fn fast_call_stays_synchronous() {
+        let registry = ToolRegistry::new();
+        registry.register(
+            ToolDefinition::new_boxed(
+                "quick",
+                "quick",
+                "{}",
+                Box::new(|_ctx, _args| Box::pin(async { ToolResult::ok("id", "quick-ok") })),
+            )
+            .with_effect(ToolEffect::Read),
+        );
+        let mut agent = Agent::new();
+        agent.set_tools(registry);
+        agent.set_policy(Policy::full_access());
+        let rounds = Arc::new(AtomicUsize::new(0));
+        let seen = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        agent.set_provider(Arc::new(AsyncTurnProvider {
+            call: ToolCall {
+                id: "q_1".into(),
+                name: "quick".into(),
+                arguments: "{}".into(),
+            },
+            rounds: Arc::clone(&rounds),
+            seen: Arc::clone(&seen),
+        }));
+        let events = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let sink = Arc::clone(&events);
+        agent.subscribe(move |event| {
+            if let Event::ToolBackgrounded(_) = event {
+                sink.lock().push("backgrounded".into());
+            }
+        });
+        agent.prompt("quick lookup").await.unwrap();
+
+        let messages = agent.messages_handle().read().clone();
+        assert!(
+            messages
+                .iter()
+                .any(|m| m.role == Role::Tool && m.content == "quick-ok"),
+            "fast calls must deliver the real result directly"
+        );
+        assert_eq!(rounds.load(Ordering::SeqCst), 2);
+        assert!(!events.lock().contains(&"backgrounded".to_string()));
+    }
+
+    #[cfg(feature = "providers")]
+    #[tokio::test]
+    async fn disabled_async_keeps_blocking() {
+        SLOW_CALLS.store(0, Ordering::SeqCst);
+        let registry = ToolRegistry::new();
+        registry.register(slow_tool("slow", 100));
+        let mut agent = Agent::new();
+        agent.set_tools(registry);
+        agent.set_policy(Policy::full_access());
+        agent.async_tools.enabled = false;
+        let rounds = Arc::new(AtomicUsize::new(0));
+        let seen = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        agent.set_provider(Arc::new(AsyncTurnProvider {
+            call: ToolCall {
+                id: "bg_1".into(),
+                name: "slow".into(),
+                arguments: "{}".into(),
+            },
+            rounds: Arc::clone(&rounds),
+            seen: Arc::clone(&seen),
+        }));
+        let events = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let sink = Arc::clone(&events);
+        agent.subscribe(move |event| {
+            if let Event::ToolBackgrounded(_) = event {
+                sink.lock().push("backgrounded".into());
+            }
+        });
+        agent.prompt("blocking please").await.unwrap();
+
+        let messages = agent.messages_handle().read().clone();
+        assert!(
+            messages
+                .iter()
+                .any(|m| m.role == Role::Tool && m.content == "slow-done"),
+            "disabled async must block and record the real result"
+        );
+        assert_eq!(rounds.load(Ordering::SeqCst), 2);
+        assert!(!events.lock().contains(&"backgrounded".to_string()));
+    }
+
+    #[cfg(feature = "providers")]
+    #[tokio::test]
+    async fn execute_tools_hedges_past_sync_window() {
+        SLOW_CALLS.store(0, Ordering::SeqCst);
+        let registry = ToolRegistry::new();
+        registry.register(slow_tool("slow", 120));
+        let mut agent = Agent::new();
+        agent.set_tools(registry);
+        agent.set_policy(Policy::full_access());
+        agent.async_tools.sync_window = Duration::from_millis(20);
+        let events = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let sink = Arc::clone(&events);
+        agent.subscribe(move |event| {
+            if let Event::ToolBackgrounded(_) = event {
+                sink.lock().push("backgrounded".into());
+            }
+        });
+        let ctx = Arc::new(ToolContext::new("."));
+        let calls = vec![ToolCall {
+            id: "bg_1".into(),
+            name: "slow".into(),
+            arguments: "{}".into(),
+        }];
+        let results = agent
+            .execute_tools(&calls, &ctx, &mut BackgroundQueue::new())
+            .await;
+        assert_eq!(results.len(), 1);
+        assert!(!results[0].is_error);
+        assert!(
+            results[0].content.contains("[running in background]"),
+            "expected placeholder, got: {}",
+            results[0].content
+        );
+        assert!(events.lock().contains(&"backgrounded".to_string()));
+    }
+
+    #[cfg(feature = "providers")]
+    #[tokio::test]
+    async fn execute_tools_never_hedges_serial_effects() {
+        // Write/Process calls must run to completion synchronously even past
+        // the sync window: a later batch in the same callset may depend on
+        // them, so they may never be backgrounded.
+        let registry = ToolRegistry::new();
+        registry.register(slow_tool("slow_write", 80).with_effect(ToolEffect::Write));
+        let mut agent = Agent::new();
+        agent.set_tools(registry);
+        agent.set_policy(Policy::full_access());
+        agent.async_tools.sync_window = Duration::from_millis(10);
+        let backgrounded = Arc::new(parking_lot::Mutex::new(false));
+        let sink = Arc::clone(&backgrounded);
+        agent.subscribe(move |event| {
+            if let Event::ToolBackgrounded(_) = event {
+                *sink.lock() = true;
+            }
+        });
+        let ctx = Arc::new(ToolContext::new("."));
+        let calls = vec![ToolCall {
+            id: "w_1".into(),
+            name: "slow_write".into(),
+            arguments: "{}".into(),
+        }];
+        let results = agent
+            .execute_tools(&calls, &ctx, &mut BackgroundQueue::new())
+            .await;
+        assert_eq!(results.len(), 1);
+        assert!(
+            results[0].content.contains("slow-done"),
+            "serial-effect call must return its real result, got: {}",
+            results[0].content
+        );
+        assert!(
+            !*backgrounded.lock(),
+            "Write-effect calls must never be backgrounded"
+        );
     }
 
     #[tokio::test]
@@ -2896,7 +3546,7 @@ mod tests {
         agent.set_policy(Policy::full_access());
         let ctx = Arc::new(agent.tool_context());
         let results = agent
-            .execute_tools_parallel(
+            .execute_tools_sync(
                 &[
                     ToolCall {
                         id: "a".into(),
@@ -3207,7 +3857,13 @@ mod tests {
         agent.set_workspace_root(second.path());
 
         let current = agent.sandbox.as_ref().expect("sandbox attached");
-        assert_eq!(current.workspace_root(), second.path());
+        // The sandbox canonicalizes its root so confinement checks compare
+        // like for like on symlinked platforms (macOS /tmp, /var).
+        let expected_root = second
+            .path()
+            .canonicalize()
+            .unwrap_or_else(|_| second.path().to_path_buf());
+        assert_eq!(current.workspace_root(), expected_root);
         assert!(current.validate_network().is_err());
         assert_eq!(agent.tool_cache.entry_count(), 0);
         assert!(agent.authorizer.is_none());
