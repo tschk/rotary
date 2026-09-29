@@ -80,6 +80,8 @@ pub const CODING_TOOLS: &[&str] = &[
     "lsp_references",
     "exec",
     "exec_spawn",
+    #[cfg(feature = "script")]
+    "script",
 ];
 pub const RESEARCH_TOOLS: &[&str] = &[
     "read",
@@ -101,6 +103,8 @@ pub const RESEARCH_TOOLS: &[&str] = &[
     "lsp_references",
     "exec",
     "exec_spawn",
+    #[cfg(feature = "script")]
+    "script",
 ];
 pub const PLAN_TOOLS: &[&str] = &[
     "read",
@@ -177,14 +181,31 @@ pub fn profile(scope: Scope) -> Profile {
     }
 }
 
+/// Tool guidance ships with its tool: the `script` line is compiled in only
+/// when the `script` feature (and therefore the tool registration) is on, and
+/// `full_addendum` shows it only for profiles whose allowlist admits it.
+#[cfg(feature = "script")]
+const SCRIPT_TOOL_GUIDANCE: &str = "For multi-step data processing, parsing, numeric verification, or bulk file inspection, prefer the `script` tool (sandboxed LuaJIT) over shelling out to python/node or making many tool calls.";
+
+fn full_addendum(p: &Profile) -> String {
+    #[cfg(not(feature = "script"))]
+    {
+        p.system_addendum.to_string()
+    }
+    #[cfg(feature = "script")]
+    {
+        if p.allowed_tools.is_none_or(|l| l.contains(&"script")) {
+            format!("{} {SCRIPT_TOOL_GUIDANCE}", p.system_addendum)
+        } else {
+            p.system_addendum.to_string()
+        }
+    }
+}
+
 pub fn compose_prompt(base: Option<&str>, p: &Profile) -> String {
     match base {
-        Some(b) => format!(
-            "{b}\n\n# Scope: {}\n\n{}",
-            p.scope.name(),
-            p.system_addendum
-        ),
-        None => format!("# Scope: {}\n\n{}", p.scope.name(), p.system_addendum),
+        Some(b) => format!("{b}\n\n# Scope: {}\n\n{}", p.scope.name(), full_addendum(p)),
+        None => format!("# Scope: {}\n\n{}", p.scope.name(), full_addendum(p)),
     }
 }
 
@@ -263,13 +284,38 @@ mod tests {
         let with_base = compose_prompt(Some("Base prompt"), &p);
         assert_eq!(
             with_base,
-            format!("Base prompt\n\n# Scope: coding\n\n{}", p.system_addendum)
+            format!("Base prompt\n\n# Scope: coding\n\n{}", full_addendum(&p))
         );
 
         let without_base = compose_prompt(None, &p);
         assert_eq!(
             without_base,
-            format!("# Scope: coding\n\n{}", p.system_addendum)
+            format!("# Scope: coding\n\n{}", full_addendum(&p))
         );
+    }
+
+    #[test]
+    #[cfg(feature = "script")]
+    fn script_guidance_follows_the_registered_tool() {
+        for scope in [Scope::Coding, Scope::Research] {
+            let p = profile(scope);
+            assert!(tool_allowed(&p, "script"), "{scope}");
+            let prompt = compose_prompt(None, &p);
+            assert!(
+                prompt.contains("prefer the `script` tool (sandboxed LuaJIT)"),
+                "{scope}: {prompt}"
+            );
+        }
+        // Ask has tools off, so the guidance must not appear there.
+        let prompt = compose_prompt(None, &profile(Scope::Ask));
+        assert!(!prompt.contains("prefer the `script` tool"), "{prompt}");
+    }
+
+    #[test]
+    #[cfg(not(feature = "script"))]
+    fn script_guidance_absent_without_the_feature() {
+        for scope in [Scope::Coding, Scope::Research] {
+            assert!(!compose_prompt(None, &profile(scope)).contains("prefer the `script` tool"));
+        }
     }
 }
