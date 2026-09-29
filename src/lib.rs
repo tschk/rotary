@@ -44,6 +44,7 @@ pub mod extract;
 #[cfg(feature = "graph-memory")]
 pub mod graph_memory;
 pub mod guardrails;
+pub mod harness;
 pub mod hashline;
 pub mod hooks;
 pub mod mode;
@@ -177,6 +178,9 @@ pub use guardrails::{
     classify_tool, reclassify_effect, recover_empty_turn, recover_stuck_tool, schedule_tool_calls,
     GuardrailConfig, GuardrailDecision, RecoveryAction, SelfHealingRetry, ToolClass,
     ToolGuardrails,
+};
+pub use harness::{
+    BuiltinToolSelection, HarnessBuilder, HarnessConfig, HarnessError, GENERIC_AGENT_CONTRACT,
 };
 pub use hashline::{
     apply as apply_hashline, format_read as format_hashline_read, tag_for as hashline_tag_for,
