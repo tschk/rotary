@@ -34,6 +34,7 @@ pub mod cassette;
 pub mod compaction;
 pub mod config;
 pub mod context;
+pub mod context_artifact;
 pub mod cost;
 #[cfg(feature = "graph-memory")]
 pub mod dream_scheduler;
@@ -44,6 +45,7 @@ pub mod extract;
 #[cfg(feature = "graph-memory")]
 pub mod graph_memory;
 pub mod guardrails;
+pub mod harness;
 pub mod hashline;
 pub mod hooks;
 pub mod mode;
@@ -154,6 +156,7 @@ pub use compaction::{
     ProjectionResult, ProjectionStep, RavenArchive,
 };
 pub use context::{compose_system_prompt, load_project_instructions, ProjectInstructions};
+pub use context_artifact::{ContextArtifactStore, DEFAULT_RETRIEVAL_BYTES, MAX_RETRIEVAL_BYTES};
 pub use cost::{CostEntry, ModelPricing, PricingRegistry, SessionCost, TokenUsage};
 #[cfg(feature = "graph-memory")]
 pub use dream_scheduler::{DreamReport, DreamScheduler};
@@ -177,6 +180,9 @@ pub use guardrails::{
     classify_tool, reclassify_effect, recover_empty_turn, recover_stuck_tool, schedule_tool_calls,
     GuardrailConfig, GuardrailDecision, RecoveryAction, SelfHealingRetry, ToolClass,
     ToolGuardrails,
+};
+pub use harness::{
+    BuiltinToolSelection, HarnessBuilder, HarnessConfig, HarnessError, GENERIC_AGENT_CONTRACT,
 };
 pub use hashline::{
     apply as apply_hashline, format_read as format_hashline_read, tag_for as hashline_tag_for,
@@ -230,7 +236,7 @@ pub use sandbox::{
 pub use secrets::{
     filter_env_vars, is_sensitive_env_var, RedactionConfig, Redactor, SecretMatch, SecretPattern,
 };
-pub use session::{Session, SessionProjection};
+pub use session::{ContextArtifact, ContextArtifactKind, Session, SessionProjection};
 pub use shadow_git::{ShadowGit, ShadowGitError};
 #[cfg(feature = "skills")]
 pub use skill_curator::{CuratorConfig, CuratorSuggestion, SkillCurator, SuggestionKind};

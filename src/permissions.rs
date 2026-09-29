@@ -748,6 +748,7 @@ pub fn is_read_only_tool(name: &str) -> bool {
             | "read_file"
             | "ls"
             | "list_dir"
+            | "retrieve_context_artifact"
             | "find"
             | "find_files"
             | "grep"

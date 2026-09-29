@@ -137,6 +137,8 @@ pub struct ToolContext {
     /// Authority snapshot inherited by model-requested subagents. The agent
     /// populates this; tool implementations must not synthesize one.
     pub subagent_authority: Option<crate::subagent::SubagentAuthority>,
+    /// Session-scoped artifacts retained outside the provider context.
+    pub context_artifacts: Option<Arc<crate::context_artifact::ContextArtifactStore>>,
     /// Tools may request a scope switch; Agent applies after the tool batch.
     pub pending_scope: Option<Arc<parking_lot::Mutex<Option<Scope>>>>,
     /// Opt-in engine-owned todo state shared with the builtin todo executor.
@@ -190,6 +192,7 @@ impl ToolContext {
             provider: None,
             tools: None,
             subagent_authority: None,
+            context_artifacts: None,
             pending_scope: None,
             todo_state: None,
             todo_config: None,
@@ -331,6 +334,10 @@ impl ToolRegistry {
 
     pub fn count(&self) -> usize {
         self.tools.len()
+    }
+
+    pub(crate) fn remove(&self, name: &str) -> Option<ToolDefinition> {
+        self.tools.remove(name).map(|(_, tool)| tool)
     }
 
     pub fn definitions(&self) -> Vec<serde_json::Value> {
