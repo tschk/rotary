@@ -86,6 +86,16 @@ A scope is a work mode, not an agent name.
 
 rotary exposes capabilities, not policy: scheduling, enabled flags, and lifecycle decisions belong to the host.
 
+### Subagent authority
+
+Model-facing `spawn_agent` inherits its parent agent's authority: policy and
+shell rules, custom authorization and approval gates, active scope, sandboxing,
+and remaining budget. A child configuration can narrow this authority but cannot
+widen it. Hosts that register their own `SubagentManager` should pass
+`agent.subagent_authority()` to `with_authority` when the manager is reachable
+from an agent. A manager without that snapshot remains an explicit host-owned
+authority boundary for backward-compatible host-created subagents.
+
 ### Hashline, prewalk, AVO
 
 The engine owns the tagged edit protocol (`rx4::hashline`), the one-way investigate→smol switch (`rx4::prewalk`, `RX4_SMOL_MODEL`), and AVO helpers (`rx4::avo`: `P_t`, two-part `f`, commit-if-better, stall). Hosts enable them; they should not fork the protocol. See [docs/HARNESS.md](docs/HARNESS.md).

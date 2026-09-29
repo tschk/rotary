@@ -79,7 +79,10 @@ them.
 - `apply_patch` is an optional bulk tool. Hashline remains the editor.
 - Plan accept wipes `<planning>` / `[planning]` / `PLAN:` tokens.
 - `WritePathSchedule`: omit paths = whole workspace = serialize writes.
-- `ContextCapsule` gives subagents zero ambient inheritance.
+- `ContextCapsule` gives subagents zero ambient transcript/prompt inheritance.
+- `Agent::subagent_authority` gives model-requested children a non-escalating
+  authority snapshot: policy/authorizer, approvals, scope, sandbox, and
+  remaining budget are inherited; child selections can only narrow it.
 - File snapshots and observed-version guards are host opt-in (`enable_file_guards`).
 - `TwoSessionCoordinator` moves messages only on explicit routes.
 - Skills with `required_tools` stay silent when those tools are not loaded.
