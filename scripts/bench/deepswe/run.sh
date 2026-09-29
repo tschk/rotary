@@ -178,12 +178,15 @@ pier_verify() {
   export DOCKER_DEFAULT_PLATFORM="${DOCKER_DEFAULT_PLATFORM:-linux/amd64}"
   job_name="${harness}__${MID}__${iid}"
   set +e
+  # Cap the verifier env's memory: task test suites can balloon
+  # (pystan fits hit 5.5GB) and thrash the host for every other trial.
   "$PIER" run \
     -p "$TASKS/$iid" \
     --agent-import-path apply_host_patch:ApplyHostPatchAgent \
     --ak "patch_file=${patch}" \
     -m "$MID" \
     -n 1 -y \
+    --override-memory-mb "${BENCH_ENV_MEM_MB:-3072}" \
     -o "$job_parent" \
     --job-name "$job_name"
   prc=$?
