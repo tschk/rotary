@@ -3857,7 +3857,13 @@ mod tests {
         agent.set_workspace_root(second.path());
 
         let current = agent.sandbox.as_ref().expect("sandbox attached");
-        assert_eq!(current.workspace_root(), second.path());
+        // The sandbox canonicalizes its root so confinement checks compare
+        // like for like on symlinked platforms (macOS /tmp, /var).
+        let expected_root = second
+            .path()
+            .canonicalize()
+            .unwrap_or_else(|_| second.path().to_path_buf());
+        assert_eq!(current.workspace_root(), expected_root);
         assert!(current.validate_network().is_err());
         assert_eq!(agent.tool_cache.entry_count(), 0);
         assert!(agent.authorizer.is_none());
