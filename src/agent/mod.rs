@@ -336,7 +336,9 @@ pub struct AsyncToolsConfig {
     pub enabled: bool,
     /// How long a call may run synchronously before it is backgrounded
     /// (default 250ms). Calls that finish inside the window behave exactly
-    /// like synchronous calls.
+    /// like synchronous calls. Only parallel-capable effects (Read/Network)
+    /// are ever backgrounded; Write/Process calls always run to completion
+    /// so later batches observe their effects.
     pub sync_window: std::time::Duration,
 }
 
@@ -2107,6 +2109,17 @@ impl Agent {
         let batches = schedule_tool_calls(&classified);
         let hedging = self.async_tools.enabled;
         let sync_window = self.async_tools.sync_window;
+        // Only parallel-capable effects (Read/Network) may hedge past the sync
+        // window. Write/Process calls get one batch each precisely because
+        // later batches may depend on their completion; backgrounding them
+        // would let the next batch start while a write or process still runs,
+        // breaking the serial guarantee these batches exist to provide.
+        let hedgeable: Vec<bool> = classified
+            .iter()
+            .map(|(name, args, registered)| {
+                crate::guardrails::reclassify_effect(name, args, *registered).supports_parallel()
+            })
+            .collect();
         let mut results: Vec<Option<ToolResult>> = vec![None; calls.len()];
         let mut cancelled = false;
 
@@ -2183,7 +2196,7 @@ impl Agent {
             }
 
             while let Some(mut task) = tasks.pop() {
-                let outcome = if hedging {
+                let outcome = if hedging && hedgeable[task.idx] {
                     match ctx
                         .cancellation
                         .run(tokio::time::timeout(sync_window, task.rx.recv()))
@@ -3205,6 +3218,46 @@ mod tests {
             results[0].content
         );
         assert!(events.lock().contains(&"backgrounded".to_string()));
+    }
+
+    #[cfg(feature = "providers")]
+    #[tokio::test]
+    async fn execute_tools_never_hedges_serial_effects() {
+        // Write/Process calls must run to completion synchronously even past
+        // the sync window: a later batch in the same callset may depend on
+        // them, so they may never be backgrounded.
+        let registry = ToolRegistry::new();
+        registry.register(slow_tool("slow_write", 80).with_effect(ToolEffect::Write));
+        let mut agent = Agent::new();
+        agent.set_tools(registry);
+        agent.set_policy(Policy::full_access());
+        agent.async_tools.sync_window = Duration::from_millis(10);
+        let backgrounded = Arc::new(parking_lot::Mutex::new(false));
+        let sink = Arc::clone(&backgrounded);
+        agent.subscribe(move |event| {
+            if let Event::ToolBackgrounded(_) = event {
+                *sink.lock() = true;
+            }
+        });
+        let ctx = Arc::new(ToolContext::new("."));
+        let calls = vec![ToolCall {
+            id: "w_1".into(),
+            name: "slow_write".into(),
+            arguments: "{}".into(),
+        }];
+        let results = agent
+            .execute_tools(&calls, &ctx, &mut BackgroundQueue::new())
+            .await;
+        assert_eq!(results.len(), 1);
+        assert!(
+            results[0].content.contains("slow-done"),
+            "serial-effect call must return its real result, got: {}",
+            results[0].content
+        );
+        assert!(
+            !*backgrounded.lock(),
+            "Write-effect calls must never be backgrounded"
+        );
     }
 
     #[test]
