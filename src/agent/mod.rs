@@ -395,6 +395,8 @@ pub struct Agent {
     pub max_tool_iterations: usize,
     pub auto_compact_after: usize,
     /// Opt-in session todo engine. `None` preserves the historical builtin tool.
+    /// When enabled, each provider request receives a fresh, transient todo
+    /// snapshot without adding it to the durable message history.
     pub todo_config: Option<TodoConfig>,
     /// Persistable todo state for the current agent session.
     pub todo_state: Arc<RwLock<TodoState>>,
@@ -733,6 +735,9 @@ impl Agent {
     }
 
     /// Enable the engine-owned todo tool and configure confidence gating.
+    ///
+    /// Each provider request receives the current todo state as a transient
+    /// request overlay. Hosts retain ownership of when to enable this feature.
     pub fn set_todo_config(&mut self, config: TodoConfig) {
         self.todo_config = Some(config);
     }
@@ -1083,6 +1088,24 @@ impl Agent {
         }
     }
 
+    /// Add request-only engine state as a suffix of a cloned transcript.
+    ///
+    /// The durable system and conversation prefix remains cacheable, and the
+    /// overlay never enters the session.
+    fn request_messages_with_todo_state(&self) -> Vec<Message> {
+        let mut messages = self.request_messages();
+        if self.todo_config.is_none() {
+            return messages;
+        }
+        let state = self.todo_state.read();
+        let state = serde_json::to_string(&*state).unwrap_or_default();
+        let overlay = format!(
+            "<engine_todo_state>\nCurrent engine-owned todo state. Treat this as authoritative and use the todo tool to update it.\n{state}\n</engine_todo_state>"
+        );
+        messages.push(Message::user(overlay));
+        messages
+    }
+
     pub fn enable_cassette_replay(&mut self) {
         self.cassette_replay = true;
     }
@@ -1353,7 +1376,7 @@ impl Agent {
             }
             self.emit(Event::TurnStart { turn: iteration });
 
-            let messages: Vec<Message> = self.request_messages();
+            let messages = self.request_messages_with_todo_state();
             let base_system =
                 turn::append_active_skills(self.system_prompt.clone(), active_skills.as_deref());
             #[cfg(feature = "graph-memory")]
@@ -3119,6 +3142,110 @@ mod tests {
             calls[1].iter().any(|c| c == "steer"),
             "mid-turn append_message not observed on the next iteration: {:?}",
             calls[1]
+        );
+    }
+
+    #[cfg(feature = "providers")]
+    struct TodoOverlayProvider {
+        requests: Arc<parking_lot::Mutex<Vec<Vec<Message>>>>,
+    }
+
+    #[cfg(feature = "providers")]
+    #[async_trait::async_trait]
+    impl crate::provider::Provider for TodoOverlayProvider {
+        fn id(&self) -> &str {
+            "todo-overlay"
+        }
+
+        fn name(&self) -> &str {
+            "todo-overlay"
+        }
+
+        async fn stream(
+            &self,
+            messages: &[Message],
+            _system: &Option<String>,
+            _model: &str,
+            _tools: &[serde_json::Value],
+            _reasoning_effort: Option<&str>,
+        ) -> Result<crate::provider::StreamResult, crate::provider::ProviderError> {
+            let first = {
+                let mut requests = self.requests.lock();
+                requests.push(messages.to_vec());
+                requests.len() == 1
+            };
+            if first {
+                Ok(Box::new(futures::stream::iter([
+                    Ok(crate::provider::StreamEvent::ToolCall(ToolCall {
+                        id: "todo_1".into(),
+                        name: "todo".into(),
+                        arguments: serde_json::json!({
+                            "action": "create",
+                            "items": [{
+                                "id": "first",
+                                "content": "write the test",
+                                "confidence": 50,
+                            }],
+                        })
+                        .to_string(),
+                    })),
+                    Ok(crate::provider::StreamEvent::Done),
+                ])))
+            } else {
+                Ok(Box::new(futures::stream::iter([Ok(
+                    crate::provider::StreamEvent::Done,
+                )])))
+            }
+        }
+    }
+
+    #[cfg(feature = "providers")]
+    #[tokio::test]
+    async fn todo_state_is_fresh_for_each_provider_request_without_persisting_overlay() {
+        let registry = ToolRegistry::new();
+        crate::tools::register_builtin_tools(&registry);
+        let requests = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let mut agent = Agent::new();
+        agent.set_tools(registry);
+        agent.set_policy(Policy::full_access());
+        agent.set_todo_config(TodoConfig::default());
+        agent.set_provider(Arc::new(TodoOverlayProvider {
+            requests: Arc::clone(&requests),
+        }));
+
+        agent.prompt("finish the task").await.unwrap();
+
+        let requests = requests.lock();
+        assert_eq!(
+            requests.len(),
+            2,
+            "todo tool should trigger a second request"
+        );
+        assert!(
+            requests[0][0].content == "finish the task",
+            "request overlay changed the durable prefix: {:?}",
+            requests[0]
+        );
+        assert!(
+            requests[0].last().is_some_and(|message| message.content.contains("<engine_todo_state>\nCurrent engine-owned todo state. Treat this as authoritative and use the todo tool to update it.\n{\"items\":[]}")),
+            "initial todo state missing from first request: {:?}",
+            requests[0]
+        );
+        assert!(
+            requests[1]
+                .last()
+                .is_some_and(|message| message.content.contains("\"id\":\"first\"")),
+            "updated todo state missing from second request: {:?}",
+            requests[1]
+        );
+        drop(requests);
+
+        let persisted = agent.request_messages();
+        assert!(
+            persisted
+                .iter()
+                .all(|message| !message.content.contains("<engine_todo_state>")),
+            "request overlay leaked into durable history: {persisted:?}"
         );
     }
 
