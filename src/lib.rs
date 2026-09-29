@@ -34,6 +34,7 @@ pub mod cassette;
 pub mod compaction;
 pub mod config;
 pub mod context;
+pub mod context_artifact;
 pub mod cost;
 #[cfg(feature = "graph-memory")]
 pub mod dream_scheduler;
@@ -155,6 +156,7 @@ pub use compaction::{
     ProjectionResult, ProjectionStep, RavenArchive,
 };
 pub use context::{compose_system_prompt, load_project_instructions, ProjectInstructions};
+pub use context_artifact::{ContextArtifactStore, DEFAULT_RETRIEVAL_BYTES, MAX_RETRIEVAL_BYTES};
 pub use cost::{CostEntry, ModelPricing, PricingRegistry, SessionCost, TokenUsage};
 #[cfg(feature = "graph-memory")]
 pub use dream_scheduler::{DreamReport, DreamScheduler};
@@ -234,7 +236,7 @@ pub use sandbox::{
 pub use secrets::{
     filter_env_vars, is_sensitive_env_var, RedactionConfig, Redactor, SecretMatch, SecretPattern,
 };
-pub use session::{Session, SessionProjection};
+pub use session::{ContextArtifact, ContextArtifactKind, Session, SessionProjection};
 pub use shadow_git::{ShadowGit, ShadowGitError};
 #[cfg(feature = "skills")]
 pub use skill_curator::{CuratorConfig, CuratorSuggestion, SkillCurator, SuggestionKind};
