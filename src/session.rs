@@ -72,6 +72,26 @@ pub struct SessionProjection {
     pub step: ProjectionStep,
 }
 
+/// Kind of model-retrievable payload retained outside the provider context.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContextArtifactKind {
+    Spill,
+    CompactedHistory,
+}
+
+/// Durable metadata for a session-scoped context artifact.
+///
+/// The payload is stored beside the session data so the session log remains
+/// bounded. The reference is opaque and is the only identifier tools accept.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContextArtifact {
+    pub reference: String,
+    pub kind: ContextArtifactKind,
+    pub bytes: usize,
+    pub lines: usize,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Session {
     pub id: String,
@@ -83,6 +103,9 @@ pub struct Session {
     /// Durable prune/fold ledger. The entry log stays append-only.
     #[serde(default)]
     pub projections: Vec<SessionProjection>,
+    /// Model-retrievable payload metadata. Payload files remain session-scoped.
+    #[serde(default)]
+    pub artifacts: Vec<ContextArtifact>,
     next_id: u64,
 }
 
@@ -94,6 +117,7 @@ impl Session {
             entries: Vec::new(),
             todos: TodoState::default(),
             projections: Vec::new(),
+            artifacts: Vec::new(),
             next_id: 1,
         }
     }
@@ -130,12 +154,14 @@ impl Session {
     pub fn clear(&mut self) {
         self.entries.clear();
         self.projections.clear();
+        self.artifacts.clear();
         self.next_id = 1;
     }
 
     pub fn replace_messages(&mut self, messages: &[Message]) {
         self.entries.clear();
         self.projections.clear();
+        self.artifacts.clear();
         self.next_id = 1;
         for message in messages {
             self.append_message(message);
@@ -182,6 +208,9 @@ impl Session {
                 !projection.archived_ids.is_empty() || !projection.summary.is_empty()
             })
             .collect();
+        // Artifacts belong to their originating session directory. A fork gets
+        // fresh artifacts rather than retaining references into its parent.
+        forked.artifacts.clear();
         forked.next_id = self.next_id;
         forked
     }
@@ -191,6 +220,18 @@ impl Session {
             return;
         }
         self.projections.push(projection);
+    }
+
+    /// Record an artifact locator without changing the append-only message log.
+    pub fn record_artifact(&mut self, artifact: ContextArtifact) {
+        if self
+            .artifacts
+            .iter()
+            .any(|existing| existing.reference == artifact.reference)
+        {
+            return;
+        }
+        self.artifacts.push(artifact);
     }
 
     pub fn archived_ids(&self) -> HashSet<u64> {
@@ -291,6 +332,19 @@ impl Session {
             );
             content.push('\n');
         }
+        for artifact in &self.artifacts {
+            content.push_str(
+                &serde_json::json!({
+                    "type": "context_artifact",
+                    "reference": artifact.reference,
+                    "kind": artifact.kind,
+                    "bytes": artifact.bytes,
+                    "lines": artifact.lines,
+                })
+                .to_string(),
+            );
+            content.push('\n');
+        }
         std::fs::write(&path, content)?;
         Ok(path)
     }
@@ -315,6 +369,13 @@ impl Session {
             } else if value.get("type").and_then(|value| value.as_str()) == Some("projection") {
                 if let Ok(projection) = serde_json::from_value::<SessionProjection>(value) {
                     session.record_projection(projection);
+                }
+            } else if value.get("type").and_then(|value| value.as_str()) == Some("context_artifact")
+            {
+                if let Ok(artifact) = serde_json::from_value::<ContextArtifact>(value) {
+                    if crate::tools::common::validate_identifier(&artifact.reference).is_ok() {
+                        session.record_artifact(artifact);
+                    }
                 }
             } else if let Ok(entry) = serde_json::from_value::<Entry>(value) {
                 if entry.id >= session.next_id {
@@ -353,6 +414,19 @@ impl Session {
                     "summary": projection.summary,
                     "archived_ids": projection.archived_ids,
                     "step": projection.step,
+                })
+                .to_string(),
+            );
+            out.push('\n');
+        }
+        for artifact in &self.artifacts {
+            out.push_str(
+                &serde_json::json!({
+                    "type": "context_artifact",
+                    "reference": artifact.reference,
+                    "kind": artifact.kind,
+                    "bytes": artifact.bytes,
+                    "lines": artifact.lines,
                 })
                 .to_string(),
             );
@@ -409,6 +483,12 @@ impl Session {
         } else if ty == "projection" {
             if let Ok(projection) = serde_json::from_value::<SessionProjection>(v.clone()) {
                 self.record_projection(projection);
+            }
+        } else if ty == "context_artifact" {
+            if let Ok(artifact) = serde_json::from_value::<ContextArtifact>(v.clone()) {
+                if crate::tools::common::validate_identifier(&artifact.reference).is_ok() {
+                    self.record_artifact(artifact);
+                }
             }
         } else if ty == "message" || v.get("role").is_some() {
             self.process_message(v);
@@ -577,6 +657,12 @@ impl Session {
             "UPDATE sessions SET projections = ?1 WHERE id = ?2",
             params![encoded, self.id],
         );
+        let _ = conn.execute("ALTER TABLE sessions ADD COLUMN artifacts TEXT", []);
+        let encoded = serde_json::to_string(&self.artifacts).unwrap_or_else(|_| "[]".into());
+        let _ = conn.execute(
+            "UPDATE sessions SET artifacts = ?1 WHERE id = ?2",
+            params![encoded, self.id],
+        );
 
         Ok(())
     }
@@ -651,6 +737,21 @@ impl Session {
         ) {
             if let Ok(projections) = serde_json::from_str::<Vec<SessionProjection>>(&raw) {
                 session.projections = projections;
+            }
+        }
+        let _ = conn.execute("ALTER TABLE sessions ADD COLUMN artifacts TEXT", []);
+        if let Ok(Some(raw)) = conn.query_row(
+            "SELECT artifacts FROM sessions WHERE id = ?1",
+            params![id],
+            |row| row.get::<_, Option<String>>(0),
+        ) {
+            if let Ok(artifacts) = serde_json::from_str::<Vec<ContextArtifact>>(&raw) {
+                session.artifacts = artifacts
+                    .into_iter()
+                    .filter(|artifact| {
+                        crate::tools::common::validate_identifier(&artifact.reference).is_ok()
+                    })
+                    .collect();
             }
         }
         Ok(session)
@@ -937,6 +1038,12 @@ not valid json at all
             }],
         });
         s.append_message(&Message::tool("c1", "ok"));
+        s.record_artifact(ContextArtifact {
+            reference: "ctxa-test".into(),
+            kind: ContextArtifactKind::Spill,
+            bytes: 2,
+            lines: 1,
+        });
         s.save_sqlite(&path).unwrap();
 
         let loaded = Session::load_sqlite(&path).unwrap();
@@ -949,6 +1056,7 @@ not valid json at all
         assert_eq!(loaded.entries[1].tool_calls[0].id, "c1");
         assert_eq!(loaded.entries[2].tool_call_id.as_deref(), Some("c1"));
         assert_eq!(loaded.next_id, s.next_id);
+        assert_eq!(loaded.artifacts, s.artifacts);
     }
 
     #[test]

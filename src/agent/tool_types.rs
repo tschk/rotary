@@ -134,6 +134,11 @@ pub struct ToolContext {
     pub provider: Option<Arc<dyn Provider>>,
     /// Optional tool registry for nested agent runs.
     pub tools: Option<Arc<ToolRegistry>>,
+    /// Authority snapshot inherited by model-requested subagents. The agent
+    /// populates this; tool implementations must not synthesize one.
+    pub subagent_authority: Option<crate::subagent::SubagentAuthority>,
+    /// Session-scoped artifacts retained outside the provider context.
+    pub context_artifacts: Option<Arc<crate::context_artifact::ContextArtifactStore>>,
     /// Tools may request a scope switch; Agent applies after the tool batch.
     pub pending_scope: Option<Arc<parking_lot::Mutex<Option<Scope>>>>,
     /// Opt-in engine-owned todo state shared with the builtin todo executor.
@@ -186,6 +191,8 @@ impl ToolContext {
             os_sandbox_required: false,
             provider: None,
             tools: None,
+            subagent_authority: None,
+            context_artifacts: None,
             pending_scope: None,
             todo_state: None,
             todo_config: None,
@@ -329,6 +336,10 @@ impl ToolRegistry {
         self.tools.len()
     }
 
+    pub(crate) fn remove(&self, name: &str) -> Option<ToolDefinition> {
+        self.tools.remove(name).map(|(_, tool)| tool)
+    }
+
     pub fn definitions(&self) -> Vec<serde_json::Value> {
         let mut definitions: Vec<serde_json::Value> = self
             .tools
@@ -369,6 +380,11 @@ impl ToolRegistry {
     ) -> Option<ToolResult> {
         let entry = self.tools.get(name)?;
         Some(entry.execute.call(ctx.clone(), arguments.to_string()).await)
+    }
+
+    /// Whether a tool is registered under this exact name.
+    pub fn contains(&self, name: &str) -> bool {
+        self.tools.contains_key(name)
     }
 
     /// Get the effect class for a tool.

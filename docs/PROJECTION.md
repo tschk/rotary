@@ -10,7 +10,8 @@ drops old turns and must leave those bytes unchanged. Fold (a summary inserted
 after the prefix) runs only when prune still cannot fit the trigger threshold.
 
 Dropped turns are archived as verbatim JSONL (`RavenArchive`), not as a second
-summary. Hosts may persist the archive beside `session.jsonl`.
+summary. Rotary also records an opaque session artifact reference so the model
+can retrieve the archived lines later without reintroducing them into every request.
 
 ## Request reconstruction
 
@@ -37,9 +38,17 @@ userspace → nested FS (seatbelt/bwrap) → `.git` remounted read-only.
 
 ## Tool spill
 
-Oversized tool bodies are written to `.rx4/spill/`. The model sees a preview
-plus a locator. Previews truncate on a UTF-8 character boundary. If the spill
-write fails, the model still receives a bounded preview and hosts get a typed
+Oversized tool bodies and compacted history are stored under
+`.rx4/artifacts/<session-id>/`. The session JSONL stores their opaque metadata;
+payloads stay outside it so session persistence remains bounded. The model sees
+a preview plus a reference and can call `retrieve_context_artifact` with that
+reference. It accepts inclusive `start_line` / `end_line`, an optional literal
+`query`, and bounded `max_bytes` (default 8 KiB, maximum 16 KiB). It resolves
+only recorded artifacts for the active session, never arbitrary paths.
+
+The legacy `.rx4/spill/` and aggregate `.rx4/raven.jsonl` files remain fallback
+and host-recovery surfaces. If both artifact and legacy spill storage fail, the
+model still receives a bounded preview and hosts get a typed
 `SpillStatus::SpillFailed` notice (`Event::ToolSpill` / `ToolResult.spill`).
 
 ## complete_subtask
@@ -70,7 +79,10 @@ them.
 - `apply_patch` is an optional bulk tool. Hashline remains the editor.
 - Plan accept wipes `<planning>` / `[planning]` / `PLAN:` tokens.
 - `WritePathSchedule`: omit paths = whole workspace = serialize writes.
-- `ContextCapsule` gives subagents zero ambient inheritance.
+- `ContextCapsule` gives subagents zero ambient transcript/prompt inheritance.
+- `Agent::subagent_authority` gives model-requested children a non-escalating
+  authority snapshot: policy/authorizer, approvals, scope, sandbox, and
+  remaining budget are inherited; child selections can only narrow it.
 - File snapshots and observed-version guards are host opt-in (`enable_file_guards`).
 - `TwoSessionCoordinator` moves messages only on explicit routes.
 - Skills with `required_tools` stay silent when those tools are not loaded.

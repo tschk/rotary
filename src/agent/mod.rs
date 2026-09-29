@@ -5,6 +5,7 @@
 //! grok-build (moka cache, dashmap registry, parking_lot), and pi_agent_rust
 //! (stable event ordering, bounded tool recursion).
 
+mod pipeline;
 mod tool_types;
 mod turn;
 pub use tool_types::*;
@@ -582,6 +583,8 @@ pub struct Agent {
     pub max_tool_iterations: usize,
     pub auto_compact_after: usize,
     /// Opt-in session todo engine. `None` preserves the historical builtin tool.
+    /// When enabled, each provider request receives a fresh, transient todo
+    /// snapshot without adding it to the durable message history.
     pub todo_config: Option<TodoConfig>,
     /// Persistable todo state for the current agent session.
     pub todo_state: Arc<RwLock<TodoState>>,
@@ -920,7 +923,56 @@ impl Agent {
         self.provider = Some(provider);
     }
 
+    /// Snapshot the authority that a model-requested subagent may inherit.
+    ///
+    /// The snapshot intentionally carries live host gates and confinement, but
+    /// not transcript or prompt content. Pass it to [`SubagentManager`] with
+    /// [`SubagentManager::with_authority`](crate::subagent::SubagentManager::with_authority)
+    /// when a host wants its own manager to obey this agent's authority.
+    pub fn subagent_authority(&self) -> crate::subagent::SubagentAuthority {
+        crate::subagent::SubagentAuthority {
+            policy: self.policy.clone(),
+            scope: self.scope_profile.as_ref().map(|profile| profile.scope),
+            authorizer: self.authorizer.clone(),
+            approver: self.approver.clone(),
+            async_approver: self.async_approver.clone(),
+            plan_approver: self.plan_approver.clone(),
+            sandbox: self.sandbox.clone(),
+            os_sandbox: self.os_sandbox.clone(),
+            os_sandbox_failed: self.os_sandbox_failed,
+            budget: self.remaining_subagent_budget(),
+            max_tool_iterations: self.max_tool_iterations,
+        }
+    }
+
+    pub(crate) fn inherit_subagent_authority(
+        &mut self,
+        authority: &crate::subagent::SubagentAuthority,
+        policy: Policy,
+        budget: Option<AgentBudget>,
+        max_tool_iterations: usize,
+    ) {
+        self.policy = policy;
+        if let Some(scope) = authority.scope {
+            self.scope = scope;
+            self.scope_profile = Some(mode::profile(scope));
+        }
+        self.authorizer = authority.authorizer.clone();
+        self.approver = authority.approver.clone();
+        self.async_approver = authority.async_approver.clone();
+        self.plan_approver = authority.plan_approver.clone();
+        self.sandbox = authority.sandbox.clone();
+        self.os_sandbox = authority.os_sandbox.clone();
+        self.os_sandbox_failed = authority.os_sandbox_failed;
+        self.budget = budget;
+        self.max_tool_iterations = max_tool_iterations.max(1);
+        self.refresh_system_prompt();
+    }
+
     /// Enable the engine-owned todo tool and configure confidence gating.
+    ///
+    /// Each provider request receives the current todo state as a transient
+    /// request overlay. Hosts retain ownership of when to enable this feature.
     pub fn set_todo_config(&mut self, config: TodoConfig) {
         self.todo_config = Some(config);
     }
@@ -1111,6 +1163,26 @@ impl Agent {
         self.budget = Some(budget);
     }
 
+    fn remaining_subagent_budget(&self) -> Option<AgentBudget> {
+        let budget = self.budget.as_ref()?;
+        let max_cost = budget
+            .effective_max_cost()
+            .map(|max| (max - self.session_cost.total_cost()).max(0.0));
+        let max_duration_seconds = budget.max_duration_seconds.map(|max| {
+            let elapsed = self
+                .budget_start
+                .map(|start| start.elapsed().as_secs())
+                .unwrap_or(0);
+            max.saturating_sub(elapsed)
+        });
+        Some(AgentBudget {
+            max_cost,
+            max_duration_seconds,
+            reserve_budget: None,
+            reserve_budget_fraction: None,
+        })
+    }
+
     pub fn set_pricing_registry(&mut self, registry: PricingRegistry) {
         self.pricing_registry = registry;
     }
@@ -1269,6 +1341,24 @@ impl Agent {
         } else {
             msgs
         }
+    }
+
+    /// Add request-only engine state as a suffix of a cloned transcript.
+    ///
+    /// The durable system and conversation prefix remains cacheable, and the
+    /// overlay never enters the session.
+    fn request_messages_with_todo_state(&self) -> Vec<Message> {
+        let mut messages = self.request_messages();
+        if self.todo_config.is_none() {
+            return messages;
+        }
+        let state = self.todo_state.read();
+        let state = serde_json::to_string(&*state).unwrap_or_default();
+        let overlay = format!(
+            "<engine_todo_state>\nCurrent engine-owned todo state. Treat this as authoritative and use the todo tool to update it.\n{state}\n</engine_todo_state>"
+        );
+        messages.push(Message::user(overlay));
+        messages
     }
 
     pub fn enable_cassette_replay(&mut self) {
@@ -1547,11 +1637,12 @@ impl Agent {
             // Deliver results from backgrounded calls that finished since the
             // last model round, so this round sees them.
             for (call, result) in background.reap_finished() {
-                let result = self.spill_bound(&ctx, result);
+                let mut result = result;
+                self.spill_tool_result(&ctx, &mut result);
                 self.deliver_background_result(&call, &result);
             }
 
-            let messages: Vec<Message> = self.request_messages();
+            let messages = self.request_messages_with_todo_state();
             let mut base_system =
                 turn::append_active_skills(self.system_prompt.clone(), active_skills.as_deref());
             if self.async_tools.enabled {
@@ -1770,7 +1861,8 @@ impl Agent {
                 // react before actually completing.
                 if !background.is_empty() {
                     for (call, result) in background.drain_all().await {
-                        let result = self.spill_bound(&ctx, result);
+                        let mut result = result;
+                        self.spill_tool_result(&ctx, &mut result);
                         self.deliver_background_result(&call, &result);
                     }
                     continue;
@@ -2098,6 +2190,31 @@ impl Agent {
         ctx: &Arc<ToolContext>,
         background: &mut BackgroundQueue,
     ) -> Vec<ToolResult> {
+        self.execute_tools_inner(calls, ctx, background, self.async_tools.enabled)
+            .await
+    }
+
+    /// Fully synchronous execution for callers that must observe completed
+    /// results in place (pipeline steps): hedging is disabled, so no
+    /// placeholder is ever produced and no background reference can leak
+    /// into later steps' argument expansion.
+    async fn execute_tools_sync(
+        &self,
+        calls: &[ToolCall],
+        ctx: &Arc<ToolContext>,
+    ) -> Vec<ToolResult> {
+        let mut background = BackgroundQueue::new();
+        self.execute_tools_inner(calls, ctx, &mut background, false)
+            .await
+    }
+
+    async fn execute_tools_inner(
+        &self,
+        calls: &[ToolCall],
+        ctx: &Arc<ToolContext>,
+        background: &mut BackgroundQueue,
+        allow_hedge: bool,
+    ) -> Vec<ToolResult> {
         let classified: Vec<(String, String, ToolEffect)> = calls
             .iter()
             .map(|c| {
@@ -2107,7 +2224,7 @@ impl Agent {
             })
             .collect();
         let batches = schedule_tool_calls(&classified);
-        let hedging = self.async_tools.enabled;
+        let hedging = allow_hedge;
         let sync_window = self.async_tools.sync_window;
         // Only parallel-capable effects (Read/Network) may hedge past the sync
         // window. Write/Process calls get one batch each precisely because
@@ -2136,6 +2253,25 @@ impl Agent {
 
             for idx in batch {
                 let original = &calls[idx];
+                // Pipelines are Agent-owned and always synchronous: route them
+                // through the gated single-call path (hooks, policy,
+                // approval, dispatch, spill) before any hedging machinery, so
+                // every step observes its inputs' completed results.
+                if normalize_tool_name(&original.name) == "tool_pipeline" {
+                    self.emit(Event::ToolExecutionStart(redact_tool_call(original)));
+                    let (call, result) = self.execute_single_tool(original, ctx).await;
+                    if result.requires_approval() {
+                        self.emit(Event::ApprovalRequired(
+                            crate::permissions::ApprovalRequest::from_call(
+                                &redact_tool_call(&call),
+                                &self.policy,
+                            ),
+                        ));
+                    }
+                    self.emit(Event::ToolExecutionEnd(result.clone()));
+                    results[idx] = Some(result);
+                    continue;
+                }
                 let call = match self.apply_before_tool_hooks(original) {
                     Ok(c) => c,
                     Err(reason) => {
@@ -2228,7 +2364,8 @@ impl Agent {
                 };
                 match outcome {
                     Some(Ok((call, result))) => {
-                        let result = self.spill_bound(ctx, result);
+                        let mut result = result;
+                        self.spill_tool_result(ctx, &mut result);
                         if result.requires_approval() {
                             self.emit(Event::ApprovalRequired(
                                 crate::permissions::ApprovalRequest::from_call(
@@ -2268,7 +2405,9 @@ impl Agent {
         // placeholder back out for the real result before anything is
         // recorded, then freeze the remaining slots for message delivery.
         for (slot, result) in background.reclaim_open() {
-            results[slot] = Some(self.spill_bound(ctx, result));
+            let mut result = result;
+            self.spill_tool_result(ctx, &mut result);
+            results[slot] = Some(result);
         }
         background.close_open_slots();
 
@@ -2298,27 +2437,6 @@ impl Agent {
         None
     }
 
-    /// Bound oversized tool output through the spill store — one behaviour
-    /// for synchronous and backgrounded calls alike.
-    fn spill_bound(&self, ctx: &Arc<ToolContext>, mut result: ToolResult) -> ToolResult {
-        if result.content.len() > crate::tools::spill::DEFAULT_PREVIEW_BYTES {
-            let spill_dir = ctx.workspace_root.join(".rx4").join("spill");
-            let spilled = crate::tools::spill::bound_tool_output(
-                &result.content,
-                crate::tools::spill::DEFAULT_PREVIEW_BYTES,
-                &spill_dir,
-            );
-            result.spill = Some(spilled.notice());
-            self.emit(Event::ToolSpill {
-                status: spilled.status,
-                locator: spilled.locator.clone(),
-                original_bytes: spilled.original_bytes,
-            });
-            result.content = spilled.preview;
-        }
-        result
-    }
-
     /// Record a finished background call's result and tell the model.
     fn deliver_background_result(&self, call: &ToolCall, result: &ToolResult) {
         let tool = normalize_tool_name(&call.name).to_string();
@@ -2334,10 +2452,8 @@ impl Agent {
         });
     }
 
-    /// Execute one call synchronously: hooks, write-path schedule, spill
-    /// bound, policy/approvals. Test-only helper equivalent to the
-    /// synchronous path of [`Agent::execute_tools`].
-    #[cfg(test)]
+    /// Execute one call synchronously: hooks, write-path schedule, pipeline
+    /// dispatch, spill bound, policy/approvals.
     async fn execute_single_tool(
         &self,
         call: &ToolCall,
@@ -2358,7 +2474,7 @@ impl Agent {
             let result = crate::cassette::simulate_tool(&call);
             return (call, result);
         }
-        let result = Self::run_tool_call(
+        let mut result = Self::run_tool_call(
             self.tools.as_ref(),
             &self.policy,
             self.authorizer.as_deref(),
@@ -2371,8 +2487,57 @@ impl Agent {
             &self.extra_allowed_tools,
         )
         .await;
-        let result = self.spill_bound(ctx, result);
+        if normalize_tool_name(&call.name) == "tool_pipeline" && !result.is_error {
+            result = self.execute_tool_pipeline(&call, ctx).await;
+        }
+        self.spill_tool_result(ctx, &mut result);
         (call, result)
+    }
+
+    fn spill_tool_result(&self, ctx: &ToolContext, result: &mut ToolResult) {
+        if result.content.len() > crate::tools::spill::DEFAULT_PREVIEW_BYTES {
+            match self
+                .context_artifact_store()
+                .store(crate::session::ContextArtifactKind::Spill, &result.content)
+            {
+                Ok(artifact) => {
+                    let preview = crate::tools::spill::preview_with_reference(
+                        &result.content,
+                        crate::tools::spill::DEFAULT_PREVIEW_BYTES,
+                        Some(&artifact.reference),
+                    );
+                    result.spill = Some(crate::tools::spill::SpillNotice {
+                        status: crate::tools::spill::SpillStatus::Spilled,
+                        locator: artifact.reference.clone(),
+                        original_bytes: artifact.bytes,
+                    });
+                    self.emit(Event::ToolSpill {
+                        status: crate::tools::spill::SpillStatus::Spilled,
+                        locator: artifact.reference,
+                        original_bytes: artifact.bytes,
+                    });
+                    result.content = preview;
+                }
+                Err(error) => {
+                    warn!("failed to store session artifact for tool spill: {error}");
+                    // Preserve the existing spill location as a fallback for
+                    // hosts that cannot persist the session artifact metadata.
+                    let spill_dir = ctx.workspace_root.join(".rx4").join("spill");
+                    let spilled = crate::tools::spill::bound_tool_output(
+                        &result.content,
+                        crate::tools::spill::DEFAULT_PREVIEW_BYTES,
+                        &spill_dir,
+                    );
+                    result.spill = Some(spilled.notice());
+                    self.emit(Event::ToolSpill {
+                        status: spilled.status,
+                        locator: spilled.locator.clone(),
+                        original_bytes: spilled.original_bytes,
+                    });
+                    result.content = spilled.preview;
+                }
+            }
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -2461,9 +2626,18 @@ impl Agent {
                     }
                 }
 
-                let mut result = match tools.execute(&resolved_name, ctx, &call.arguments).await {
-                    Some(r) => r,
-                    None => ToolResult::err(&call.id, format!("unknown tool: {}", call.name)),
+                let mut result = if resolved_name == "tool_pipeline"
+                    && tools.contains(&resolved_name)
+                {
+                    // The registry marker fails closed when invoked directly.
+                    // Only the Agent reaches here after its normal gates, then
+                    // dispatches the bounded declarative plan below.
+                    ToolResult::ok(&call.id, "")
+                } else {
+                    match tools.execute(&resolved_name, ctx, &call.arguments).await {
+                        Some(r) => r,
+                        None => ToolResult::err(&call.id, format!("unknown tool: {}", call.name)),
+                    }
                 };
                 // Tools stamp name as id; providers need tool_call_id.
                 result.id = call.id.clone();
@@ -2508,12 +2682,13 @@ impl Agent {
             return;
         }
         let archived_ids = self.session.read().ids_matching(&proj.archived);
-        self.archive_raven(&proj.archived);
+        let artifact_reference = self.archive_raven(&proj.archived);
         let summary = if proj.summary.is_empty() {
             String::new()
         } else {
             format!("[context compacted] {}", proj.summary)
         };
+        let summary = compacted_history_note(summary, artifact_reference.as_deref());
         self.session
             .write()
             .record_projection(crate::session::SessionProjection {
@@ -2541,6 +2716,8 @@ impl Agent {
 
     fn tool_context(&self) -> ToolContext {
         let mut tool_ctx = ToolContext::new(self.workspace_root.clone());
+        tool_ctx.provider = self.provider.clone();
+        tool_ctx.tools = Some(Arc::clone(&self.tools));
         tool_ctx.os_sandbox_required = self.policy.enable_os_sandbox && self.os_sandbox.is_none();
         tool_ctx.cancellation = self.turn_cancellation.reset();
         tool_ctx.hashline_sight = Arc::clone(&self.hashline_sight);
@@ -2558,6 +2735,8 @@ impl Agent {
         tool_ctx.permission_asks = Some(Arc::clone(&self.permission_asks));
         tool_ctx.patch_hunks = Some(Arc::clone(&self.patch_hunks));
         tool_ctx.process_lifecycle = Some(Arc::clone(&self.process_lifecycle));
+        tool_ctx.subagent_authority = Some(self.subagent_authority());
+        tool_ctx.context_artifacts = Some(Arc::new(self.context_artifact_store()));
         #[cfg(feature = "ipc")]
         {
             tool_ctx.lsp = Some(Arc::clone(&self.lsp));
@@ -2569,6 +2748,13 @@ impl Agent {
             tool_ctx = tool_ctx.with_os_sandbox(os_sandbox);
         }
         tool_ctx
+    }
+
+    fn context_artifact_store(&self) -> crate::context_artifact::ContextArtifactStore {
+        crate::context_artifact::ContextArtifactStore::new(
+            self.workspace_root.clone(),
+            Arc::clone(&self.session),
+        )
     }
 
     fn emit_turn_end(
@@ -2794,10 +2980,13 @@ impl Agent {
         let removed_end = (system_end + result.removed_count).min(snapshot.len());
         let archived = snapshot[system_end..removed_end].to_vec();
         let archived_ids = self.session.read().ids_matching(&archived);
-        self.archive_raven(&archived);
-        let summary = format!(
-            "[context compacted] {} Markers preserved: {:?}",
-            result.summary, result.markers_preserved
+        let artifact_reference = self.archive_raven(&archived);
+        let summary = compacted_history_note(
+            format!(
+                "[context compacted] {} Markers preserved: {:?}",
+                result.summary, result.markers_preserved
+            ),
+            artifact_reference.as_deref(),
         );
         self.session
             .write()
@@ -2819,15 +3008,40 @@ impl Agent {
         Ok(())
     }
 
-    fn archive_raven(&self, archived: &[Message]) {
+    fn archive_raven(&self, archived: &[Message]) -> Option<String> {
         if archived.is_empty() {
-            return;
+            return None;
         }
         let archive = RavenArchive::from_turns(archived);
+        let reference = match self.context_artifact_store().store(
+            crate::session::ContextArtifactKind::CompactedHistory,
+            &archive.to_jsonl(),
+        ) {
+            Ok(artifact) => Some(artifact.reference),
+            Err(error) => {
+                warn!("failed to store compacted history artifact: {error}");
+                None
+            }
+        };
+        // Keep the legacy aggregate archive for host recovery compatibility.
         let path = self.workspace_root.join(".rx4").join("raven.jsonl");
         if let Err(error) = archive.write_to(&path) {
             warn!("failed to write raven archive: {error}");
         }
+        reference
+    }
+}
+
+fn compacted_history_note(summary: String, reference: Option<&str>) -> String {
+    let Some(reference) = reference else {
+        return summary;
+    };
+    if summary.is_empty() {
+        format!("[compacted history available: retrieve_context_artifact reference {reference}]")
+    } else {
+        format!(
+            "{summary}\n[compacted history available: retrieve_context_artifact reference {reference}]"
+        )
     }
 }
 
@@ -2930,6 +3144,15 @@ mod tests {
             }),
         )
         .with_effect(ToolEffect::Read)
+    }
+
+    fn oversized_output_tool(_ctx: Arc<ToolContext>, _args: String) -> ToolFuture {
+        Box::pin(async { ToolResult::ok("oversized_output", "needle\n".repeat(2_000)) })
+    }
+
+    fn oversized_read_tool(name: &str) -> ToolDefinition {
+        ToolDefinition::new_fn(name, "test", "{}", oversized_output_tool)
+            .with_effect(ToolEffect::Read)
     }
 
     #[tokio::test]
@@ -3260,6 +3483,94 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn spill_is_retrievable_through_its_session_reference() {
+        let dir = tempfile::tempdir().unwrap();
+        let registry = ToolRegistry::new();
+        crate::tools::register_builtin_tools(&registry);
+        registry.register(oversized_read_tool("oversized_output"));
+        let mut agent = Agent::new();
+        agent.set_workspace_root(dir.path());
+        agent.set_tools(registry);
+        agent.set_policy(Policy::full_access());
+        let ctx = Arc::new(agent.tool_context());
+        let (_, spilled) = agent
+            .execute_single_tool(
+                &ToolCall {
+                    id: "spill-call".into(),
+                    name: "oversized_output".into(),
+                    arguments: "{}".into(),
+                },
+                &ctx,
+            )
+            .await;
+        let reference = spilled.spill.unwrap().locator;
+        assert!(reference.starts_with("ctxa-"));
+        assert!(spilled.content.contains(&reference));
+        assert!(!spilled.content.contains(".rx4/spill"));
+
+        let (_, retrieved) = agent
+            .execute_single_tool(
+                &ToolCall {
+                    id: "retrieve-call".into(),
+                    name: "retrieve_context_artifact".into(),
+                    arguments: serde_json::json!({
+                        "reference": reference,
+                        "query": "needle",
+                        "max_bytes": 512,
+                    })
+                    .to_string(),
+                },
+                &ctx,
+            )
+            .await;
+        assert!(!retrieved.is_error, "{}", retrieved.content);
+        assert!(retrieved.content.contains("1: needle"));
+        assert!(agent
+            .session
+            .read()
+            .artifacts
+            .iter()
+            .any(|artifact| artifact.kind == crate::session::ContextArtifactKind::Spill));
+    }
+
+    #[tokio::test]
+    async fn parallel_read_spills_are_session_artifacts() {
+        let dir = tempfile::tempdir().unwrap();
+        let registry = ToolRegistry::new();
+        registry.register(oversized_read_tool("large-a"));
+        registry.register(oversized_read_tool("large-b"));
+        let mut agent = Agent::new();
+        agent.set_workspace_root(dir.path());
+        agent.set_tools(registry);
+        agent.set_policy(Policy::full_access());
+        let ctx = Arc::new(agent.tool_context());
+        let results = agent
+            .execute_tools_sync(
+                &[
+                    ToolCall {
+                        id: "a".into(),
+                        name: "large-a".into(),
+                        arguments: "{}".into(),
+                    },
+                    ToolCall {
+                        id: "b".into(),
+                        name: "large-b".into(),
+                        arguments: "{}".into(),
+                    },
+                ],
+                &ctx,
+            )
+            .await;
+        assert!(results.iter().all(|result| {
+            result
+                .spill
+                .as_ref()
+                .is_some_and(|spill| spill.locator.starts_with("ctxa-"))
+        }));
+        assert_eq!(agent.session.read().artifacts.len(), 2);
+    }
+
     #[test]
     fn cache_audit_reports_structured_divergence() {
         let mut agent = Agent::new();
@@ -3351,8 +3662,8 @@ mod tests {
         assert_eq!(CACHE_READ_CALLS.load(Ordering::SeqCst), 2);
     }
 
-    #[test]
-    fn compact_uses_token_aware_compaction() {
+    #[tokio::test]
+    async fn compact_uses_token_aware_compaction() {
         let dir = tempfile::tempdir().unwrap();
         let mut agent = Agent::new();
         agent.set_workspace_root(dir.path());
@@ -3366,21 +3677,52 @@ mod tests {
         }
         agent.record_message(Message::user("recent tail"));
         agent.compact("test");
-        let msgs = agent.messages.read();
-        assert!(msgs.len() < 42);
-        assert!(msgs.iter().any(|m| m.content.contains("recent tail")));
-        assert!(msgs
-            .iter()
-            .any(|m| m.role == Role::System && m.content == "sys"));
+        let (message_count, has_recent_tail, has_system) = {
+            let messages = agent.messages.read();
+            (
+                messages.len(),
+                messages
+                    .iter()
+                    .any(|message| message.content.contains("recent tail")),
+                messages
+                    .iter()
+                    .any(|message| message.role == Role::System && message.content == "sys"),
+            )
+        };
+        assert!(message_count < 42);
+        assert!(has_recent_tail);
+        assert!(has_system);
         let session = agent.session.read().messages();
         assert!(
-            session.len() > msgs.len(),
+            session.len() > message_count,
             "projection compact must leave the session intact"
         );
         let raven = dir.path().join(".rx4").join("raven.jsonl");
         assert!(raven.exists(), "raven archive was not written");
         let on_disk = std::fs::read_to_string(&raven).unwrap();
         assert!(!on_disk.is_empty());
+        let artifact = agent
+            .session
+            .read()
+            .artifacts
+            .iter()
+            .find(|artifact| artifact.kind == crate::session::ContextArtifactKind::CompactedHistory)
+            .cloned()
+            .expect("compaction should record a retrievable artifact");
+        assert!(agent
+            .session
+            .read()
+            .projections
+            .iter()
+            .any(|projection| projection.summary.contains(&artifact.reference)));
+        let retrieved = crate::context_artifact::retrieve_tool(
+            Arc::new(agent.tool_context()),
+            serde_json::json!({"reference": artifact.reference, "query": "old message 0"})
+                .to_string(),
+        )
+        .await;
+        assert!(!retrieved.is_error, "{}", retrieved.content);
+        assert!(retrieved.content.contains("old message 0"));
     }
 
     #[test]
@@ -3730,6 +4072,110 @@ mod tests {
             calls[1].iter().any(|c| c == "steer"),
             "mid-turn append_message not observed on the next iteration: {:?}",
             calls[1]
+        );
+    }
+
+    #[cfg(feature = "providers")]
+    struct TodoOverlayProvider {
+        requests: Arc<parking_lot::Mutex<Vec<Vec<Message>>>>,
+    }
+
+    #[cfg(feature = "providers")]
+    #[async_trait::async_trait]
+    impl crate::provider::Provider for TodoOverlayProvider {
+        fn id(&self) -> &str {
+            "todo-overlay"
+        }
+
+        fn name(&self) -> &str {
+            "todo-overlay"
+        }
+
+        async fn stream(
+            &self,
+            messages: &[Message],
+            _system: &Option<String>,
+            _model: &str,
+            _tools: &[serde_json::Value],
+            _reasoning_effort: Option<&str>,
+        ) -> Result<crate::provider::StreamResult, crate::provider::ProviderError> {
+            let first = {
+                let mut requests = self.requests.lock();
+                requests.push(messages.to_vec());
+                requests.len() == 1
+            };
+            if first {
+                Ok(Box::new(futures::stream::iter([
+                    Ok(crate::provider::StreamEvent::ToolCall(ToolCall {
+                        id: "todo_1".into(),
+                        name: "todo".into(),
+                        arguments: serde_json::json!({
+                            "action": "create",
+                            "items": [{
+                                "id": "first",
+                                "content": "write the test",
+                                "confidence": 50,
+                            }],
+                        })
+                        .to_string(),
+                    })),
+                    Ok(crate::provider::StreamEvent::Done),
+                ])))
+            } else {
+                Ok(Box::new(futures::stream::iter([Ok(
+                    crate::provider::StreamEvent::Done,
+                )])))
+            }
+        }
+    }
+
+    #[cfg(feature = "providers")]
+    #[tokio::test]
+    async fn todo_state_is_fresh_for_each_provider_request_without_persisting_overlay() {
+        let registry = ToolRegistry::new();
+        crate::tools::register_builtin_tools(&registry);
+        let requests = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let mut agent = Agent::new();
+        agent.set_tools(registry);
+        agent.set_policy(Policy::full_access());
+        agent.set_todo_config(TodoConfig::default());
+        agent.set_provider(Arc::new(TodoOverlayProvider {
+            requests: Arc::clone(&requests),
+        }));
+
+        agent.prompt("finish the task").await.unwrap();
+
+        let requests = requests.lock();
+        assert_eq!(
+            requests.len(),
+            2,
+            "todo tool should trigger a second request"
+        );
+        assert!(
+            requests[0][0].content == "finish the task",
+            "request overlay changed the durable prefix: {:?}",
+            requests[0]
+        );
+        assert!(
+            requests[0].last().is_some_and(|message| message.content.contains("<engine_todo_state>\nCurrent engine-owned todo state. Treat this as authoritative and use the todo tool to update it.\n{\"items\":[]}")),
+            "initial todo state missing from first request: {:?}",
+            requests[0]
+        );
+        assert!(
+            requests[1]
+                .last()
+                .is_some_and(|message| message.content.contains("\"id\":\"first\"")),
+            "updated todo state missing from second request: {:?}",
+            requests[1]
+        );
+        drop(requests);
+
+        let persisted = agent.request_messages();
+        assert!(
+            persisted
+                .iter()
+                .all(|message| !message.content.contains("<engine_todo_state>")),
+            "request overlay leaked into durable history: {persisted:?}"
         );
     }
 
