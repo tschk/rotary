@@ -81,6 +81,7 @@ pub const CODING_TOOLS: &[&str] = &[
     "lsp_references",
     "exec",
     "exec_spawn",
+    "tool_pipeline",
 ];
 pub const RESEARCH_TOOLS: &[&str] = &[
     "read",
@@ -103,6 +104,7 @@ pub const RESEARCH_TOOLS: &[&str] = &[
     "lsp_references",
     "exec",
     "exec_spawn",
+    "tool_pipeline",
 ];
 pub const PLAN_TOOLS: &[&str] = &[
     "read",
@@ -124,6 +126,7 @@ pub const PLAN_TOOLS: &[&str] = &[
     "lsp_diagnostics",
     "lsp_definition",
     "lsp_references",
+    "tool_pipeline",
 ];
 pub const COMPUTER_USE_TOOLS: &[&str] = &[
     "cu_call",
@@ -143,6 +146,7 @@ pub const COMPUTER_USE_TOOLS: &[&str] = &[
     "retrieve_context_artifact",
     "find",
     "find_files",
+    "tool_pipeline",
 ];
 
 pub fn profile(scope: Scope) -> Profile {

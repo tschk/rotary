@@ -172,6 +172,7 @@ const BUILTIN_TOOL_NAMES: &[&str] = &[
     "find",
     "ls",
     "retrieve_context_artifact",
+    "tool_pipeline",
     "web_fetch",
     "todo",
     "spawn_agent",
@@ -213,7 +214,13 @@ fn default_builtin_tools() -> Vec<&'static str> {
     #[cfg(feature = "builtin-tools")]
     {
         let mut names = vec!["read", "write", "edit", "hashline_edit", "ls", "todo"];
-        names.extend(["bash", "grep", "find", "retrieve_context_artifact"]);
+        names.extend([
+            "bash",
+            "grep",
+            "find",
+            "retrieve_context_artifact",
+            "tool_pipeline",
+        ]);
         names
     }
     #[cfg(not(feature = "builtin-tools"))]

@@ -382,6 +382,11 @@ impl ToolRegistry {
         Some(entry.execute.call(ctx.clone(), arguments.to_string()).await)
     }
 
+    /// Whether a tool is registered under this exact name.
+    pub fn contains(&self, name: &str) -> bool {
+        self.tools.contains_key(name)
+    }
+
     /// Get the effect class for a tool.
     /// Unknown tools default to Process (serial, no cache) — safer than Read.
     pub fn names(&self) -> Vec<String> {

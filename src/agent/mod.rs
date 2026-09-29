@@ -5,6 +5,7 @@
 //! grok-build (moka cache, dashmap registry, parking_lot), and pi_agent_rust
 //! (stable event ordering, bounded tool recursion).
 
+mod pipeline;
 mod tool_types;
 mod turn;
 pub use tool_types::*;
@@ -2134,6 +2135,9 @@ impl Agent {
             &self.extra_allowed_tools,
         )
         .await;
+        if normalize_tool_name(&call.name) == "tool_pipeline" && !result.is_error {
+            result = self.execute_tool_pipeline(&call, ctx).await;
+        }
         self.spill_tool_result(ctx, &mut result);
         (call, result)
     }
@@ -2270,9 +2274,18 @@ impl Agent {
                     }
                 }
 
-                let mut result = match tools.execute(&resolved_name, ctx, &call.arguments).await {
-                    Some(r) => r,
-                    None => ToolResult::err(&call.id, format!("unknown tool: {}", call.name)),
+                let mut result = if resolved_name == "tool_pipeline"
+                    && tools.contains(&resolved_name)
+                {
+                    // The registry marker fails closed when invoked directly.
+                    // Only the Agent reaches here after its normal gates, then
+                    // dispatches the bounded declarative plan below.
+                    ToolResult::ok(&call.id, "")
+                } else {
+                    match tools.execute(&resolved_name, ctx, &call.arguments).await {
+                        Some(r) => r,
+                        None => ToolResult::err(&call.id, format!("unknown tool: {}", call.name)),
+                    }
                 };
                 // Tools stamp name as id; providers need tool_call_id.
                 result.id = call.id.clone();
