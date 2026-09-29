@@ -17,6 +17,14 @@ pub struct ComputerUseBridge {
 }
 
 impl ComputerUseBridge {
+    /// Foreground-bound delivery is host opt-in. Background semantic
+    /// interaction is the default; moving the pointer or seizing focus
+    /// requires the same explicit host flag Praefectus itself requires for
+    /// global input, so agents cannot fall back to cursor control silently.
+    pub fn foreground_input_allowed() -> bool {
+        std::env::var("PRAEFECTUS_ALLOW_GLOBAL_INPUT").is_ok_and(|value| value == "1")
+    }
+
     pub fn new() -> Result<Self, String> {
         let signer = SigningKey::generate(&mut OsRng);
         let verifier = Ed25519AuthorityVerifier::new([(
@@ -56,6 +64,7 @@ impl ComputerUseBridge {
     ) -> Result<Value, String> {
         let deadline_at_ms = now_ms().saturating_add(30_000);
         let operation_id = uuid::Uuid::new_v4().simple().to_string();
+        let interaction_mode = interaction_mode(&action, &target);
         let mut request = ActionRequest {
             protocol_version: PROTOCOL_VERSION,
             action_version: 1,
@@ -81,7 +90,7 @@ impl ComputerUseBridge {
             },
             action,
             target,
-            interaction_mode: InteractionMode::Interactive,
+            interaction_mode,
             deadline_at_ms,
             verification,
             safety,
@@ -119,9 +128,160 @@ impl ComputerUseBridge {
     }
 }
 
+/// Refuses foreground-bound delivery unless the host opted in. Background
+/// semantic interaction stays available; this gate only covers the routes
+/// that move the pointer or seize focus.
+pub(crate) fn require_background_route(
+    foreground_allowed: bool,
+    action: &str,
+) -> Result<(), String> {
+    if foreground_allowed {
+        return Ok(());
+    }
+    Err(format!(
+        "{action} is foreground-bound and disabled by default; observe with cu_see and act on semantic element tags (background-safe), or ask the host to set PRAEFECTUS_ALLOW_GLOBAL_INPUT=1"
+    ))
+}
+
 fn now_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| i64::try_from(duration.as_millis()).unwrap_or(i64::MAX))
         .unwrap_or_default()
+}
+
+/// Routes request `background_only` whenever the delivery route can keep the
+/// desktop untouched, and `interactive` for pointer- and foreground-bound
+/// actions. Target-addressed semantic actions never move the cursor, and on
+/// macOS input aimed at a fenced element is delivered to that element's
+/// process, so those routes are background-capable; other platforms have no
+/// per-process delivery route, so their input synthesis stays interactive.
+/// The executor owns the final decision: Praefectus refuses a background
+/// request its runtime route cannot honor, before any effect.
+fn interaction_mode(action: &Action, target: &TargetRef) -> InteractionMode {
+    let element_target = matches!(target, TargetRef::Element { .. });
+    match action {
+        Action::Invoke
+        | Action::SetValue { .. }
+        | Action::SelectText { .. }
+        | Action::PerformSecondaryAction { .. } => InteractionMode::BackgroundOnly,
+        Action::TypeText { .. }
+        | Action::Press { .. }
+        | Action::Paste { .. }
+        | Action::Hotkey { .. }
+        | Action::Scroll { .. }
+            if element_target && cfg!(target_os = "macos") =>
+        {
+            InteractionMode::BackgroundOnly
+        }
+        _ => InteractionMode::Interactive,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use praefectus::semantic::SemanticTargetRef;
+    use praefectus::{MouseButton, WindowOperation};
+
+    fn element_target() -> TargetRef {
+        TargetRef::Element {
+            target: SemanticTargetRef {
+                observation_id: "1".repeat(64),
+                generation: 1,
+                provenance_hash: "2".repeat(64),
+                element_id: "3".repeat(64),
+                fingerprint_hash: "4".repeat(64),
+            },
+        }
+    }
+
+    #[test]
+    fn foreground_bound_routes_are_refused_without_host_opt_in() {
+        let refusal = require_background_route(false, "coordinate clicks")
+            .expect_err("foreground route must refuse without opt-in");
+        assert!(refusal.contains("PRAEFECTUS_ALLOW_GLOBAL_INPUT=1"));
+        assert!(refusal.contains("cu_see"));
+        require_background_route(true, "coordinate clicks")
+            .expect("host opt-in must allow the foreground route");
+    }
+
+    #[test]
+    fn background_capable_routes_request_background_mode() {
+        let expected_focused_input = if cfg!(target_os = "macos") {
+            InteractionMode::BackgroundOnly
+        } else {
+            InteractionMode::Interactive
+        };
+        assert_eq!(
+            interaction_mode(&Action::Invoke, &element_target()),
+            InteractionMode::BackgroundOnly
+        );
+        assert_eq!(
+            interaction_mode(
+                &Action::SetValue {
+                    value: "value".to_string()
+                },
+                &element_target()
+            ),
+            InteractionMode::BackgroundOnly
+        );
+        assert_eq!(
+            interaction_mode(
+                &Action::TypeText {
+                    text: "text".to_string(),
+                    clear: false,
+                    press_return: false,
+                    delay_ms: None,
+                },
+                &element_target()
+            ),
+            expected_focused_input
+        );
+    }
+
+    #[test]
+    fn pointer_and_foreground_routes_stay_interactive() {
+        let coordinate_target = TargetRef::Coordinates {
+            x: 1,
+            y: 2,
+            display_id: "main".to_string(),
+            display_geometry_hash: "0".repeat(64),
+            snapshot_id: "snapshot".to_string(),
+            snapshot_content_hash: "0".repeat(64),
+        };
+        assert_eq!(
+            interaction_mode(
+                &Action::Click {
+                    button: MouseButton::Left,
+                    count: 1,
+                    allow_coordinate_fallback: false,
+                },
+                &coordinate_target
+            ),
+            InteractionMode::Interactive
+        );
+        assert_eq!(
+            interaction_mode(
+                &Action::Window {
+                    operation: WindowOperation::Focus,
+                    app: None,
+                    title: None,
+                },
+                &TargetRef::None
+            ),
+            InteractionMode::Interactive
+        );
+        assert_eq!(
+            interaction_mode(
+                &Action::Open {
+                    target: "https://example.com".to_string(),
+                    app: None,
+                    no_focus: true,
+                },
+                &TargetRef::None
+            ),
+            InteractionMode::Interactive
+        );
+    }
 }

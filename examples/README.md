@@ -6,6 +6,7 @@ builds against the crate as published on crates.io.
 | Example | Feature | Run |
 |---|---|---|
 | [minimal_agent](minimal_agent.rs) | `builtin-tools` (default) | `cargo run --example minimal_agent` |
+| [harness_builder](harness_builder.rs) | `builtin-tools` (default) | `cargo run --example harness_builder` |
 | [custom_tool](custom_tool.rs) | `builtin-tools` (default) | `cargo run --example custom_tool` |
 | [sessions](sessions.rs) | default | `cargo run --example sessions` |
 | [provider_agent](provider_agent.rs) | `providers` | `OPENAI_API_KEY=sk-... cargo run --example provider_agent --features providers` |
@@ -16,6 +17,12 @@ builds against the crate as published on crates.io.
 The smallest useful embed: `Agent::new`, `register_builtin_tools`, `set_scope`,
 `set_policy`, and loadout introspection via `ToolRegistry::names` /
 `definitions_fingerprint`.
+
+### `harness_builder`
+Builds the ordinary `Agent` with `HarnessBuilder`: a generic contract, selected
+builtin tools, coding scope, workspace-write policy, and confidence-gated todo
+state. The host still owns provider setup, authorization, hooks, persistence,
+and when to call `prompt`.
 
 ### `custom_tool`
 Register a host tool with `ToolDefinition::new_fn`, mark its `ToolEffect`, and

@@ -17,19 +17,20 @@ cargo add rx4 --no-default-features --features builtin-tools,providers
 ```
 
 ```rust
-use rx4::{register_builtin_tools, Agent, Scope, ToolRegistry};
+use rx4::{HarnessBuilder, Policy, Scope};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut agent = Agent::new();
+    let mut agent = HarnessBuilder::new()
+        .scope(Scope::Coding)
+        .policy(Policy::workspace_write())
+        .builtin_tools(["read", "write", "edit", "bash", "grep", "find", "ls", "todo"])
+        .instructions("Keep changes small and preserve the public API.")
+        .build()?;
 
-    let tools = ToolRegistry::new();
-    register_builtin_tools(&tools);
-    agent.set_tools(tools);
-    agent.set_scope(Scope::Coding);
-    agent.set_policy(rx4::Policy::workspace_write());
-
-    // A prompt needs a provider; see `examples/provider_agent.rs`.
+    // The builder returns a normal Agent. Hosts still attach a provider,
+    // approver, hooks, and persistence before choosing when to prompt.
+    // See `examples/provider_agent.rs` for provider setup.
     // agent.prompt("fix the failing test").await?;
     Ok(())
 }
@@ -39,12 +40,18 @@ Run the bundled examples:
 
 ```bash
 cargo run --example minimal_agent
+cargo run --example harness_builder
 cargo run --example custom_tool
 cargo run --example sessions
 OPENAI_API_KEY=sk-... cargo run --example provider_agent --features providers
 ```
 
 See [examples/README.md](examples/README.md) for what each one covers.
+
+For an opt-in generic contract and deliberate builtin selection, see the
+[harness builder](docs/HARNESS.md#generic-harness-builder). It returns the
+ordinary `Agent`; it does not create a product host or choose host lifecycle
+and scheduling policy.
 
 ### Binary
 
@@ -78,6 +85,16 @@ A scope is a work mode, not an agent name.
 - **Skills, graph memory, dream scheduler, computer-use, MCP, LSP** — opt-in capabilities.
 
 rotary exposes capabilities, not policy: scheduling, enabled flags, and lifecycle decisions belong to the host.
+
+### Subagent authority
+
+Model-facing `spawn_agent` inherits its parent agent's authority: policy and
+shell rules, custom authorization and approval gates, active scope, sandboxing,
+and remaining budget. A child configuration can narrow this authority but cannot
+widen it. Hosts that register their own `SubagentManager` should pass
+`agent.subagent_authority()` to `with_authority` when the manager is reachable
+from an agent. A manager without that snapshot remains an explicit host-owned
+authority boundary for backward-compatible host-created subagents.
 
 ### Hashline, prewalk, AVO
 
