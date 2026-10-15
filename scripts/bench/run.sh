@@ -85,10 +85,10 @@ if [ "$DRY" -eq 1 ]; then
   exit 0
 fi
 
-python3 -c "import json; json.load(open(r'''$MODELS_JSON'''))"
+luajit "$ROOT/lib/config.lua" json-valid "$MODELS_JSON"
 
-DEFAULT_N=$(python3 -c "import json; print(json.load(open(r'''$MODELS_JSON'''))['default_n'])")
-DEFAULT_SEED=$(python3 -c "import json; print(json.load(open(r'''$MODELS_JSON'''))['default_sample_seed'])")
+DEFAULT_N=$(luajit "$ROOT/lib/config.lua" default "$MODELS_JSON" default_n)
+DEFAULT_SEED=$(luajit "$ROOT/lib/config.lua" default "$MODELS_JSON" default_sample_seed)
 N=${N:-$DEFAULT_N}
 SEED=${SEED:-$DEFAULT_SEED}
 
@@ -172,19 +172,11 @@ if [ "$ds_rc" -ne 0 ]; then
   fi
 fi
 
-python3 -c "
-import json
-from pathlib import Path
-ids=[]
-for line in Path(r'''$SAMPLE_JSONL''').read_text().splitlines():
-    ids.append(json.loads(line)['instance_id'])
-Path(r'''$IDS_FILE''').write_text('\n'.join(ids)+'\n')
-print('sampled', len(ids), 'instances', file=__import__('sys').stderr)
-"
+luajit "$ROOT/lib/config.lua" sample-ids "$SAMPLE_JSONL" "$IDS_FILE"
 fi
 
 if [ -z "$HARNESSES" ]; then
-  HARNESSES=$(python3 -c "import json; print(' '.join(json.load(open(r'''$MODELS_JSON'''))['harnesses']))")
+  HARNESSES=$(luajit "$ROOT/lib/config.lua" harnesses "$MODELS_JSON")
 fi
 for h in $HARNESSES; do
   case "$h" in
@@ -193,35 +185,18 @@ for h in $HARNESSES; do
   esac
 done
 
-MODEL_IDS=$(python3 - "$MODELS_JSON" $MODELS <<'PY'
-import json, sys
-cfg = json.load(open(sys.argv[1]))
-want = [a for a in sys.argv[2:] if a]
-ids = [m["id"] for m in cfg["models"]]
-if want:
-    missing = [w for w in want if w not in ids]
-    if missing:
-        raise SystemExit("unknown model(s): " + ", ".join(missing))
-    ids = want
-print(" ".join(ids))
-PY
-)
+MODEL_IDS=$(luajit "$ROOT/lib/config.lua" model-ids "$MODELS_JSON" $MODELS)
 
 json_get() {
-  python3 -c "import json; cfg=json.load(open(r'''$MODELS_JSON'''));
-mid='$1'
-print(next(m$2 for m in cfg['models'] if m['id']==mid))"
+  if [ "$#" -gt 2 ]; then
+    luajit "$ROOT/lib/config.lua" model-get "$MODELS_JSON" "$1" "$2" "$3"
+  else
+    luajit "$ROOT/lib/config.lua" model-get "$MODELS_JSON" "$1" "$2"
+  fi
 }
 
 instance_field() {
-  python3 -c "
-import json,sys
-iid, key = sys.argv[1], sys.argv[2]
-for line in open(r'''$SAMPLE_JSONL'''):
-    r=json.loads(line)
-    if r['instance_id']==iid:
-        print(r[key]); break
-" "$1" "$2"
+  luajit "$ROOT/lib/config.lua" instance-field "$SAMPLE_JSONL" "$1" "$2"
 }
 
 checkout_instance() {
@@ -240,7 +215,7 @@ checkout_instance() {
 write_prompt() {
   iid=$1
   dest=$2
-  python3 "$ROOT/lib/prompt.py" --sample "$SAMPLE_JSONL" --instance-id "$iid" --out "$dest/.bench_prompt.md"
+  luajit "$ROOT/lib/prompt.lua" --sample "$SAMPLE_JSONL" --instance-id "$iid" --out "$dest/.bench_prompt.md"
 }
 
 # Runner-owned helpers that must never enter model_patch / official eval.
@@ -311,7 +286,7 @@ harbor_try_codex() {
   mid=$1
   ensure_harbor || return 1
   [ "$DOCKER" = up ] || return 1
-  model=$(json_get "$mid" "['codex']['model']")
+  model=$(json_get "$mid" codex/model)
   mkdir -p "$JOBS_DIR"
   # Cap each task env's memory: one runaway task process must not
   # thrash the host for every concurrent trial (8GB boxes).
@@ -331,7 +306,7 @@ pier_try_codex() {
   fi
   [ -n "$pier" ] && [ -x "$pier" ] || return 1
   [ "$DOCKER" = up ] || return 1
-  model=$(json_get "$mid" "['codex']['model']")
+  model=$(json_get "$mid" codex/model)
   "$pier" run -a codex -m "$model" -n 1 -o "$JOBS_DIR/pier-$mid"
 }
 
@@ -348,53 +323,51 @@ run_thin_cell() {
     echo "checkout failed: $iid" >&2
     t1=$(date +%s)
     seconds=$((t1 - t0))
-    python3 "$ROOT/lib/cell.py" --cells "$CELLS" --harness "$harness" --model "$mid" --instance "$iid" --seconds "$seconds" --exit 2 --error checkout_failed
+    luajit "$ROOT/lib/cell.lua" --cells "$CELLS" --harness "$harness" --model "$mid" --instance "$iid" --seconds "$seconds" --exit 2 --error checkout_failed
     return 0
   fi
   write_prompt "$iid" "$dest"
   base=$(git -C "$dest" rev-parse HEAD)
-  effort=$(json_get "$mid" "['effort']")
+  effort=$(json_get "$mid" effort)
   rc=0
   set +e
   case "$harness" in
     codex)
-      model=$(json_get "$mid" "['codex']['model']")
-      cfg=$(json_get "$mid" "['codex']['config']")
+      model=$(json_get "$mid" codex/model)
+      cfg=$(json_get "$mid" codex/config)
       BENCH_MODEL="$model" BENCH_EFFORT="$effort" BENCH_CODEX_CONFIG="$cfg" \
         "$ADAPTERS/codex.sh" "$dest" "$dest/.bench_prompt.md" >"$log" 2>&1
       rc=$?
       ;;
     pi)
-      model=$(json_get "$mid" "['pi']['model']")
-      prov=$(json_get "$mid" "['pi']['provider']")
+      model=$(json_get "$mid" pi/model)
+      prov=$(json_get "$mid" pi/provider)
       BENCH_MODEL="$model" BENCH_EFFORT="$effort" BENCH_PI_PROVIDER="$prov" \
         "$ADAPTERS/pi.sh" "$dest" "$dest/.bench_prompt.md" >"$log" 2>&1
       rc=$?
       ;;
     tk)
-      model=$(json_get "$mid" "['tk']['model']")
-      prov=$(python3 -c "import json; cfg=json.load(open(r'''$MODELS_JSON'''));
-m=next(x for x in cfg['models'] if x['id']=='''$mid''')
-print(m.get('tk',{}).get('provider',''))" )
+      model=$(json_get "$mid" tk/model)
+      prov=$(json_get "$mid" tk/provider "")
       BENCH_MODEL="$model" BENCH_EFFORT="$effort" BENCH_PROVIDER="$prov" \
         "$ADAPTERS/tk.sh" "$dest" "$dest/.bench_prompt.md" >"$log" 2>&1
       rc=$?
       ;;
     omp)
-      model=$(json_get "$mid" "['omp']['model']")
-      prov=$(json_get "$mid" "['omp']['provider']")
+      model=$(json_get "$mid" omp/model)
+      prov=$(json_get "$mid" omp/provider)
       BENCH_MODEL="$model" BENCH_EFFORT="$effort" BENCH_OMP_PROVIDER="$prov" \
         "$ADAPTERS/omp.sh" "$dest" "$dest/.bench_prompt.md" >"$log" 2>&1
       rc=$?
       ;;
     fx)
-      model=$(json_get "$mid" "['fx']['model']")
+      model=$(json_get "$mid" fx/model)
       BENCH_MODEL="$model" BENCH_EFFORT="$effort" \
         "$ADAPTERS/fx.sh" "$dest" "$dest/.bench_prompt.md" >"$log" 2>&1
       rc=$?
       ;;
     opencode)
-      model=$(json_get "$mid" "['opencode']['model']")
+      model=$(json_get "$mid" opencode/model)
       BENCH_MODEL="$model" BENCH_EFFORT="$effort" \
         "$ADAPTERS/opencode.sh" "$dest" "$dest/.bench_prompt.md" >"$log" 2>&1
       rc=$?
@@ -404,79 +377,21 @@ print(m.get('tk',{}).get('provider',''))" )
   collect_patch "$dest" "$base" "$patch"
   t1=$(date +%s)
   seconds=$((t1 - t0))
-  python3 -c "
-import json
-cell = {
-  'harness': '''$harness''',
-  'model': '''$mid''',
-  'instance_id': '''$iid''',
-  'resolved': None,
-  'seconds': $seconds,
-  'adapter_exit': $rc,
-  'patch': r'''$patch''',
-  'driver': 'thin',
-}
-open(r'''$CELLS''','a').write(json.dumps(cell)+'\n')
-"
+  luajit "$ROOT/lib/cell.lua" --cells "$CELLS" --harness "$harness" --model "$mid" --instance "$iid" --seconds "$seconds" --exit "$rc" --patch "$patch"
 }
 
 eval_pending_patches() {
   harness=$1
   mid=$2
   preds="$OUT/preds_${harness}_${mid}.jsonl"
-  python3 -c "
-import json
-h, m = '''$harness''', '''$mid'''
-slug = '%s__%s' % (h, m)
-out = r'''$preds'''
-with open(out,'w') as fh:
-    for line in open(r'''$CELLS'''):
-        c=json.loads(line)
-        if c['harness']!=h or c['model']!=m:
-            continue
-        patch=''
-        p=c.get('patch')
-        if p:
-            try: patch=open(p).read()
-            except OSError: patch=''
-        fh.write(json.dumps({
-            'instance_id': c['instance_id'],
-            'model_name_or_path': slug,
-            'model_patch': patch,
-        })+'\n')
-"
+  luajit "$ROOT/lib/config.lua" predictions "$CELLS" "$preds" "$harness" "$mid"
   run_id="rotary-bench-${harness}-${mid}-$(date +%Y%m%d%H%M%S)"
   set +e
   official_eval "$preds" "$run_id"
   ev=$?
   set -e
   if [ "$ev" -eq 0 ]; then
-    python3 -c "
-import json, glob
-h, m, run_id = '''$harness''', '''$mid''', '''$run_id'''
-resolved_map = {}
-for path in glob.glob('logs/run_evaluation/%s/**/*' % run_id, recursive=True):
-    if not path.endswith('.json'):
-        continue
-    try:
-        data = json.load(open(path))
-    except Exception:
-        continue
-    if isinstance(data, dict):
-        for k, v in data.items():
-            if isinstance(v, dict) and 'resolved' in v:
-                resolved_map[k] = bool(v['resolved'])
-        for key in ('resolved_ids', 'resolved_instances'):
-            if key in data and isinstance(data[key], list):
-                for iid in data[key]:
-                    resolved_map[iid] = True
-rows = [json.loads(l) for l in open(r'''$CELLS''') if l.strip()]
-for r in rows:
-    if r['harness']==h and r['model']==m and r['instance_id'] in resolved_map:
-        r['resolved'] = resolved_map[r['instance_id']]
-        r['eval_run_id'] = run_id
-open(r'''$CELLS''','w').write(''.join(json.dumps(r)+'\n' for r in rows))
-"
+    luajit "$ROOT/lib/config.lua" apply-eval "$CELLS" "$harness" "$mid" "$run_id"
   fi
 }
 
@@ -507,56 +422,10 @@ for mid in $MODEL_IDS; do
       fi
       echo "$DRIVER could not drive $harness; falling back to thin loop" >&2
     fi
-    python3 - "$CELLS" "$OUT" "$harness" "$mid" <<'PY'
-import json, sys
-from pathlib import Path
-cells_path, out, harness, mid = sys.argv[1:]
-prefix = "%s__%s__" % (harness, mid)
-seen = set()
-if Path(cells_path).exists():
-    for line in Path(cells_path).read_text().splitlines():
-        if not line.strip():
-            continue
-        c = json.loads(line)
-        if c.get("harness")==harness and c.get("model")==mid:
-            seen.add(c["instance_id"])
-patches = Path(out) / "patches"
-if patches.is_dir():
-    for patch in sorted(patches.glob(prefix + "*.patch")):
-        iid = patch.name[len(prefix):-len(".patch")]
-        if iid in seen:
-            continue
-        cell = {
-            "harness": harness,
-            "model": mid,
-            "instance_id": iid,
-            "resolved": None,
-            "seconds": 0,
-            "adapter_exit": 0,
-            "patch": str(patch),
-            "driver": "thin",
-            "resumed_from_patch": True,
-        }
-        with Path(cells_path).open("a") as fh:
-            fh.write(json.dumps(cell) + "\n")
-        seen.add(iid)
-        print("resume: recorded existing patch", patch.name, file=sys.stderr)
-PY
+    luajit "$ROOT/lib/config.lua" resume-patches "$CELLS" "$OUT" "$harness" "$mid"
     while IFS= read -r iid; do
       [ -n "$iid" ] || continue
-      if python3 -c "
-import json,sys
-from pathlib import Path
-h,m,iid,cells=sys.argv[1:5]
-if Path(cells).exists():
-    for line in Path(cells).read_text().splitlines():
-        if not line.strip():
-            continue
-        c=json.loads(line)
-        if c.get('harness')==h and c.get('model')==m and c.get('instance_id')==iid:
-            raise SystemExit(0)
-raise SystemExit(1)
-" "$harness" "$mid" "$iid" "$CELLS"; then
+      if luajit "$ROOT/lib/config.lua" cell-exists "$CELLS" "$harness" "$mid" "$iid"; then
         echo "resume skip $harness $mid $iid" >&2
         continue
       fi
@@ -567,17 +436,6 @@ raise SystemExit(1)
   done
 done
 
-META=$(python3 -c "
-import json
-print(json.dumps({
-  'dataset': 'princeton-nlp/SWE-bench_Verified',
-  'n': int('''$N'''),
-  'sample_seed': int('''$SEED'''),
-  'driver': '''$DRIVER''',
-  'docker': '''$DOCKER''',
-  'models': '''$MODEL_IDS'''.split(),
-  'harnesses': '''$HARNESSES'''.split(),
-}))
-")
-python3 "$ROOT/lib/report.py" --cells "$CELLS" --out-dir "$OUT" --meta "$META"
+META=$(luajit "$ROOT/lib/config.lua" meta-json "$N" "$SEED" "$DRIVER" "$DOCKER" "$MODEL_IDS" "$HARNESSES")
+luajit "$ROOT/lib/report.lua" --cells "$CELLS" --out-dir "$OUT" --meta "$META"
 echo "wrote $OUT/REPORT.md and $OUT/results.json" >&2

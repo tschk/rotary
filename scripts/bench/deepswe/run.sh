@@ -68,7 +68,7 @@ for h in $HARNESSES; do
   esac
 done
 
-python3 -c "import json; json.load(open(r'''$MODELS_JSON'''))"
+luajit "$ROOT/lib/config.lua" json-valid "$MODELS_JSON"
 
 DATE=$(date +%Y-%m-%d)
 OUT=${OUT:-"$ROOT/out/${DATE}-deepswe${N}"}
@@ -116,48 +116,27 @@ else
 fi
 
 json_get() {
-  python3 -c "import json; cfg=json.load(open(r'''$MODELS_JSON'''));
-mid='$MID'
-print(next(m$1 for m in cfg['models'] if m['id']==mid))"
+  if [ "$#" -gt 1 ]; then
+    luajit "$ROOT/lib/config.lua" model-get "$MODELS_JSON" "$MID" "$1" "$2"
+  else
+    luajit "$ROOT/lib/config.lua" model-get "$MODELS_JSON" "$MID" "$1"
+  fi
 }
 
-EFFORT=$(json_get "['effort']")
+EFFORT=$(json_get effort)
 export BENCH_MODEL_ID="$MID"
 export BENCH_EFFORT="$EFFORT"
 export BENCH_AGENT_TIMEOUT=${BENCH_AGENT_TIMEOUT:-21600}
 export TK_MAX_TURNS=${TK_MAX_TURNS:-400}
 
 cell_exists() {
-  python3 -c "
-import json,sys
-from pathlib import Path
-h,m,iid,cells=sys.argv[1:5]
-if Path(cells).exists():
-    for line in Path(cells).read_text().splitlines():
-        if not line.strip():
-            continue
-        c=json.loads(line)
-        if c.get('harness')==h and c.get('model')==m and c.get('instance_id')==iid:
-            raise SystemExit(0)
-raise SystemExit(1)
-" "$1" "$2" "$3" "$CELLS"
+  luajit "$ROOT/lib/config.lua" cell-exists "$CELLS" "$1" "$2" "$3"
 }
 
 write_live_report() {
-  python3 "$HERE/report.py" --cells "$CELLS" --out-dir "$OUT" --meta "$(python3 -c "
-import json
-print(json.dumps({
-  'dataset': 'datacurve/deep-swe',
-  'n': int('''$N'''),
-  'sample_seed': int('''$SEED'''),
-  'docker': '''$DOCKER''',
-  'model': '''$MID''',
-  'effort': '''$EFFORT''',
-  'harnesses': '''$HARNESSES'''.split(),
-  'driver': 'thin+pier-verifier',
-  'tasks': '''$TASKS''',
-}))
-")"
+  local meta
+  meta=$(luajit "$ROOT/lib/config.lua" deep-meta-json "$N" "$SEED" "$DOCKER" "$MID" "$EFFORT" "$HARNESSES" "$TASKS")
+  luajit "$HERE/report.lua" --cells "$CELLS" --out-dir "$OUT" --meta "$meta"
 }
 
 pier_verify() {
@@ -247,7 +226,7 @@ for harness in $HARNESSES; do
     elif [ "$thin_rc" -ne 0 ]; then
       adapter_exit=$thin_rc
     fi
-    resolved_py="None"
+    resolved="null"
     reward_path=""
     verifier=""
     if [ "$SKIP_EVAL" -eq 0 ]; then
@@ -258,33 +237,15 @@ for harness in $HARNESSES; do
         reward_path=$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('path',''))" "$reward_json")
         rew=$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('reward'))" "$reward_json")
         if [ "$rew" = "1" ] || [ "$rew" = "1.0" ]; then
-          resolved_py="True"
+          resolved="true"
         else
-          resolved_py="False"
+          resolved="false"
         fi
       fi
     fi
     t1=$(date +%s)
     seconds=$((t1 - t0))
-    python3 -c "
-import json
-cell = {
-  'harness': '''$harness''',
-  'model': '''$MID''',
-  'instance_id': '''$iid''',
-  'resolved': $resolved_py,
-  'seconds': $seconds,
-  'adapter_exit': $adapter_exit,
-  'patch': r'''$patch''',
-  'driver': 'thin+pier-verifier',
-  'dataset': 'deep-swe',
-}
-if '''$reward_path''':
-    cell['reward_json'] = r'''$reward_path'''
-if '''$verifier''':
-    cell['verifier'] = '''$verifier'''
-open(r'''$CELLS''','a').write(json.dumps(cell)+'\n')
-"
+    luajit "$ROOT/lib/cell.lua" --cells "$CELLS" --harness "$harness" --model "$MID" --instance "$iid" --seconds "$seconds" --exit "$adapter_exit" --resolved "$resolved" --patch "$patch" --driver thin+pier-verifier --dataset deep-swe --reward-json "$reward_path" --verifier "$verifier"
     write_live_report >/dev/null || true
   done < "$IDS_FILE"
 done
