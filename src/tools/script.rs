@@ -386,7 +386,14 @@ struct GrepHit {
 /// canonicalizes, so the check sees the real target).
 fn confined_path(root: &Arc<ToolContext>, path: &str) -> Result<std::path::PathBuf, String> {
     let full = lexically_normalize(&resolve_path(root, path, false)?);
-    let base = lexically_normalize(&root.workspace_root);
+    // Canonicalize the root too: `resolve_path` canonicalizes the candidate, so
+    // on platforms with symlinked system dirs (/tmp, /var) comparing against
+    // the raw root would reject every in-workspace path.
+    let base = root
+        .workspace_root
+        .canonicalize()
+        .map_err(|e| format!("cannot resolve workspace root: {e}"))?;
+    let base = lexically_normalize(&base);
     if !full.starts_with(&base) {
         return Err(format!("path outside workspace: {path}"));
     }
