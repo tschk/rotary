@@ -2,6 +2,50 @@
 
 Hosts (telekinesis, apollo) embed these; they do not reimplement them.
 
+## Generic harness builder
+
+`HarnessBuilder` is an opt-in composition helper, not another agent type. Its
+`build` method returns the ordinary `Agent` after applying a generic operating
+contract, a scope and policy, selected builtin tools, and optional
+confidence-gated todo state.
+
+```rust
+use rx4::{HarnessBuilder, Policy, Scope};
+
+let mut agent = HarnessBuilder::new()
+    .scope(Scope::Coding)
+    .policy(Policy::workspace_write())
+    .builtin_tools(["read", "write", "edit", "bash", "grep", "find", "ls", "todo"])
+    .instructions("Keep the public API backward compatible.")
+    .build()?;
+
+// The host still selects and attaches these capabilities.
+// agent.set_provider(provider);
+// agent.set_async_approver(approver);
+// agent.set_hooks(hooks);
+// agent.load_project_context();
+```
+
+The default contract requires exploration before action, confirmation before
+irreversible actions, and practical verification. `instructions` are appended
+to it. `system_prompt` instead supplies a complete host-owned prompt and omits
+both the contract and caller instructions; the normal scope addendum still
+applies. Use `todo_config(None)` to leave todo state disabled.
+
+`HarnessConfig` and `BuiltinToolSelection` are serializable because hosts may
+store setup defaults. Provider instances, approvers, hooks, session paths, and
+lifecycle or scheduling decisions are intentionally absent. They stay under
+host control.
+
+`builtin_tools` selects exactly from `read`, `write`, `edit`, `hashline_edit`,
+`bash`, `grep`, `find`, `ls`, `web_fetch`, `todo`, `spawn_agent`, plan-mode,
+LSP, and `exec` tools already in rotary. Unknown or duplicate names fail during
+`build`; explicitly selecting `bash`/`grep`/`find`, `web_fetch`, or an LSP tool
+without its `builtin-tools`, `providers`, or `ipc` feature respectively also
+fails during construction. The default loadout contains the portable coding
+tools available under the enabled features. This builder does not add a
+programmatic-calling tool.
+
 ## Hashline
 
 `rx4::hashline` — tagged file reads (`[path#TAG]` + `N:line`) and fail-closed

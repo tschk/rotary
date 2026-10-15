@@ -39,6 +39,10 @@ Path(str(out_patch) + ".ws").write_text(str(ws))
 print(str(ws))
 PY
 WS=$(cat "${OUT_PATCH}.ws")
+# Capture the base BEFORE the agent runs. The prompt tells the agent to commit
+# its work; capturing after the run would make committed work invisible to the
+# `git diff` below and score solved tasks as empty patches.
+base=$(git -C "$WS" rev-parse HEAD)
 MID=${BENCH_MODEL_ID:-gpt-5.6-sol}
 export BENCH_MODEL=${BENCH_MODEL:-$(python3 -c "import json; cfg=json.load(open(r'''$MODELS_JSON'''));
 print(next(m['$HARNESS']['model'] for m in cfg['models'] if m['id']=='''$MID'''))")}
@@ -70,18 +74,44 @@ set -e
 rm -f "$WS/.bench_prompt.md"
 git -C "$WS" rm -f --ignore-unmatch --quiet .bench_prompt.md >/dev/null 2>&1 || true
 rm -rf "$WS/.rx4" >/dev/null 2>&1 || true
-base=$(git -C "$WS" rev-parse HEAD)
-git -C "$WS" add -A >/dev/null 2>&1 || true
 git -C "$WS" diff --binary "$base" -- . \
   ":(exclude).bench_prompt.md" \
   ":(exclude).rx4" \
   ":(exclude).rx4/**" \
+  ":(exclude).venv" \
+  ":(exclude).venv/**" \
+  ":(exclude)venv" \
+  ":(exclude)venv/**" \
+  ":(exclude)node_modules" \
+  ":(exclude)node_modules/**" \
+  ":(exclude)__pycache__" \
+  ":(exclude)__pycache__/**" \
+  ":(exclude).pytest_cache" \
+  ":(exclude).pytest_cache/**" \
+  ":(exclude)dist" \
+  ":(exclude)dist/**" \
+  ":(exclude)build" \
+  ":(exclude)build/**" \
   > "$OUT_PATCH" || true
 if [ ! -s "$OUT_PATCH" ]; then
   git -C "$WS" diff --binary --cached "$base" -- . \
     ":(exclude).bench_prompt.md" \
     ":(exclude).rx4" \
     ":(exclude).rx4/**" \
+    ":(exclude).venv" \
+    ":(exclude).venv/**" \
+    ":(exclude)venv" \
+    ":(exclude)venv/**" \
+    ":(exclude)node_modules" \
+    ":(exclude)node_modules/**" \
+    ":(exclude)__pycache__" \
+    ":(exclude)__pycache__/**" \
+    ":(exclude).pytest_cache" \
+    ":(exclude).pytest_cache/**" \
+    ":(exclude)dist" \
+    ":(exclude)dist/**" \
+    ":(exclude)build" \
+    ":(exclude)build/**" \
     > "$OUT_PATCH" || true
 fi
 echo "thin $HARNESS $(basename "$TASK") rc=$rc patch_bytes=$(wc -c < "$OUT_PATCH" | tr -d ' ')"

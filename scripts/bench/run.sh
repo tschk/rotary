@@ -257,17 +257,20 @@ collect_patch() {
   done
   rm -rf "$dest/.rx4" >/dev/null 2>&1 || true
   git -C "$dest" add -A >/dev/null 2>&1 || true
-  git -C "$dest" diff --binary "$base" -- . \
-    ":(exclude).bench_prompt.md" \
-    ":(exclude).rx4" \
-    ":(exclude).rx4/**" \
-    > "$patch_out" || true
+  local excludes=(
+    ":(exclude).bench_prompt.md"
+    ":(exclude).rx4" ":(exclude).rx4/**"
+    ":(exclude).venv" ":(exclude).venv/**"
+    ":(exclude)venv" ":(exclude)venv/**"
+    ":(exclude)node_modules" ":(exclude)node_modules/**"
+    ":(exclude)__pycache__" ":(exclude)__pycache__/**"
+    ":(exclude).pytest_cache" ":(exclude).pytest_cache/**"
+    ":(exclude)dist" ":(exclude)dist/**"
+    ":(exclude)build" ":(exclude)build/**"
+  )
+  git -C "$dest" diff --binary "$base" -- . "${excludes[@]}" > "$patch_out" || true
   if [ ! -s "$patch_out" ]; then
-    git -C "$dest" diff --binary --cached "$base" -- . \
-      ":(exclude).bench_prompt.md" \
-      ":(exclude).rx4" \
-      ":(exclude).rx4/**" \
-      > "$patch_out" || true
+    git -C "$dest" diff --binary --cached "$base" -- . "${excludes[@]}" > "$patch_out" || true
   fi
 }
 
@@ -310,9 +313,13 @@ harbor_try_codex() {
   [ "$DOCKER" = up ] || return 1
   model=$(json_get "$mid" "['codex']['model']")
   mkdir -p "$JOBS_DIR"
+  # Cap each task env's memory: one runaway task process must not
+  # thrash the host for every concurrent trial (8GB boxes).
   harbor run --dataset swebench@verified --agent codex --model "$model" \
+    --override-memory-mb "${BENCH_ENV_MEM_MB:-3072}" \
     --n-tasks "$N" --jobs-dir "$JOBS_DIR/harbor-$mid" \
     || harbor run -d swe-bench/swe-bench-verified -a codex -m "$model" \
+         --override-memory-mb "${BENCH_ENV_MEM_MB:-3072}" \
          --n-tasks "$N" -o "$JOBS_DIR/harbor-$mid"
 }
 

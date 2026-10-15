@@ -120,10 +120,16 @@ pub struct SandboxManager {
 
 impl SandboxManager {
     /// Create a new manager for the given profile rooted at `workspace`.
+    ///
+    /// The root is canonicalized when it exists so that confinement checks
+    /// (`canonical candidate starts_with root`) compare like for like on
+    /// platforms where common paths are symlinks (macOS `/tmp`, `/var`).
+    /// Paths that do not exist yet are kept as given.
     pub fn new(profile: SandboxProfile, workspace: PathBuf) -> Self {
+        let workspace_root = workspace.canonicalize().unwrap_or(workspace);
         Self {
             profile,
-            workspace_root: workspace,
+            workspace_root,
             allow_paths: Vec::new(),
             deny_paths: Vec::new(),
             allow_network: false,
@@ -142,7 +148,10 @@ impl SandboxManager {
     pub fn from_config(config: SandboxConfig) -> Self {
         Self {
             profile: config.profile,
-            workspace_root: config.workspace_root,
+            workspace_root: config
+                .workspace_root
+                .canonicalize()
+                .unwrap_or(config.workspace_root),
             allow_paths: config.allow_paths,
             deny_paths: config.deny_paths,
             allow_network: config.allow_network,

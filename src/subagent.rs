@@ -10,7 +10,10 @@
 //! records a completed run (prompt accepted, no LLM turns).
 
 use crate::agent::{Agent, AgentBudget, ToolRegistry};
-use crate::permissions::{PermissionMode, Policy};
+use crate::mode::Scope;
+use crate::permissions::{
+    Approver, AsyncApprover, Authorizer, PermissionMode, PlanApprover, Policy,
+};
 use crate::provider::Provider;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
@@ -92,6 +95,51 @@ pub struct SubagentBudget {
     pub reserve_budget: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reserve_budget_fraction: Option<f64>,
+}
+
+/// Opaque snapshot of authority a parent explicitly delegates to subagents.
+///
+/// Obtain a snapshot from [`Agent::subagent_authority`]. A manager configured
+/// with [`SubagentManager::with_authority`] applies it to every child, carrying
+/// host policy, custom authorization and approval gates, sandboxing, active
+/// scope, and the parent's remaining budget. Child configuration can only
+/// narrow that authority.
+///
+/// A manager without this snapshot remains a host-owned capability: its
+/// explicit [`SubagentConfig`] is authoritative for backward compatibility.
+/// Hosts should attach a snapshot when their manager exposes model-requested
+/// delegation.
+#[derive(Clone)]
+pub struct SubagentAuthority {
+    pub(crate) policy: Policy,
+    pub(crate) scope: Option<Scope>,
+    pub(crate) authorizer: Option<Arc<dyn Authorizer>>,
+    pub(crate) approver: Option<Arc<dyn Approver>>,
+    pub(crate) async_approver: Option<Arc<dyn AsyncApprover>>,
+    pub(crate) plan_approver: Option<Arc<dyn PlanApprover>>,
+    pub(crate) sandbox: Option<Arc<crate::sandbox::SandboxManager>>,
+    pub(crate) os_sandbox: Option<Arc<crate::sandbox::OsSandboxRunner>>,
+    pub(crate) os_sandbox_failed: bool,
+    pub(crate) budget: Option<AgentBudget>,
+    pub(crate) max_tool_iterations: usize,
+}
+
+impl std::fmt::Debug for SubagentAuthority {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SubagentAuthority")
+            .field("policy", &self.policy)
+            .field("scope", &self.scope)
+            .field("has_authorizer", &self.authorizer.is_some())
+            .field("has_approver", &self.approver.is_some())
+            .field("has_async_approver", &self.async_approver.is_some())
+            .field("has_plan_approver", &self.plan_approver.is_some())
+            .field("has_sandbox", &self.sandbox.is_some())
+            .field("has_os_sandbox", &self.os_sandbox.is_some())
+            .field("os_sandbox_failed", &self.os_sandbox_failed)
+            .field("budget", &self.budget)
+            .field("max_tool_iterations", &self.max_tool_iterations)
+            .finish()
+    }
 }
 
 /// Declarative configuration for a subagent.
@@ -346,6 +394,7 @@ pub struct SubagentManager {
     parents: HashMap<String, Option<String>>,
     provider: Option<Arc<dyn Provider>>,
     tools: Option<Arc<ToolRegistry>>,
+    authority: Option<SubagentAuthority>,
     model: Option<String>,
     subscribers: Vec<SubagentSubscriber>,
     background_running: Arc<AtomicUsize>,
@@ -357,6 +406,7 @@ impl std::fmt::Debug for SubagentManager {
             .field("subagents", &self.subagents.len())
             .field("parents", &self.parents.len())
             .field("has_provider", &self.provider.is_some())
+            .field("has_authority", &self.authority.is_some())
             .field("subscribers", &self.subscribers.len())
             .finish()
     }
@@ -380,6 +430,17 @@ impl SubagentManager {
         self
     }
 
+    /// Delegate only the authority represented by `authority` to children.
+    ///
+    /// This is the safe choice for managers reachable from an agent or model.
+    /// Managers without an authority snapshot preserve the historical
+    /// host-owned behavior, where the host's `SubagentConfig` is the explicit
+    /// authority boundary.
+    pub fn with_authority(mut self, authority: SubagentAuthority) -> Self {
+        self.authority = Some(authority);
+        self
+    }
+
     pub fn with_model(mut self, model: impl Into<String>) -> Self {
         self.model = Some(model.into());
         self
@@ -395,6 +456,11 @@ impl SubagentManager {
 
     pub fn set_tools(&mut self, tools: Arc<ToolRegistry>) {
         self.tools = Some(tools);
+    }
+
+    /// Replace the authority inherited by subsequently spawned children.
+    pub fn set_authority(&mut self, authority: SubagentAuthority) {
+        self.authority = Some(authority);
     }
 
     pub fn subscribe(&mut self, callback: impl Fn(&SubagentEvent) + Send + Sync + 'static) {
@@ -433,8 +499,15 @@ impl SubagentManager {
         let (handle, workspace) = self.begin_spawn(&config, prompt, parent_workspace)?;
         let started = Instant::now();
         let mut result = if let Some(provider) = self.provider.clone() {
-            run_agent_subagent(provider, self.tools.clone(), &config, prompt, &workspace)
-                .map_err(SubagentError::SpawnFailed)?
+            run_agent_subagent(
+                provider,
+                self.tools.clone(),
+                self.authority.clone(),
+                &config,
+                prompt,
+                &workspace,
+            )
+            .map_err(SubagentError::SpawnFailed)?
         } else {
             SubagentResult::offline(&config.name, prompt)
         };
@@ -461,9 +534,16 @@ impl SubagentManager {
         let (handle, workspace) = self.begin_spawn(&config, prompt, parent_workspace)?;
         let started = Instant::now();
         let mut result = if let Some(provider) = self.provider.clone() {
-            run_agent_subagent_async(provider, self.tools.clone(), &config, prompt, &workspace)
-                .await
-                .map_err(SubagentError::SpawnFailed)?
+            run_agent_subagent_async(
+                provider,
+                self.tools.clone(),
+                self.authority.clone(),
+                &config,
+                prompt,
+                &workspace,
+            )
+            .await
+            .map_err(SubagentError::SpawnFailed)?
         } else {
             SubagentResult::offline(&config.name, prompt)
         };
@@ -488,6 +568,7 @@ impl SubagentManager {
         let (handle, workspace) = self.begin_spawn(&config, prompt, parent_workspace)?;
         let provider = self.provider.clone();
         let tools = self.tools.clone();
+        let authority = self.authority.clone();
         let subscribers = self.subscribers.clone();
         let running = self.background_running.fetch_add(1, Ordering::SeqCst) + 1;
         let background_running = Arc::clone(&self.background_running);
@@ -505,6 +586,7 @@ impl SubagentManager {
         let join_handle = tokio::spawn(execute_background_task(
             provider,
             tools,
+            authority,
             config,
             prompt,
             workspace,
@@ -822,19 +904,160 @@ fn policy_from_config(config: &SubagentConfig) -> Policy {
     policy
 }
 
+fn restrictive_mode(parent: PermissionMode, requested: PermissionMode) -> PermissionMode {
+    fn rank(mode: PermissionMode) -> u8 {
+        match mode {
+            PermissionMode::DenyAll => 0,
+            PermissionMode::ReadOnly => 1,
+            PermissionMode::WorkspaceWrite => 2,
+            PermissionMode::FullAccess => 3,
+        }
+    }
+    if rank(requested) < rank(parent) {
+        requested
+    } else {
+        parent
+    }
+}
+
+fn restricted_allowed_tools(parent: &Policy, config: &SubagentConfig) -> Option<Vec<String>> {
+    config.allowed_tools.as_ref().map(|allowed| {
+        if parent.allowlist.is_empty() {
+            allowed.clone()
+        } else {
+            parent
+                .allowlist
+                .iter()
+                .filter(|tool| allowed.iter().any(|allowed| allowed == *tool))
+                .cloned()
+                .collect()
+        }
+    })
+}
+
+fn restricted_policy(authority: &SubagentAuthority, config: &SubagentConfig) -> Policy {
+    let mut policy = authority.policy.clone();
+    if let Some(mode) = config.permission_mode {
+        policy.mode = restrictive_mode(policy.mode, mode);
+    }
+    if let Some(allowed) = restricted_allowed_tools(&authority.policy, config) {
+        policy.allowlist = allowed;
+    }
+    if let Some(denied) = &config.denied_tools {
+        for tool in denied {
+            if !policy.denylist.contains(tool) {
+                policy.denylist.push(tool.clone());
+            }
+        }
+    }
+    policy
+}
+
+struct ToolSelectionAuthorizer {
+    inherited: Option<Arc<dyn Authorizer>>,
+    allowed: Option<Vec<String>>,
+    denied: Vec<String>,
+}
+
+impl Authorizer for ToolSelectionAuthorizer {
+    fn authorize(
+        &self,
+        policy: &Policy,
+        tool_name: &str,
+        arguments: &str,
+        approver: Option<&dyn Approver>,
+        workspace_root: Option<&Path>,
+    ) -> crate::permissions::Decision {
+        if self.denied.iter().any(|tool| tool == tool_name)
+            || self
+                .allowed
+                .as_ref()
+                .is_some_and(|tools| !tools.iter().any(|tool| tool == tool_name))
+        {
+            return crate::permissions::Decision::Deny;
+        }
+        match &self.inherited {
+            Some(authorizer) => {
+                authorizer.authorize(policy, tool_name, arguments, approver, workspace_root)
+            }
+            None => crate::permissions::PolicyAuthorizer::new().authorize(
+                policy,
+                tool_name,
+                arguments,
+                approver,
+                workspace_root,
+            ),
+        }
+    }
+}
+
+fn min_limit(left: Option<f64>, right: Option<f64>) -> Option<f64> {
+    match (left, right) {
+        (Some(left), Some(right)) => Some(left.min(right)),
+        (Some(limit), None) | (None, Some(limit)) => Some(limit),
+        (None, None) => None,
+    }
+}
+
+fn min_duration(left: Option<u64>, right: Option<u64>) -> Option<u64> {
+    match (left, right) {
+        (Some(left), Some(right)) => Some(left.min(right)),
+        (Some(limit), None) | (None, Some(limit)) => Some(limit),
+        (None, None) => None,
+    }
+}
+
+fn restricted_budget(parent: Option<&AgentBudget>, config: &SubagentConfig) -> Option<AgentBudget> {
+    let configured = AgentBudget {
+        max_cost: config.budget.max_cost,
+        max_duration_seconds: min_duration(
+            config.budget.max_duration_seconds,
+            config.timeout_seconds,
+        ),
+        reserve_budget: config.budget.reserve_budget,
+        reserve_budget_fraction: config.budget.reserve_budget_fraction,
+    };
+    let parent_cost = parent.and_then(AgentBudget::effective_max_cost);
+    let configured_cost = configured.effective_max_cost();
+    let max_cost = min_limit(parent_cost, configured_cost);
+    let max_duration_seconds = min_duration(
+        parent.and_then(|budget| budget.max_duration_seconds),
+        configured.max_duration_seconds,
+    );
+    if max_cost.is_none() && max_duration_seconds.is_none() {
+        None
+    } else {
+        // Store the effective ceiling so a child's own reserve cannot restore
+        // capacity withheld by the parent.
+        Some(AgentBudget {
+            max_cost,
+            max_duration_seconds,
+            reserve_budget: None,
+            reserve_budget_fraction: None,
+        })
+    }
+}
+
 fn build_child_agent(
     provider: Arc<dyn Provider>,
     tools: Option<Arc<ToolRegistry>>,
+    authority: Option<SubagentAuthority>,
     config: &SubagentConfig,
     workspace: &Path,
 ) -> Agent {
     let mut agent = Agent::new();
+    agent.set_workspace_root(workspace);
     agent.set_provider(provider);
     if let Some(model) = &config.model {
         agent.set_model(model.clone());
     }
-    agent.max_tool_iterations = config.max_steps.max(1);
-    let mut policy = policy_from_config(config);
+    let mut policy = authority.as_ref().map_or_else(
+        || policy_from_config(config),
+        |parent| restricted_policy(parent, config),
+    );
+    let selected_allowed = authority
+        .as_ref()
+        .and_then(|parent| restricted_allowed_tools(&parent.policy, config));
     if config.use_capsule {
         let parent_tools = tools.as_ref().map(|t| t.names()).unwrap_or_default();
         let merged = config
@@ -862,21 +1085,28 @@ fn build_child_agent(
             agent.tools = tools;
         }
     }
-    agent.set_policy(policy);
-    agent.set_workspace_root(workspace);
-    if config.budget.max_cost.is_some()
-        || config.budget.max_duration_seconds.is_some()
-        || config.timeout_seconds.is_some()
-    {
-        agent.budget = Some(AgentBudget {
-            max_cost: config.budget.max_cost,
-            max_duration_seconds: config
-                .budget
-                .max_duration_seconds
-                .or(config.timeout_seconds),
-            reserve_budget: config.budget.reserve_budget,
-            reserve_budget_fraction: config.budget.reserve_budget_fraction,
-        });
+    let budget = restricted_budget(
+        authority.as_ref().and_then(|parent| parent.budget.as_ref()),
+        config,
+    );
+    if let Some(authority) = authority.as_ref() {
+        agent.inherit_subagent_authority(
+            authority,
+            policy,
+            budget,
+            config.max_steps.min(authority.max_tool_iterations),
+        );
+        if config.allowed_tools.is_some() || config.denied_tools.is_some() {
+            agent.set_authorizer(Arc::new(ToolSelectionAuthorizer {
+                inherited: authority.authorizer.clone(),
+                allowed: selected_allowed,
+                denied: config.denied_tools.clone().unwrap_or_default(),
+            }));
+        }
+    } else {
+        agent.set_policy(policy);
+        agent.max_tool_iterations = config.max_steps.max(1);
+        agent.budget = budget;
     }
     agent
 }
@@ -884,6 +1114,7 @@ fn build_child_agent(
 fn run_agent_subagent(
     provider: Arc<dyn Provider>,
     tools: Option<Arc<ToolRegistry>>,
+    authority: Option<SubagentAuthority>,
     config: &SubagentConfig,
     prompt: &str,
     workspace: &Path,
@@ -897,7 +1128,7 @@ fn run_agent_subagent(
             .build()
             .map_err(|e| e.to_string())?;
         rt.block_on(async move {
-            let mut agent = build_child_agent(provider, tools, &config, &workspace);
+            let mut agent = build_child_agent(provider, tools, authority, &config, &workspace);
             let prompt_result = agent.prompt(&prompt).await;
             let messages = agent.messages.read().clone();
             let tool_calls = messages
@@ -928,12 +1159,13 @@ fn run_agent_subagent(
 async fn run_agent_subagent_async(
     provider: Arc<dyn Provider>,
     tools: Option<Arc<ToolRegistry>>,
+    authority: Option<SubagentAuthority>,
     config: &SubagentConfig,
     prompt: &str,
     workspace: &Path,
 ) -> Result<SubagentResult, String> {
     let started = Instant::now();
-    let mut agent = build_child_agent(provider, tools, config, workspace);
+    let mut agent = build_child_agent(provider, tools, authority, config, workspace);
     let prompt_result = agent.prompt(prompt).await;
     let messages = agent.messages.read().clone();
     let tool_calls = messages
@@ -961,6 +1193,7 @@ async fn run_agent_subagent_async(
 async fn execute_background_task(
     provider: Option<Arc<dyn Provider>>,
     tools: Option<Arc<ToolRegistry>>,
+    authority: Option<SubagentAuthority>,
     config: SubagentConfig,
     prompt: String,
     workspace: PathBuf,
@@ -970,7 +1203,9 @@ async fn execute_background_task(
 ) {
     let started = Instant::now();
     let mut result = if let Some(provider) = provider {
-        match run_agent_subagent_async(provider, tools, &config, &prompt, &workspace).await {
+        match run_agent_subagent_async(provider, tools, authority, &config, &prompt, &workspace)
+            .await
+        {
             Ok(result) => result,
             Err(error) => SubagentResult {
                 output: String::new(),
@@ -1053,6 +1288,157 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "providers")]
+    struct OneToolProvider {
+        emitted: AtomicUsize,
+    }
+
+    #[cfg(feature = "providers")]
+    #[async_trait::async_trait]
+    impl Provider for OneToolProvider {
+        fn id(&self) -> &str {
+            "one-tool"
+        }
+
+        fn name(&self) -> &str {
+            "one-tool"
+        }
+
+        async fn stream(
+            &self,
+            _messages: &[crate::provider::Message],
+            _system: &Option<String>,
+            _model: &str,
+            _tools: &[serde_json::Value],
+            _reasoning_effort: Option<&str>,
+        ) -> Result<crate::provider::StreamResult, crate::provider::ProviderError> {
+            let events = if self.emitted.fetch_add(1, Ordering::SeqCst) == 0 {
+                vec![
+                    Ok(crate::provider::StreamEvent::ToolCall(
+                        crate::agent::ToolCall {
+                            id: "write-attempt".into(),
+                            name: "write".into(),
+                            arguments: r#"{"path":"blocked.txt","content":"blocked"}"#.into(),
+                        },
+                    )),
+                    Ok(crate::provider::StreamEvent::Done),
+                ]
+            } else {
+                vec![Ok(crate::provider::StreamEvent::Done)]
+            };
+            Ok(Box::new(futures::stream::iter(events)))
+        }
+    }
+
+    #[cfg(feature = "providers")]
+    struct DelegatingProvider {
+        parent_spawned: AtomicUsize,
+        child_write_emitted: AtomicUsize,
+    }
+
+    #[cfg(feature = "providers")]
+    #[async_trait::async_trait]
+    impl Provider for DelegatingProvider {
+        fn id(&self) -> &str {
+            "delegating"
+        }
+
+        fn name(&self) -> &str {
+            "delegating"
+        }
+
+        async fn stream(
+            &self,
+            messages: &[crate::provider::Message],
+            _system: &Option<String>,
+            _model: &str,
+            _tools: &[serde_json::Value],
+            _reasoning_effort: Option<&str>,
+        ) -> Result<crate::provider::StreamResult, crate::provider::ProviderError> {
+            let is_child = messages.iter().any(|message| {
+                message.role == crate::provider::Role::User && message.content == "child task"
+            });
+            let event = if is_child && self.child_write_emitted.fetch_add(1, Ordering::SeqCst) == 0
+            {
+                crate::provider::StreamEvent::ToolCall(crate::agent::ToolCall {
+                    id: "child-write".into(),
+                    name: "write".into(),
+                    arguments: r#"{"path":"blocked.txt","content":"blocked"}"#.into(),
+                })
+            } else if !is_child && self.parent_spawned.fetch_add(1, Ordering::SeqCst) == 0 {
+                crate::provider::StreamEvent::ToolCall(crate::agent::ToolCall {
+                    id: "delegate".into(),
+                    name: "spawn_agent".into(),
+                    arguments: r#"{"prompt":"child task","isolate":false}"#.into(),
+                })
+            } else {
+                crate::provider::StreamEvent::Done
+            };
+            Ok(Box::new(futures::stream::iter([
+                Ok(event),
+                Ok(crate::provider::StreamEvent::Done),
+            ])))
+        }
+    }
+
+    struct DenyWriteAuthorizer {
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl Authorizer for DenyWriteAuthorizer {
+        fn authorize(
+            &self,
+            _policy: &Policy,
+            tool_name: &str,
+            _arguments: &str,
+            _approver: Option<&dyn Approver>,
+            _workspace_root: Option<&Path>,
+        ) -> crate::permissions::Decision {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            if tool_name == "write" {
+                crate::permissions::Decision::Deny
+            } else {
+                crate::permissions::Decision::Allow
+            }
+        }
+    }
+
+    struct DenyAsyncApprover {
+        calls: Arc<AtomicUsize>,
+    }
+
+    #[async_trait::async_trait]
+    impl AsyncApprover for DenyAsyncApprover {
+        async fn approve(
+            &self,
+            _tool_call: &crate::agent::ToolCall,
+        ) -> crate::permissions::Decision {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            crate::permissions::Decision::Deny
+        }
+    }
+
+    #[cfg(feature = "providers")]
+    fn write_tools(executed: Arc<AtomicUsize>) -> Arc<ToolRegistry> {
+        let tools = ToolRegistry::new();
+        tools.register(
+            crate::agent::ToolDefinition::new_boxed(
+                "write",
+                "test write",
+                "{}",
+                Box::new(move |_, _| {
+                    let executed = Arc::clone(&executed);
+                    Box::pin(async move {
+                        executed.fetch_add(1, Ordering::SeqCst);
+                        crate::agent::ToolResult::ok("write-attempt", "written")
+                    })
+                }),
+            )
+            .with_effect(crate::agent::ToolEffect::Write),
+        );
+        Arc::new(tools)
+    }
+
     fn config(name: &str) -> SubagentConfig {
         SubagentConfig {
             name: name.to_string(),
@@ -1085,6 +1471,189 @@ mod tests {
         assert_eq!(c.max_steps, 10);
         assert!(c.workspace_isolation);
         assert_eq!(c.allowed_tools.as_ref().unwrap().len(), 1);
+    }
+
+    #[cfg(feature = "providers")]
+    #[tokio::test]
+    async fn inherited_authority_blocks_a_read_only_parent_from_delegating_write_access() {
+        let executed = Arc::new(AtomicUsize::new(0));
+        let denied = Arc::new(AtomicUsize::new(0));
+        let sandbox = Arc::new(crate::sandbox::SandboxManager::new(
+            crate::sandbox::SandboxProfile::ReadOnly,
+            PathBuf::from("."),
+        ));
+        let mut parent = Agent::new();
+        parent.set_scope(Scope::Coding);
+        parent.set_policy(
+            Policy::read_only()
+                .with_shell_deny(["git push*"])
+                .with_shell_allow(["cargo test*"]),
+        );
+        parent.set_sandbox(Arc::clone(&sandbox));
+        parent.set_authorizer(Arc::new(DenyWriteAuthorizer {
+            calls: Arc::clone(&denied),
+        }));
+        parent.set_budget(AgentBudget {
+            max_cost: Some(3.0),
+            max_duration_seconds: Some(30),
+            reserve_budget: Some(1.0),
+            reserve_budget_fraction: None,
+        });
+        parent.max_tool_iterations = 4;
+
+        let provider = Arc::new(OneToolProvider {
+            emitted: AtomicUsize::new(0),
+        });
+        let config = SubagentConfig {
+            name: "attempt-escalation".into(),
+            permission_mode: Some(PermissionMode::FullAccess),
+            allowed_tools: Some(vec!["write".into()]),
+            max_steps: 100,
+            budget: SubagentBudget {
+                max_cost: Some(100.0),
+                max_duration_seconds: Some(100),
+                ..SubagentBudget::default()
+            },
+            ..SubagentConfig::default()
+        };
+        let mut child = build_child_agent(
+            provider,
+            Some(write_tools(Arc::clone(&executed))),
+            Some(parent.subagent_authority()),
+            &config,
+            Path::new("."),
+        );
+
+        assert_eq!(child.policy.mode, PermissionMode::ReadOnly);
+        assert_eq!(child.policy.shell_deny, vec!["git push*"]);
+        assert_eq!(child.policy.shell_allow, vec!["cargo test*"]);
+        assert!(Arc::ptr_eq(child.sandbox.as_ref().unwrap(), &sandbox));
+        assert_eq!(child.max_tool_iterations, 4);
+        assert_eq!(child.budget.as_ref().unwrap().max_cost, Some(2.0));
+        assert_eq!(
+            child.budget.as_ref().unwrap().max_duration_seconds,
+            Some(30)
+        );
+
+        child.prompt("attempt a write").await.expect("child prompt");
+        assert_eq!(denied.load(Ordering::SeqCst), 1);
+        assert_eq!(executed.load(Ordering::SeqCst), 0);
+    }
+
+    #[cfg(feature = "providers")]
+    #[tokio::test]
+    async fn model_spawn_agent_automatically_inherits_parent_authority() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let permission_checks = Arc::new(AtomicUsize::new(0));
+        let tools = ToolRegistry::new();
+        crate::tools::register_builtin_tools(&tools);
+        let mut parent = Agent::new();
+        parent.set_workspace_root(workspace.path());
+        parent.set_scope(Scope::Coding);
+        parent.set_policy(Policy::read_only());
+        parent.set_authorizer(Arc::new(DenyWriteAuthorizer {
+            calls: Arc::clone(&permission_checks),
+        }));
+        parent.set_provider(Arc::new(DelegatingProvider {
+            parent_spawned: AtomicUsize::new(0),
+            child_write_emitted: AtomicUsize::new(0),
+        }));
+        parent.set_tools(tools);
+
+        parent.prompt("parent task").await.expect("parent prompt");
+        for _ in 0..20 {
+            if permission_checks.load(Ordering::SeqCst) == 2 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        assert_eq!(permission_checks.load(Ordering::SeqCst), 2);
+        assert!(!workspace.path().join("blocked.txt").exists());
+    }
+
+    #[cfg(feature = "providers")]
+    #[tokio::test]
+    async fn inherited_async_approval_remains_required_after_a_child_requests_full_access() {
+        let executed = Arc::new(AtomicUsize::new(0));
+        let approvals = Arc::new(AtomicUsize::new(0));
+        let mut parent = Agent::new();
+        parent.set_scope(Scope::Coding);
+        parent.set_policy(Policy::read_only());
+        parent.set_async_approver(Arc::new(DenyAsyncApprover {
+            calls: Arc::clone(&approvals),
+        }));
+
+        let mut child = build_child_agent(
+            Arc::new(OneToolProvider {
+                emitted: AtomicUsize::new(0),
+            }),
+            Some(write_tools(Arc::clone(&executed))),
+            Some(parent.subagent_authority()),
+            &SubagentConfig {
+                permission_mode: Some(PermissionMode::FullAccess),
+                ..SubagentConfig::default()
+            },
+            Path::new("."),
+        );
+
+        child.prompt("attempt a write").await.expect("child prompt");
+        assert_eq!(approvals.load(Ordering::SeqCst), 1);
+        assert_eq!(executed.load(Ordering::SeqCst), 0);
+    }
+
+    #[cfg(feature = "providers")]
+    #[tokio::test]
+    async fn child_tool_selection_cannot_escape_a_parent_allowlist() {
+        let executed = Arc::new(AtomicUsize::new(0));
+        let mut parent = Agent::new();
+        let mut policy = Policy::full_access();
+        policy.allowlist = vec!["read".into()];
+        parent.set_policy(policy);
+
+        let mut child = build_child_agent(
+            Arc::new(OneToolProvider {
+                emitted: AtomicUsize::new(0),
+            }),
+            Some(write_tools(Arc::clone(&executed))),
+            Some(parent.subagent_authority()),
+            &SubagentConfig {
+                allowed_tools: Some(vec!["write".into()]),
+                ..SubagentConfig::default()
+            },
+            Path::new("."),
+        );
+
+        child.prompt("attempt a write").await.expect("child prompt");
+        assert_eq!(executed.load(Ordering::SeqCst), 0);
+    }
+
+    #[cfg(feature = "providers")]
+    #[tokio::test]
+    async fn inherited_scope_blocks_tools_outside_the_parent_scope() {
+        let executed = Arc::new(AtomicUsize::new(0));
+        let mut parent = Agent::new();
+        parent.set_scope(Scope::Plan);
+        // The host may pair scope constraints with a broad policy. The child
+        // must still retain the plan scope's tool boundary.
+        parent.set_policy(Policy::full_access());
+
+        let mut child = build_child_agent(
+            Arc::new(OneToolProvider {
+                emitted: AtomicUsize::new(0),
+            }),
+            Some(write_tools(Arc::clone(&executed))),
+            Some(parent.subagent_authority()),
+            &SubagentConfig {
+                permission_mode: Some(PermissionMode::FullAccess),
+                ..SubagentConfig::default()
+            },
+            Path::new("."),
+        );
+
+        assert_eq!(child.scope, Scope::Plan);
+        child.prompt("attempt a write").await.expect("child prompt");
+        assert_eq!(executed.load(Ordering::SeqCst), 0);
     }
 
     #[test]
@@ -1299,7 +1868,13 @@ mod tests {
             capsule: crate::capsule::ContextCapsule::empty(),
             ..SubagentConfig::default()
         };
-        let agent = build_child_agent(provider, Some(Arc::new(tools)), &config, Path::new("."));
+        let agent = build_child_agent(
+            provider,
+            Some(Arc::new(tools)),
+            None,
+            &config,
+            Path::new("."),
+        );
         assert!(
             agent.system_prompt.is_none(),
             "empty capsule inherited system: {:?}",

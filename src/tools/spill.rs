@@ -96,6 +96,28 @@ fn preview_body(body: &str, max_preview: usize, locator: Option<&Path>) -> Strin
     preview
 }
 
+pub(crate) fn preview_with_reference(
+    body: &str,
+    max_preview: usize,
+    reference: Option<&str>,
+) -> String {
+    let take = char_boundary_at(body, max_preview.min(body.len()));
+    let mut preview = body[..take].to_string();
+    if take < body.len() {
+        preview.push_str("\n…[truncated");
+        match reference {
+            Some(reference) => {
+                preview
+                    .push_str(", retrieve full output with retrieve_context_artifact reference ");
+                preview.push_str(reference);
+            }
+            None => preview.push_str(", spill failed"),
+        }
+        preview.push(']');
+    }
+    preview
+}
+
 fn char_boundary_at(body: &str, max_bytes: usize) -> usize {
     if max_bytes >= body.len() {
         return body.len();

@@ -440,6 +440,9 @@ pub(crate) fn exec_spawn_agent(ctx: Arc<ToolContext>, args: String) -> ToolFutur
     if let Some(tools) = ctx.tools.clone() {
         manager = manager.with_tools(tools);
     }
+    if let Some(authority) = ctx.subagent_authority.clone() {
+        manager = manager.with_authority(authority);
+    }
     Box::pin(super::execute_spawn_agent(
         Arc::new(Mutex::new(manager)),
         ctx,

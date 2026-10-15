@@ -35,6 +35,8 @@ flowchart TD
 | `ToolCall` | The model requested a tool call |
 | `ToolExecutionStart` | Tool execution has begun |
 | `ToolExecutionEnd` | Tool execution has finished (with result) |
+| `ToolBackgrounded` | Call exceeded the sync window and keeps running in the background; the model got a `[running in background]` placeholder |
+| `BackgroundResultArrived` | A backgrounded call finished; its result was delivered to the model as a `<background_result>` message |
 | `TurnEnd` | A turn has ended (with turn index). Retained so existing host matches still compile; the loop emits `TurnEnded`. |
 | `TurnEnded` | The one turn-complete event. Hosts that implement auto-continue policy read `metadata`. |
 | `AgentEnd` | The agent loop has finished |
