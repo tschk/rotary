@@ -1,6 +1,23 @@
 # Changelog
 
-## Unreleased
+## [0.7.5] — 2026-10-15
+
+### Added
+- Tool calls default to async with background results: a call still running
+  after a short sync window returns a `[running in background]` placeholder
+  and the loop keeps going (#196).
+- Declarative JSON tool pipelines: bounded multi-step tool chains through the
+  normal tool gates (#193).
+- Generic agent builder harness for hosts embedding rx4 (#191).
+- Per-request todo state injection (#190) and session-artifact retrieval for
+  context (#192).
+
+### Fixed
+- Subagents inherit their parent's authority (#194).
+- CI: async-trait 0.1.92 resolves the clippy `double_must_use` failures on
+  current stable; rustls 0.23.46 clears four RUSTSEC advisories (#198).
+
+## [0.7.4] — 2026-09-26
 
 ### Fixed
 - `exec wait` now closes stdin and times out (default 120s, max 600s) instead of blocking the agent loop until an outer Harbor/SWE timeout.
