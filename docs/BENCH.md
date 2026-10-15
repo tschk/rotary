@@ -14,6 +14,11 @@ scripts/bench/run.sh --n 500          # full 500 (opt-in)
 scripts/bench/run.sh --full           # same
 ```
 
+The benchmark glue requires LuaJIT 2.1 (`brew install luajit` on macOS or
+`sudo apt-get install luajit` on Ubuntu). Its small pure-Lua JSON module is
+vendored; no LuaRocks setup is needed. Dataset download, Pier task handling,
+and the official SWE-bench evaluator remain Python integrations.
+
 Output: `scripts/bench/out/<date>/REPORT.md` and `results.json`. Each cell is
 `{harness, model, instance_id, resolved, seconds}`. `resolved` is `null` when
 the official eval did not run (no Docker, `--skip-eval`, or harness missing).
@@ -71,6 +76,8 @@ scripts/bench/check.sh
 ```
 
 Confirms adapters exist, `models.json` parses, and `run.sh --help` works.
+It also checks LuaJIT is installed and that an unscored cell stays `null` in
+the generated report.
 
 ## fx n=10 / full 500
 

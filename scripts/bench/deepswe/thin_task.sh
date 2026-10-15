@@ -44,27 +44,21 @@ WS=$(cat "${OUT_PATCH}.ws")
 # `git diff` below and score solved tasks as empty patches.
 base=$(git -C "$WS" rev-parse HEAD)
 MID=${BENCH_MODEL_ID:-gpt-5.6-sol}
-export BENCH_MODEL=${BENCH_MODEL:-$(python3 -c "import json; cfg=json.load(open(r'''$MODELS_JSON'''));
-print(next(m['$HARNESS']['model'] for m in cfg['models'] if m['id']=='''$MID'''))")}
-export BENCH_EFFORT=${BENCH_EFFORT:-$(python3 -c "import json; cfg=json.load(open(r'''$MODELS_JSON'''));
-print(next(m['effort'] for m in cfg['models'] if m['id']=='''$MID'''))")}
+export BENCH_MODEL=${BENCH_MODEL:-$(luajit "$ROOT/lib/config.lua" model-get "$MODELS_JSON" "$MID" "$HARNESS/model")}
+export BENCH_EFFORT=${BENCH_EFFORT:-$(luajit "$ROOT/lib/config.lua" model-get "$MODELS_JSON" "$MID" effort)}
 export BENCH_AGENT_TIMEOUT=${BENCH_AGENT_TIMEOUT:-21600}
 case "$HARNESS" in
   pi)
-    export BENCH_PI_PROVIDER=${BENCH_PI_PROVIDER:-$(python3 -c "import json; cfg=json.load(open(r'''$MODELS_JSON'''));
-print(next(m['pi'].get('provider','openai-codex') for m in cfg['models'] if m['id']=='''$MID'''))")}
+    export BENCH_PI_PROVIDER=${BENCH_PI_PROVIDER:-$(luajit "$ROOT/lib/config.lua" model-get "$MODELS_JSON" "$MID" pi/provider openai-codex)}
     ;;
   omp)
-    export BENCH_OMP_PROVIDER=${BENCH_OMP_PROVIDER:-$(python3 -c "import json; cfg=json.load(open(r'''$MODELS_JSON'''));
-print(next(m['omp'].get('provider','openai-codex') for m in cfg['models'] if m['id']=='''$MID'''))")}
+    export BENCH_OMP_PROVIDER=${BENCH_OMP_PROVIDER:-$(luajit "$ROOT/lib/config.lua" model-get "$MODELS_JSON" "$MID" omp/provider openai-codex)}
     ;;
   tk)
-    export BENCH_PROVIDER=${BENCH_PROVIDER:-$(python3 -c "import json; cfg=json.load(open(r'''$MODELS_JSON'''));
-print(next(m.get('tk',{}).get('provider','') for m in cfg['models'] if m['id']=='''$MID'''))")}
+    export BENCH_PROVIDER=${BENCH_PROVIDER:-$(luajit "$ROOT/lib/config.lua" model-get "$MODELS_JSON" "$MID" tk/provider "")}
     ;;
   codex)
-    export BENCH_CODEX_CONFIG=${BENCH_CODEX_CONFIG:-$(python3 -c "import json; cfg=json.load(open(r'''$MODELS_JSON'''));
-print(next(m['codex'].get('config','model_reasoning_effort=low') for m in cfg['models'] if m['id']=='''$MID'''))")}
+    export BENCH_CODEX_CONFIG=${BENCH_CODEX_CONFIG:-$(luajit "$ROOT/lib/config.lua" model-get "$MODELS_JSON" "$MID" codex/config model_reasoning_effort=low)}
     ;;
 esac
 set +e

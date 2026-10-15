@@ -4,6 +4,11 @@ set -euo pipefail
 ROOT=$(cd "$(dirname "$0")" && pwd)
 fail=0
 
+if ! command -v luajit >/dev/null 2>&1; then
+  echo "missing luajit (LuaJIT 2.1 is required for the benchmark glue)" >&2
+  exit 1
+fi
+
 for a in codex pi tk omp fx opencode; do
   p="$ROOT/adapters/$a.sh"
   if [[ ! -f "$p" ]]; then
@@ -16,27 +21,28 @@ for a in codex pi tk omp fx opencode; do
   fi
 done
 
-python3 - "$ROOT/models.json" <<'PY'
-import json, sys
-cfg = json.load(open(sys.argv[1]))
-assert "models" in cfg and len(cfg["models"]) >= 2
-ids = {m["id"] for m in cfg["models"]}
-assert "gpt-5.6-sol" in ids
-assert "deepseek-v4-flash" in ids
-assert "glm-5.3-flash" in ids
-for m in cfg["models"]:
-    assert m.get("effort")
-    if m["id"] in ("gpt-5.6-sol", "gpt-5.6-terra"):
-        assert "codex" in m and "pi" in m and "tk" in m and "omp" in m and "fx" in m
-    if m["id"] == "deepseek-v4-flash":
-        assert "opencode" in m and m["opencode"].get("model")
-    if m["id"] == "glm-5.3-flash":
-        assert m["tk"]["model"] == "glm-5.3-flash"
-        assert m["tk"]["provider"] == "zai"
-assert "omp" in cfg.get("harnesses", []) and "fx" in cfg.get("harnesses", [])
-assert "opencode" in cfg.get("harnesses", [])
-print("ok models.json", sorted(ids))
-PY
+luajit "$ROOT/lib/config.lua" models-check "$ROOT/models.json"
+
+luajit - "$ROOT/lib/common.lua" <<'LUA'
+local common = dofile(arg[1])
+local function ensure_dir_result(first, second, third, expected)
+  os.execute = function() return first, second, third end
+  assert(pcall(common.ensure_dir, "mock") == expected)
+end
+ensure_dir_result(0, nil, nil, true)
+ensure_dir_result(true, "exit", 0, true)
+ensure_dir_result(1, nil, nil, false)
+ensure_dir_result(false, "exit", 1, false)
+print("ok ensure_dir LuaJIT return conventions")
+LUA
+
+smoke=$(mktemp -d "${TMPDIR:-/tmp}/rotary-bench-lua.XXXXXX")
+trap 'rm -rf "$smoke"' EXIT
+luajit "$ROOT/lib/cell.lua" --cells "$smoke/cells.jsonl" --harness tk --model smoke --instance null-cell --seconds 3
+luajit "$ROOT/lib/report.lua" --cells "$smoke/cells.jsonl" --out-dir "$smoke/report" --meta '{}' >/dev/null
+grep -Fq '| tk | smoke | n/a (no official eval) | 1 |' "$smoke/report/REPORT.md"
+grep -Fq '| tk | smoke | null-cell | null | 3 |' "$smoke/report/REPORT.md"
+echo "ok Lua cell/report null handling"
 
 "$ROOT/run.sh" --help >/dev/null
 echo "ok run.sh --help"
@@ -56,7 +62,7 @@ fi
 
 "$ROOT/deepswe/run.sh" --help >/dev/null
 echo "ok deepswe/run.sh --help"
-if [[ -x "$ROOT/deepswe/thin_task.sh" && -f "$ROOT/deepswe/apply_host_patch.py" && -f "$ROOT/deepswe/sample.py" && -f "$ROOT/deepswe/report.py" ]]; then
+if [[ -x "$ROOT/deepswe/thin_task.sh" && -f "$ROOT/deepswe/apply_host_patch.py" && -f "$ROOT/deepswe/sample.py" && -f "$ROOT/deepswe/report.lua" ]]; then
   echo "ok deepswe runner files"
 else
   echo "missing deepswe runner files"; fail=1

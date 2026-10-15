@@ -40,6 +40,7 @@ fi
 
 TASK_DIR=$(cd "$1" && pwd)
 PROMPT_FILE=${2:-"$TASK_DIR/.bench_prompt.md"}
+BENCH_ROOT=$(cd "$(dirname "$0")/.." && pwd)
 MODEL=${BENCH_MODEL:-gpt-5.6-sol}
 EFFORT=${BENCH_EFFORT:-low}
 
@@ -62,29 +63,9 @@ fi
 
 # Fail closed if fx has no credential. Do not invent keys or run login.
 status_json=$("$FX" status --json 2>/dev/null || true)
-auth_state=$(python3 -c "
-import json, sys
-raw = sys.stdin.read().strip()
-if not raw:
-    print('missing')
-    raise SystemExit
-try:
-    data = json.loads(raw)
-except Exception:
-    print('missing')
-    raise SystemExit
-print(data.get('auth') or 'missing')
-" <<<"$status_json")
+auth_state=$(printf '%s' "$status_json" | luajit "$BENCH_ROOT/lib/config.lua" stdin-field auth missing)
 if [[ "$auth_state" == "missing" || "$auth_state" == "none" || "$auth_state" == "unauthenticated" ]]; then
-  help_msg=$(python3 -c "
-import json, sys
-raw = sys.stdin.read().strip()
-try:
-    data = json.loads(raw)
-except Exception:
-    data = {}
-print(data.get('auth_help') or 'Run fx login to sign in, fx setup to use an API key, or set AI_GATEWAY_API_KEY.')
-" <<<"$status_json")
+  help_msg=$(printf '%s' "$status_json" | luajit "$BENCH_ROOT/lib/config.lua" stdin-field auth_help 'Run fx login to sign in, fx setup to use an API key, or set AI_GATEWAY_API_KEY.')
   echo "fx.sh: not authenticated (auth=${auth_state}). Fail closed. ${help_msg}" >&2
   echo "fx.sh: binary=${FX} model=${MODEL} effort=${EFFORT}" >&2
   exit 2
