@@ -23,6 +23,19 @@ done
 
 luajit "$ROOT/lib/config.lua" models-check "$ROOT/models.json"
 
+luajit - "$ROOT/lib/common.lua" <<'LUA'
+local common = dofile(arg[1])
+local function ensure_dir_result(first, second, third, expected)
+  os.execute = function() return first, second, third end
+  assert(pcall(common.ensure_dir, "mock") == expected)
+end
+ensure_dir_result(0, nil, nil, true)
+ensure_dir_result(true, "exit", 0, true)
+ensure_dir_result(1, nil, nil, false)
+ensure_dir_result(false, "exit", 1, false)
+print("ok ensure_dir LuaJIT return conventions")
+LUA
+
 smoke=$(mktemp -d "${TMPDIR:-/tmp}/rotary-bench-lua.XXXXXX")
 trap 'rm -rf "$smoke"' EXIT
 luajit "$ROOT/lib/cell.lua" --cells "$smoke/cells.jsonl" --harness tk --model smoke --instance null-cell --seconds 3

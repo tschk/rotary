@@ -83,7 +83,7 @@ end
 
 function M.ensure_dir(path)
   local rc = os.execute("mkdir -p " .. M.quote(path))
-  if rc ~= 0 then error("cannot create directory: " .. path, 2) end
+  if rc ~= 0 and rc ~= true then error("cannot create directory: " .. path, 2) end
 end
 
 function M.parse_flags(argv, names, required, usage)
