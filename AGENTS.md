@@ -103,6 +103,7 @@ graph LR
 | `agent.rs` | event-driven loop, tool registry, streaming, JoinSet parallel tool batches |
 | `provider.rs` | multi-provider OpenAI-compatible client, HTTP connection prewarm |
 | `tools.rs` | built-in tool loadout (file, shell, search, web, todo, subagent, plan-mode, LSP) |
+| `tools/script.rs` | sandboxed LuaJIT `script` tool (feature `script`) |
 | `session.rs` | session tree (fork/merge) + JSONL persistence |
 | `permissions.rs` | policy pattern, allow/deny, host approver |
 | `hooks.rs` | lifecycle hooks |
@@ -227,6 +228,7 @@ graph TD
 |---|---|---|
 | `builtin-tools` | yes | read/write/edit/bash/grep/find/ls (stdlib grep/find; regex) |
 | `fff` | no | fff-search indexed grep/find (git2/notify; not in builtin-tools) |
+| `script` | no | sandboxed LuaJIT `script` tool (read/list/grep/json bridges; wall-clock capped) |
 | `cli` | no | clap + `rx4` binary (`required-features`) |
 | `ipc` | no | Unix socket JSON-RPC server, ACP host, LSP client (not cancellation) |
 | `computer-use` | no | Praefectus `cu_*` tools (13 tools) |

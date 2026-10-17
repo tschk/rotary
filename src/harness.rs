@@ -182,6 +182,8 @@ const BUILTIN_TOOL_NAMES: &[&str] = &[
     "lsp_definition",
     "lsp_references",
     "exec",
+    #[cfg(feature = "script")]
+    "script",
 ];
 
 fn selected_builtin_tools(
@@ -221,6 +223,8 @@ fn default_builtin_tools() -> Vec<&'static str> {
             "retrieve_context_artifact",
             "tool_pipeline",
         ]);
+        #[cfg(feature = "script")]
+        names.push("script");
         names
     }
     #[cfg(not(feature = "builtin-tools"))]
