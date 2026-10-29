@@ -79,6 +79,13 @@ local function find_files(root, name_pattern, maxdepth)
   return paths
 end
 
+-- Run provenance (from `config.lua provenance`) travels in BENCH_PROVENANCE.
+local function add_provenance(meta)
+  local raw = os.getenv("BENCH_PROVENANCE")
+  if raw and raw ~= "" then meta.provenance = json.decode(raw) end
+  meta.finished_utc = os.date("!%Y-%m-%dT%H:%M:%SZ")
+end
+
 if command == "json-valid" then
   need(1)
   common.read_json(args[1])
@@ -139,6 +146,62 @@ elseif command == "model-ids" then
     ids = want
   end
   io.write(table.concat(ids, " "), "\n")
+elseif command == "matrix" then
+  -- A model runs on a harness only when models.json gives that harness its
+  -- own model id; adapter defaults would silently run a different model.
+  need(3)
+  local cfg = models(args[1])
+  local pairs_, excluded, seen = {}, {}, {}
+  for _, id in ipairs(split_words(args[2])) do
+    local value = model(cfg, id)
+    if not value then fail("unknown model: " .. id) end
+    for _, harness in ipairs(split_words(args[3])) do
+      -- Repeated --model/--harness must not plan (and count) a pair twice.
+      if seen[harness .. "\0" .. id] then goto continue end
+      seen[harness .. "\0" .. id] = true
+      local entry = value[harness]
+      if type(entry) == "table" and type(entry.model) == "string" and entry.model ~= "" then
+        pairs_[#pairs_ + 1] = { harness = harness, model = id }
+        print("run " .. harness .. " " .. id)
+      else
+        excluded[#excluded + 1] = { harness = harness, model = id, reason = "not_configured" }
+        print("skip " .. harness .. " " .. id .. " not_configured")
+      end
+      ::continue::
+    end
+  end
+  if args[4] and args[5] then
+    common.write(args[5], json.encode({
+      pairs = setmetatable(pairs_, json.array_mt),
+      excluded = setmetatable(excluded, json.array_mt),
+      instance_ids_file = args[4],
+    }) .. "\n")
+  end
+elseif command == "provenance" then
+  need(3)
+  local function capture(cmd)
+    local pipe = io.popen(cmd .. " 2>/dev/null", "r")
+    if not pipe then return nil end
+    local out = pipe:read("*a") or ""
+    pipe:close()
+    out = out:match("^%s*(.-)%s*$")
+    return out ~= "" and out or nil
+  end
+  local function sha256(path)
+    local out = capture("shasum -a 256 " .. common.quote(path))
+    return out and out:match("^(%x+)") or json.null
+  end
+  local repo = common.quote(args[1])
+  local status = capture("git -C " .. repo .. " status --porcelain --untracked-files=no")
+  io.write(json.encode({
+    git_commit = capture("git -C " .. repo .. " rev-parse HEAD") or json.null,
+    git_dirty = status ~= nil,
+    models_sha256 = sha256(args[2]),
+    instance_ids_sha256 = sha256(args[3]),
+    started_utc = os.date("!%Y-%m-%dT%H:%M:%SZ"),
+    agent_timeout = os.getenv("BENCH_AGENT_TIMEOUT") or json.null,
+    tk_max_turns = os.getenv("TK_MAX_TURNS") or json.null,
+  }), "\n")
 elseif command == "model-get" then
   need(3)
   local value = model(models(args[1]), args[2])
@@ -250,9 +313,14 @@ elseif command == "apply-eval" then
   end
   local rows = common.read_jsonl(cells_path)
   for _, row in ipairs(rows) do
-    if row.harness == harness and row.model == model_id and resolved[row.instance_id] ~= nil then
-      row.resolved = resolved[row.instance_id]
-      row.eval_run_id = run_id
+    if row.harness == harness and row.model == model_id then
+      -- Record the attempt even without a verdict so the report can tell
+      -- "eval ran, no result" apart from "never evaluated".
+      row.eval_attempted = run_id
+      if resolved[row.instance_id] ~= nil then
+        row.resolved = resolved[row.instance_id]
+        row.eval_run_id = run_id
+      end
     end
   end
   local file, err = io.open(cells_path, "wb")
@@ -275,6 +343,7 @@ elseif command == "meta-json" then
     models = split_words(args[5]),
     harnesses = split_words(args[6]),
   }
+  add_provenance(meta)
   io.write(json.encode(meta), "\n")
 elseif command == "deep-meta-json" then
   need(7)
@@ -294,6 +363,7 @@ elseif command == "deep-meta-json" then
     driver = "thin+pier-verifier",
     tasks = args[7],
   }
+  add_provenance(meta)
   io.write(json.encode(meta), "\n")
 elseif command == "stdin-field" then
   need(2)
@@ -304,5 +374,5 @@ elseif command == "stdin-field" then
   if not pytruthy(value) then value = args[2] end
   print(common.python_string(value))
 else
-  fail("usage: config.lua {json-valid|models-check|default|harnesses|model-ids|model-get|sample-ids|instance-field|cell-exists|resume-patches|predictions|apply-eval|meta-json|deep-meta-json|stdin-field} ...", 2)
+  fail("usage: config.lua {json-valid|models-check|default|harnesses|model-ids|matrix|provenance|model-get|sample-ids|instance-field|cell-exists|resume-patches|predictions|apply-eval|meta-json|deep-meta-json|stdin-field} ...", 2)
 end
