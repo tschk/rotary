@@ -233,6 +233,11 @@ def summarize(bundle_dir, files, out, calibration):
     for iid in sorted(set(ids) - gold_pass):
         lines.append(f"- {iid}: " + ("gold failed" if iid in gold_fail else "gold missing/error"))
     lines += ["", "## Upload exclusions (retained in planned denominators)", ""]
+    if any(c.get("upload_exclusion") for c in meta["cells"]):
+        lines += ["**Harness defect: workspace artifacts were swept into generated predictions.**",
+                  "The historical OMP runs included entire virtual environments in their patches.",
+                  "This is a patch-collection failure, not merely an upload-packaging issue: other workspace files could also be captured.",
+                  "Affected predictions are quarantined whole, not rewritten; their cells remain unscored in planned denominators.", ""]
     for cell in meta["cells"]:
         if cell.get("upload_exclusion"):
             lines.append(f"- {cell['model_name_or_path']}/{cell['instance_id']}: {cell['upload_exclusion']}; original patch not uploaded or scored")

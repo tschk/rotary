@@ -188,3 +188,20 @@ object in a model entry: `input`, `output`, `cache_read`, `cache_write` in
 USD per million tokens, plus `source` and `as_of`. Without a usable estimate
 or price snapshot, cost stays unknown. These are estimates, not invoices;
 subscription charges and missing historical token usage are not inferred.
+
+### Historical OMP workspace-collection defect
+
+The full500 OMP predictions for `sphinx-doc__sphinx-8593` and
+`sphinx-doc__sphinx-9229` contain entire `.venv311` and `.venv39` trees.
+This is a harness defect: prediction collection captured unrelated workspace
+artifacts and could capture other files, not just virtual environments.
+Both predictions are quarantined whole before upload; their cells stay in
+the planned denominator as unscored, with original patch checksums recorded.
+
+The initial secret scan flagged four Sourcegraph-token matches in the first
+patch. All four are false positives on Git binary-patch index lines for Babel
+`locale-data/{ce_RU,ceb,haw_US,he}.dat`. Decoding each binary payload and
+recomputing its Git blob hash reproduced the flagged value exactly. These
+are content hashes, not live credentials; no rotation or authentication
+probe is needed. Neither environment-bearing patch was uploaded. The final
+allowlisted bundle passed a complete secret scan with no findings.
