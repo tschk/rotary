@@ -82,7 +82,9 @@ mkdir -p "$T/tasks/t1/environment" "$T/tasks/t1/tests"
 echo 'FROM scratch' > "$T/tasks/t1/environment/Dockerfile"
 printf '#!/bin/sh\n' > "$T/tasks/t1/tests/test.sh"
 reward "$T/deep/pier/codex/codex__gpt-5.6-sol__t1/old/verifier/reward.json" 1
-env HOME="$T/home" PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin BENCH_ADAPTERS="$T/adapters" \
+# Stub docker to fail so the verifier is always skipped, even on hosts with Docker and Pier.
+mkdir -p "$T/stubbin" && printf '#!/bin/sh\nexit 1\n' > "$T/stubbin/docker" && chmod +x "$T/stubbin/docker"
+env HOME="$T/home" PATH="$T/stubbin":/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin BENCH_ADAPTERS="$T/adapters" \
   "$ROOT/deepswe/run.sh" --n 1 --tasks "$T/tasks" --harness codex --out "$T/deep" >/dev/null 2>&1
 grep -q '"adapter_exit":0' "$T/deep/cells.jsonl" || fail "DeepSWE fixture run failed: $(cat "$T/deep/logs/"*.log)"
 grep -q '"resolved":null' "$T/deep/cells.jsonl" || fail "stale reward scored a cell whose verifier never ran: $(cat "$T/deep/cells.jsonl")"

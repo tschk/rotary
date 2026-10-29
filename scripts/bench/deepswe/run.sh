@@ -167,7 +167,13 @@ pier_verify() {
   mkdir -p "$job_parent"
   # Fresh job dir per cell, cleared even when the verifier is skipped, so a
   # stale trial can never be read as this one.
+  # Called in an `if`, so set -e does not apply. Check the outcome, not rm's
+  # exit status: if anything of an old job survives, refuse to verify.
   rm -rf "${job_parent:?}/$job_name"
+  if [ -e "$job_parent/$job_name" ]; then
+    echo "cannot clear $job_parent/$job_name; refusing to verify" >&2
+    return 1
+  fi
   if [ -z "$PIER" ] || [ ! -x "$PIER" ]; then
     echo "pier missing; skip verifier" >&2
     return 1
