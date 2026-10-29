@@ -1,0 +1,169 @@
+{
+  "cells": [
+    {
+      "generation_provenance": "unrecorded",
+      "historical_adapter_exit": 0,
+      "historical_resolved": true,
+      "instance_id": "django__django-10973",
+      "model_name_or_path": "codex__gpt-5.6-sol",
+      "patch_available": true
+    },
+    {
+      "generation_provenance": "unrecorded",
+      "historical_adapter_exit": 0,
+      "historical_resolved": false,
+      "instance_id": "django__django-11728",
+      "model_name_or_path": "codex__gpt-5.6-sol",
+      "patch_available": true
+    },
+    {
+      "generation_provenance": "unrecorded",
+      "historical_adapter_exit": 0,
+      "historical_resolved": true,
+      "instance_id": "django__django-13344",
+      "model_name_or_path": "codex__gpt-5.6-sol",
+      "patch_available": true
+    },
+    {
+      "generation_provenance": "unrecorded",
+      "historical_adapter_exit": 0,
+      "historical_resolved": true,
+      "instance_id": "django__django-13810",
+      "model_name_or_path": "codex__gpt-5.6-sol",
+      "patch_available": true
+    },
+    {
+      "generation_provenance": "unrecorded",
+      "historical_adapter_exit": 0,
+      "historical_resolved": false,
+      "instance_id": "django__django-15629",
+      "model_name_or_path": "codex__gpt-5.6-sol",
+      "patch_available": true
+    },
+    {
+      "generation_provenance": "unrecorded",
+      "historical_adapter_exit": 0,
+      "historical_resolved": true,
+      "instance_id": "scikit-learn__scikit-learn-14141",
+      "model_name_or_path": "codex__gpt-5.6-sol",
+      "patch_available": true
+    },
+    {
+      "generation_provenance": "unrecorded",
+      "historical_adapter_exit": 0,
+      "historical_resolved": true,
+      "instance_id": "scikit-learn__scikit-learn-14894",
+      "model_name_or_path": "codex__gpt-5.6-sol",
+      "patch_available": true
+    },
+    {
+      "generation_provenance": "unrecorded",
+      "historical_adapter_exit": 0,
+      "historical_resolved": true,
+      "instance_id": "sphinx-doc__sphinx-9591",
+      "model_name_or_path": "codex__gpt-5.6-sol",
+      "patch_available": true
+    },
+    {
+      "generation_provenance": "unrecorded",
+      "historical_adapter_exit": 0,
+      "historical_resolved": false,
+      "instance_id": "sympy__sympy-13091",
+      "model_name_or_path": "codex__gpt-5.6-sol",
+      "patch_available": true
+    },
+    {
+      "generation_provenance": "unrecorded",
+      "historical_adapter_exit": 0,
+      "historical_resolved": true,
+      "instance_id": "sympy__sympy-17139",
+      "model_name_or_path": "codex__gpt-5.6-sol",
+      "patch_available": true
+    },
+    {
+      "generation_provenance": "unrecorded",
+      "historical_adapter_exit": 0,
+      "historical_resolved": true,
+      "instance_id": "django__django-10973",
+      "model_name_or_path": "tk__gpt-5.6-sol",
+      "patch_available": true
+    },
+    {
+      "generation_provenance": "unrecorded",
+      "historical_adapter_exit": 0,
+      "historical_resolved": false,
+      "instance_id": "django__django-11728",
+      "model_name_or_path": "tk__gpt-5.6-sol",
+      "patch_available": true
+    },
+    {
+      "generation_provenance": "unrecorded",
+      "historical_adapter_exit": 0,
+      "historical_resolved": false,
+      "instance_id": "django__django-13344",
+      "model_name_or_path": "tk__gpt-5.6-sol",
+      "patch_available": true
+    },
+    {
+      "generation_provenance": "unrecorded",
+      "historical_adapter_exit": 0,
+      "historical_resolved": true,
+      "instance_id": "django__django-13810",
+      "model_name_or_path": "tk__gpt-5.6-sol",
+      "patch_available": true
+    },
+    {
+      "generation_provenance": "unrecorded",
+      "historical_adapter_exit": 0,
+      "historical_resolved": false,
+      "instance_id": "django__django-15629",
+      "model_name_or_path": "tk__gpt-5.6-sol",
+      "patch_available": true
+    },
+    {
+      "generation_provenance": "unrecorded",
+      "historical_adapter_exit": 0,
+      "historical_resolved": true,
+      "instance_id": "scikit-learn__scikit-learn-14141",
+      "model_name_or_path": "tk__gpt-5.6-sol",
+      "patch_available": true
+    },
+    {
+      "generation_provenance": "unrecorded",
+      "historical_adapter_exit": 0,
+      "historical_resolved": true,
+      "instance_id": "scikit-learn__scikit-learn-14894",
+      "model_name_or_path": "tk__gpt-5.6-sol",
+      "patch_available": true
+    },
+    {
+      "generation_provenance": "unrecorded",
+      "historical_adapter_exit": 0,
+      "historical_resolved": true,
+      "instance_id": "sphinx-doc__sphinx-9591",
+      "model_name_or_path": "tk__gpt-5.6-sol",
+      "patch_available": true
+    },
+    {
+      "generation_provenance": "unrecorded",
+      "historical_adapter_exit": 0,
+      "historical_resolved": false,
+      "instance_id": "sympy__sympy-13091",
+      "model_name_or_path": "tk__gpt-5.6-sol",
+      "patch_available": true
+    },
+    {
+      "generation_provenance": "unrecorded",
+      "historical_adapter_exit": 0,
+      "historical_resolved": true,
+      "instance_id": "sympy__sympy-17139",
+      "model_name_or_path": "tk__gpt-5.6-sol",
+      "patch_available": true
+    }
+  ],
+  "dataset": "SWE-bench/SWE-bench_Verified",
+  "predictions_sha256": "e0e965dedf226089e446f74e20e0b890d40563f223b7eaccb9bd4aac1e85402d",
+  "revision": "78f471bf655a3137b2e8a75af1501690ec009ec3",
+  "schema": 1,
+  "scorer": "5.0.2"
+}
