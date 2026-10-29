@@ -1,0 +1,49 @@
+{
+  "calibration_mismatches": [],
+  "gold_fail": [
+    "psf__requests-1724",
+    "psf__requests-1766",
+    "psf__requests-1921",
+    "psf__requests-2317"
+  ],
+  "gold_pass": 496,
+  "gold_unscored": [],
+  "models": {
+    "codex__gpt-5.6-sol": {
+      "eligible": 496,
+      "eligible_resolved": 395,
+      "gold_excluded": 4,
+      "planned": 500,
+      "resolved": 395,
+      "scored": 496,
+      "status": "complete"
+    },
+    "omp__gpt-5.6-sol": {
+      "eligible": 496,
+      "eligible_resolved": 393,
+      "gold_excluded": 4,
+      "planned": 500,
+      "resolved": 393,
+      "scored": 494,
+      "status": "INCOMPLETE"
+    },
+    "pi__gpt-5.6-sol": {
+      "eligible": 496,
+      "eligible_resolved": 368,
+      "gold_excluded": 4,
+      "planned": 500,
+      "resolved": 368,
+      "scored": 495,
+      "status": "INCOMPLETE"
+    },
+    "tk__gpt-5.6-sol": {
+      "eligible": 496,
+      "eligible_resolved": 346,
+      "gold_excluded": 4,
+      "planned": 500,
+      "resolved": 346,
+      "scored": 496,
+      "status": "complete"
+    }
+  }
+}

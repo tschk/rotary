@@ -158,6 +158,11 @@ then first n. Seed 0 / n=20 starts with meriyah-explicit-resource-declarations.
 
 ## Reproducible historical scoring and usage coverage
 
+[The calibrated full historical evaluation](evals/2026-10-29/REPORT.md)
+includes durable grading evidence, per-image digests and all exclusions.
+Four of 500 reference patches failed under this scorer configuration;
+OMP and pi retain unscored cells, so their observed rates are lower bounds.
+
 `scripts/bench/score.py bundle` exports only patches and allowlisted cell
 metadata. Inspect the bundle and scan it for credentials before uploading;
 never upload agent logs or environment dumps. `score.py run` uses pinned
