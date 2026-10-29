@@ -425,6 +425,14 @@ impl PlanApprover for ChannelPlanApprover {
 /// Pluggable pre-tool gate (pi `beforeToolCall` shape).
 /// Engine calls this before executing tools; hosts supply product policy.
 pub trait Authorizer: Send + Sync {
+    /// Whether this gate uses the policy and workspace supplied to `authorize`
+    /// rather than a captured snapshot. Live gates survive policy, scope and
+    /// workspace changes, including scope changes requested by model tools.
+    /// Snapshot gates keep the existing invalidation behavior by default.
+    fn uses_live_policy(&self) -> bool {
+        false
+    }
+
     fn authorize(
         &self,
         policy: &Policy,
