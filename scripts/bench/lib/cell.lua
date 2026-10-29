@@ -18,8 +18,11 @@ local args = common.parse_flags(arg, {
   ["--reward-json"] = "reward_json",
   ["--verifier"] = "verifier",
   ["--dataset"] = "dataset",
+  ["--adapter-model"] = "adapter_model",
+  ["--effort"] = "effort",
+  ["--unscored-reason"] = "unscored_reason",
 }, { "cells", "harness", "model", "instance", "seconds" },
-  "cell.lua --cells CELLS --harness NAME --model ID --instance ID --seconds N [--exit N] [--error TEXT] [--patch PATH] [--driver NAME] [--resolved true|false|null] [--reward-json PATH] [--verifier NAME] [--dataset NAME]")
+  "cell.lua --cells CELLS --harness NAME --model ID --instance ID --seconds N [--exit N] [--error TEXT] [--patch PATH] [--driver NAME] [--resolved true|false|null] [--reward-json PATH] [--verifier NAME] [--dataset NAME] [--adapter-model ID] [--effort LEVEL] [--unscored-reason TEXT]")
 
 local function integer(name, default)
   local value = args[name]
@@ -49,8 +52,15 @@ local cell = {
   adapter_exit = integer("adapter_exit", 0),
   driver = args.driver or "thin",
 }
-for _, key in ipairs({ "patch", "error", "reward_json", "verifier", "dataset" }) do
+for _, key in ipairs({ "patch", "error", "reward_json", "verifier", "dataset", "adapter_model", "effort", "unscored_reason" }) do
   if args[key] ~= nil and args[key] ~= "" then cell[key] = args[key] end
+end
+if cell.patch then
+  local patch_file = io.open(cell.patch, "rb")
+  if patch_file then
+    cell.patch_bytes = patch_file:seek("end")
+    patch_file:close()
+  end
 end
 
 local parent = args.cells:match("^(.*)/")

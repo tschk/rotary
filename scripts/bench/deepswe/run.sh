@@ -115,6 +115,11 @@ else
   fi
 fi
 
+if [ ! -s "$IDS_FILE" ]; then
+  echo "empty sample: $IDS_FILE has no ids; refusing to write a 0-cell report" >&2
+  exit 1
+fi
+
 json_get() {
   if [ "$#" -gt 1 ]; then
     luajit "$ROOT/lib/config.lua" model-get "$MODELS_JSON" "$MID" "$1" "$2"
@@ -125,7 +130,21 @@ json_get() {
 
 EFFORT=$(json_get effort)
 export BENCH_MODEL_ID="$MID"
-export BENCH_EFFORT="$EFFORT"
+PLAN="$OUT/plan.json"
+# Only harnesses with their own model entry for $MID run; others are listed
+# as exclusions in the report instead of running an adapter default model.
+RUN_HARNESSES=""
+while read -r verb h _m reason; do
+  if [ "$verb" = run ]; then
+    RUN_HARNESSES="$RUN_HARNESSES $h"
+  else
+    echo "skip $h: $MID $reason" >&2
+  fi
+done <<EOF
+$(luajit "$ROOT/lib/config.lua" matrix "$MODELS_JSON" "$MID" "$HARNESSES" "$IDS_FILE" "$PLAN")
+EOF
+export BENCH_PROVENANCE
+BENCH_PROVENANCE=$(luajit "$ROOT/lib/config.lua" provenance "$ROOT" "$MODELS_JSON" "$IDS_FILE")
 export BENCH_AGENT_TIMEOUT=${BENCH_AGENT_TIMEOUT:-21600}
 export TK_MAX_TURNS=${TK_MAX_TURNS:-400}
 
@@ -136,7 +155,7 @@ cell_exists() {
 write_live_report() {
   local meta
   meta=$(luajit "$ROOT/lib/config.lua" deep-meta-json "$N" "$SEED" "$DOCKER" "$MID" "$EFFORT" "$HARNESSES" "$TASKS")
-  luajit "$HERE/report.lua" --cells "$CELLS" --out-dir "$OUT" --meta "$meta"
+  luajit "$HERE/report.lua" --cells "$CELLS" --out-dir "$OUT" --meta "$meta" --plan "$PLAN"
 }
 
 pier_verify() {
@@ -156,6 +175,8 @@ pier_verify() {
   export PYTHONPATH="$HERE${PYTHONPATH:+:$PYTHONPATH}"
   export DOCKER_DEFAULT_PLATFORM="${DOCKER_DEFAULT_PLATFORM:-linux/amd64}"
   job_name="${harness}__${MID}__${iid}"
+  # Fresh job dir per cell so a stale trial can never be read as this one.
+  rm -rf "${job_parent:?}/$job_name"
   set +e
   # Cap the verifier env's memory: task test suites can balloon
   # (pystan fits hit 5.5GB) and thrash the host for every other trial.
@@ -174,37 +195,12 @@ pier_verify() {
   return 0
 }
 
-parse_reward() {
-  job_parent=$1
-  iid=$2
-  python3 - "$job_parent" "$iid" <<'PY'
-import json, sys
-from pathlib import Path
-root, iid = Path(sys.argv[1]), sys.argv[2]
-hits = sorted(root.rglob("reward.json"), key=lambda p: p.stat().st_mtime, reverse=True)
-# Prefer a reward whose trial path mentions the task id.
-chosen = None
-for p in hits:
-    if iid.replace("_", "")[:20] in str(p).replace("_", "") or iid in str(p):
-        chosen = p
-        break
-if chosen is None and hits:
-    chosen = hits[0]
-if chosen is None:
-    print("null")
-    raise SystemExit(0)
-data = json.loads(chosen.read_text())
-reward = data.get("reward")
-print(json.dumps({"reward": reward, "path": str(chosen), "f2p": data.get("f2p"), "p2p": data.get("p2p")}))
-PY
-}
-
 echo "DeepSWE sample: n=$N seed=$SEED model=$MID effort=$EFFORT" >&2
 echo "harnesses:$HARNESSES" >&2
 echo "tasks: $TASKS" >&2
 echo "out: $OUT" >&2
 
-for harness in $HARNESSES; do
+for harness in $RUN_HARNESSES; do
   echo "== $harness x $MID ==" >&2
   while IFS= read -r iid; do
     [ -n "$iid" ] || continue
@@ -229,10 +225,14 @@ for harness in $HARNESSES; do
     resolved="null"
     reward_path=""
     verifier=""
+    unscored=not_verified
+    adapter_model=$(cat "${patch}.model" 2>/dev/null || true)
     if [ "$SKIP_EVAL" -eq 0 ]; then
       pier_verify "$harness" "$iid" "$patch" >>"$log" 2>&1 || true
-      reward_json=$(parse_reward "$OUT/pier/${harness}" "$iid" || echo null)
+      reward_json=$(luajit "$HERE/reward.lua" "$OUT/pier/${harness}/${harness}__${MID}__${iid}" 2>>"$log" || echo null)
+      [ "$reward_json" = "null" ] && unscored=verifier_no_reward
       if [ "$reward_json" != "null" ]; then
+        unscored=""
         verifier=pier
         reward_path=$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('path',''))" "$reward_json")
         rew=$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('reward'))" "$reward_json")
@@ -245,7 +245,7 @@ for harness in $HARNESSES; do
     fi
     t1=$(date +%s)
     seconds=$((t1 - t0))
-    luajit "$ROOT/lib/cell.lua" --cells "$CELLS" --harness "$harness" --model "$MID" --instance "$iid" --seconds "$seconds" --exit "$adapter_exit" --resolved "$resolved" --patch "$patch" --driver thin+pier-verifier --dataset deep-swe --reward-json "$reward_path" --verifier "$verifier"
+    luajit "$ROOT/lib/cell.lua" --cells "$CELLS" --harness "$harness" --model "$MID" --instance "$iid" --seconds "$seconds" --exit "$adapter_exit" --resolved "$resolved" --patch "$patch" --driver thin+pier-verifier --dataset deep-swe --reward-json "$reward_path" --verifier "$verifier" --adapter-model "$adapter_model" --effort "$EFFORT" --unscored-reason "$unscored"
     write_live_report >/dev/null || true
   done < "$IDS_FILE"
 done
