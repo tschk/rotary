@@ -40,14 +40,12 @@ fn parse_spawn_args(args: &str) -> Result<(SubagentConfig, String), String> {
 }
 
 fn spawn_subagent(
-    manager: &Arc<Mutex<SubagentManager>>,
+    manager: &mut SubagentManager,
     config: SubagentConfig,
     prompt: &str,
     workspace_root: &std::path::Path,
 ) -> ToolResult {
-    let spawn_res = manager
-        .lock()
-        .spawn_background(config, prompt, workspace_root);
+    let spawn_res = manager.spawn_background(config, prompt, workspace_root);
     match spawn_res {
         Ok(handle) => ToolResult::ok(
             "spawn_agent",
@@ -67,20 +65,40 @@ async fn execute_spawn_agent(
     ctx: Arc<ToolContext>,
     args: String,
 ) -> ToolResult {
-    let (config, prompt) = match parse_spawn_args(&args) {
+    let (mut config, prompt) = match parse_spawn_args(&args) {
         Ok(res) => res,
         Err(e) => return ToolResult::err("spawn_agent", e),
     };
 
-    spawn_subagent(&manager, config, &prompt, &ctx.workspace_root)
+    if ctx.cancellation.is_canceled() {
+        return ToolResult::err("spawn_agent", "parent turn cancelled");
+    }
+    config.parent_id = ctx.subagent_parent_id.clone();
+    let mut configured = ctx
+        .subagent_manager
+        .clone()
+        .unwrap_or_else(|| manager.lock().clone());
+    if let Some(provider) = ctx.provider.clone() {
+        configured.set_provider(provider);
+    }
+    if let Some(tools) = ctx.tools.clone() {
+        configured.set_tools(tools);
+    }
+    if let Some(authority) = ctx.subagent_authority.clone() {
+        configured.set_authority(authority);
+    }
+    spawn_subagent(&mut configured, config, &prompt, &ctx.workspace_root)
 }
 
 async fn execute_list_subagents(
     manager: Arc<Mutex<SubagentManager>>,
-    _ctx: Arc<ToolContext>,
+    ctx: Arc<ToolContext>,
     _args: String,
 ) -> ToolResult {
-    let manager = manager.lock();
+    let manager = ctx
+        .subagent_manager
+        .clone()
+        .unwrap_or_else(|| manager.lock().clone());
     let subagents = manager
         .list()
         .into_iter()
@@ -103,7 +121,7 @@ async fn execute_list_subagents(
 
 async fn execute_cancel_subagent(
     manager: Arc<Mutex<SubagentManager>>,
-    _ctx: Arc<ToolContext>,
+    ctx: Arc<ToolContext>,
     args: String,
 ) -> ToolResult {
     let v: serde_json::Value = match serde_json::from_str(&args) {
@@ -114,8 +132,15 @@ async fn execute_cancel_subagent(
         Some(id) if !id.is_empty() => id,
         _ => return ToolResult::err("cancel_subagent", "id required"),
     };
-    match manager.lock().cancel(id) {
-        Ok(()) => ToolResult::ok("cancel_subagent", format!("cancelled {id}")),
+    let mut manager = ctx
+        .subagent_manager
+        .clone()
+        .unwrap_or_else(|| manager.lock().clone());
+    match manager.cancel(id) {
+        Ok(()) => ToolResult::ok(
+            "cancel_subagent",
+            format!("cancellation requested for {id}"),
+        ),
         Err(e) => ToolResult::err("cancel_subagent", e.to_string()),
     }
 }
@@ -287,6 +312,7 @@ pub fn register_autoresearch_tools(
 
 /// Register spawn_agent backed by a host-owned SubagentManager.
 pub fn register_spawn_agent_tool(registry: &ToolRegistry, manager: Arc<Mutex<SubagentManager>>) {
+    registry.bind_subagent_manager(manager.lock().clone());
     let spawn_manager = Arc::clone(&manager);
     registry.register(
         ToolDefinition::new_boxed(
@@ -728,12 +754,35 @@ mod tests {
         assert!(tool_names.contains(&"cancel_subagent"));
     }
 
+    #[cfg(feature = "providers")]
     #[tokio::test]
     async fn host_subagent_tools_share_lifecycle_state() {
         let tmp = TempDir::new().unwrap();
         let manager = Arc::new(Mutex::new(SubagentManager::new()));
         let registry = ToolRegistry::new();
         register_spawn_agent_tool(&registry, Arc::clone(&manager));
+        struct FixtureProvider;
+        #[async_trait::async_trait]
+        impl crate::provider::Provider for FixtureProvider {
+            fn id(&self) -> &str {
+                "fixture"
+            }
+            fn name(&self) -> &str {
+                "fixture"
+            }
+            #[cfg(feature = "providers")]
+            async fn stream(
+                &self,
+                _: &[crate::provider::Message],
+                _: &Option<String>,
+                _: &str,
+                _: &[serde_json::Value],
+                _: Option<&str>,
+            ) -> Result<crate::provider::StreamResult, crate::provider::ProviderError> {
+                Ok(Box::new(futures::stream::pending()))
+            }
+        }
+        manager.lock().set_provider(Arc::new(FixtureProvider));
         let ctx = Arc::new(ToolContext::new(tmp.path()));
 
         let spawned = registry
@@ -763,6 +812,8 @@ mod tests {
             .await
             .unwrap();
         assert!(!cancelled.is_error, "{}", cancelled.content);
+        let handle = manager.lock().get(&id).unwrap();
+        handle.wait().await;
     }
 
     #[tokio::test]

@@ -40,17 +40,25 @@ pub type ToolFuture = Pin<Box<dyn Future<Output = ToolResult> + Send>>;
 #[derive(Clone)]
 pub struct CancellationHandle {
     source: Arc<RwLock<CancellationTokenSource>>,
+    notifications: tokio::sync::watch::Sender<u64>,
 }
 
 impl CancellationHandle {
     pub(crate) fn new() -> Self {
         Self {
             source: Arc::new(RwLock::new(CancellationTokenSource::new())),
+            notifications: tokio::sync::watch::channel(0).0,
         }
     }
 
     pub fn cancel(&self) {
         self.source.read().cancel();
+        self.notifications
+            .send_modify(|generation| *generation = generation.wrapping_add(1));
+    }
+
+    pub(crate) fn subscribe_cancel(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.notifications.subscribe()
     }
 
     pub(crate) fn reset(&self) -> CancellationToken {
@@ -137,6 +145,9 @@ pub struct ToolContext {
     /// Authority snapshot inherited by model-requested subagents. The agent
     /// populates this; tool implementations must not synthesize one.
     pub subagent_authority: Option<crate::subagent::SubagentAuthority>,
+    /// Shared worker family; child calls retain the same tree and real parent.
+    pub subagent_manager: Option<crate::subagent::SubagentManager>,
+    pub subagent_parent_id: Option<String>,
     /// Session-scoped artifacts retained outside the provider context.
     pub context_artifacts: Option<Arc<crate::context_artifact::ContextArtifactStore>>,
     /// Tools may request a scope switch; Agent applies after the tool batch.
@@ -192,6 +203,8 @@ impl ToolContext {
             provider: None,
             tools: None,
             subagent_authority: None,
+            subagent_manager: None,
+            subagent_parent_id: None,
             context_artifacts: None,
             pending_scope: None,
             todo_state: None,
@@ -318,13 +331,24 @@ impl ToolDefinition {
 /// Concurrent tool registry using dashmap (grok pattern).
 pub struct ToolRegistry {
     tools: dashmap::DashMap<String, ToolDefinition>,
+    subagent_manager: parking_lot::RwLock<Option<crate::subagent::SubagentManager>>,
 }
 
 impl ToolRegistry {
     pub fn new() -> Self {
         Self {
             tools: dashmap::DashMap::new(),
+            subagent_manager: parking_lot::RwLock::new(None),
         }
+    }
+
+    pub(crate) fn bind_subagent_manager(&self, mut manager: crate::subagent::SubagentManager) {
+        manager.clear_execution_context();
+        *self.subagent_manager.write() = Some(manager);
+    }
+
+    pub(crate) fn subagent_manager(&self) -> Option<crate::subagent::SubagentManager> {
+        self.subagent_manager.read().clone()
     }
 
     pub fn register(&self, tool: ToolDefinition) {

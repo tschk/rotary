@@ -6,17 +6,19 @@
 //! permissions) and produces a [`SubagentResult`] when it completes.
 //!
 //! When a [`Provider`] is attached to the manager, spawn drives a real
-//! [`crate::agent::Agent`] loop. Without a provider, the subagent still
-//! records a completed run (prompt accepted, no LLM turns).
+//! [`crate::agent::Agent`] loop. Spawning without a provider fails closed.
 
+use crate::agent::CancellationHandle;
 use crate::agent::{Agent, AgentBudget, ToolRegistry};
 use crate::mode::Scope;
 use crate::permissions::{
     Approver, AsyncApprover, Authorizer, PermissionMode, PlanApprover, Policy,
 };
 use crate::provider::Provider;
-use parking_lot::Mutex;
+use crate::session::Session;
+use parking_lot::{Mutex, RwLock};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -37,6 +39,10 @@ pub enum SubagentError {
     AlreadyRunning(String),
     #[error("subagent limit exceeded: {0}")]
     LimitExceeded(String),
+    #[error("worker request conflict: {0}")]
+    Conflict(String),
+    #[error("invalid worker input: {0}")]
+    InvalidInput(String),
     #[error("git error: {0}")]
     GitError(String),
 }
@@ -49,6 +55,10 @@ pub enum SubagentStatus {
     Pending,
     /// Currently executing.
     Running,
+    /// Execution is stopping or draining; it has not settled.
+    Stopping,
+    /// Restored live run; execution is never automatically replayed.
+    Interrupted,
     /// Finished successfully.
     Completed,
     /// Terminated with an error.
@@ -252,21 +262,120 @@ pub struct SubagentResult {
     pub duration_seconds: u64,
 }
 
-impl SubagentResult {
-    fn offline(name: &str, prompt: &str) -> Self {
-        Self {
-            output: format!("subagent {name} completed offline for prompt: {prompt}"),
-            files_modified: vec![],
-            tool_calls: 0,
-            error: None,
-            cost: 0.0,
-            duration_seconds: 0,
+/// Stable host-supplied identity for one worker run.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SubagentIdentity {
+    pub root_session_id: String,
+    pub parent_session_id: String,
+    pub session_id: String,
+    pub run_id: String,
+    pub request_id: String,
+}
+
+fn valid_identity_text(text: &str) -> bool {
+    !text.is_empty()
+        && text.len() <= 256
+        && !text.chars().any(char::is_control)
+        && crate::secrets::Redactor::new().redact(text) == text
+}
+
+impl SubagentIdentity {
+    fn valid(&self) -> bool {
+        [
+            &self.root_session_id,
+            &self.parent_session_id,
+            &self.session_id,
+            &self.run_id,
+            &self.request_id,
+        ]
+        .iter()
+        .all(|id| valid_identity_text(id))
+    }
+}
+
+/// Persistable, redacted worker state. Restoring never starts execution.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SubagentSnapshot {
+    pub id: String,
+    pub name: String,
+    pub identity: SubagentIdentity,
+    pub parent_id: Option<String>,
+    pub status: SubagentStatus,
+    pub session: Session,
+    pub result: Option<SubagentResult>,
+    pub steering: Vec<SteerReceipt>,
+    request: String,
+    depth: usize,
+    remaining_depth: Option<usize>,
+    limits: SubagentLimits,
+}
+
+impl SubagentSnapshot {
+    fn redact(&mut self) {
+        let redactor = crate::secrets::Redactor::new();
+        let redact = |text: &mut String| *text = redactor.redact(text);
+        redact(&mut self.name);
+        redact(&mut self.session.name);
+        for entry in &mut self.session.entries {
+            redact(&mut entry.content);
+            if let Some(id) = &mut entry.tool_call_id {
+                redact(id);
+            }
+            for call in &mut entry.tool_calls {
+                redact(&mut call.id);
+                redact(&mut call.name);
+                redact(&mut call.arguments);
+            }
+        }
+        for todo in &mut self.session.todos.items {
+            redact(&mut todo.id);
+            redact(&mut todo.content);
+        }
+        for projection in &mut self.session.projections {
+            redact(&mut projection.summary);
+        }
+        for artifact in &mut self.session.artifacts {
+            redact(&mut artifact.reference);
+        }
+        if let Some(result) = &mut self.result {
+            redact(&mut result.output);
+            if let Some(error) = &mut result.error {
+                redact(error);
+            }
+            for path in &mut result.files_modified {
+                redact(path);
+            }
+        }
+        for receipt in &mut self.steering {
+            redact(&mut receipt.text);
         }
     }
 }
 
+/// Acceptance into the child session only; this does not claim consumption.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SteerReceipt {
+    pub message_id: String,
+    pub text: String,
+    pub entry_id: u64,
+    fingerprint: String,
+}
+
+const MAX_CONTEXT_BYTES: usize = 64 * 1024;
+const MAX_STEER_BYTES: usize = 8 * 1024;
+const MAX_STEERS: usize = 128;
+
+fn terminal(status: SubagentStatus) -> bool {
+    matches!(
+        status,
+        SubagentStatus::Completed
+            | SubagentStatus::Failed
+            | SubagentStatus::Cancelled
+            | SubagentStatus::Interrupted
+    )
+}
+
 /// Internal shared state for a single subagent.
-#[derive(Debug)]
 struct SubagentState {
     status: SubagentStatus,
     result: Option<SubagentResult>,
@@ -277,19 +386,106 @@ struct SubagentState {
     remaining_depth: Option<usize>,
     descendant_count: usize,
     limits: SubagentLimits,
-    abort_handle: Option<tokio::task::AbortHandle>,
-    background_active: bool,
+    identity: SubagentIdentity,
+    request: String,
+    session: Arc<RwLock<Session>>,
+    cancellation: Option<CancellationHandle>,
+    cancel_requested: bool,
+    steering: Vec<SteerReceipt>,
 }
 
 /// Handle to a spawned subagent. Cheap to clone — all state is shared.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct SubagentHandle {
     id: String,
     name: String,
     state: Arc<Mutex<SubagentState>>,
+    settled: Arc<tokio::sync::Notify>,
+}
+
+impl std::fmt::Debug for SubagentHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SubagentHandle")
+            .field("id", &self.id)
+            .field("status", &self.status())
+            .finish()
+    }
 }
 
 impl SubagentHandle {
+    /// Atomic snapshot of accepted steering and redacted session history.
+    pub fn snapshot(&self) -> SubagentSnapshot {
+        let state = self.state.lock();
+        let session = state.session.read().clone();
+        let mut snapshot = SubagentSnapshot {
+            id: self.id.clone(),
+            name: self.name.clone(),
+            identity: state.identity.clone(),
+            parent_id: state.parent_id.clone(),
+            status: state.status,
+            session,
+            result: state.result.clone(),
+            steering: state.steering.clone(),
+            request: state.request.clone(),
+            depth: state.depth,
+            remaining_depth: state.remaining_depth,
+            limits: state.limits.clone(),
+        };
+        snapshot.redact();
+        snapshot
+    }
+
+    /// Append bounded reference text once. Retrying an ID with other text conflicts.
+    /// Only acceptance is acknowledged, never provider consumption.
+    pub fn steer(&self, message_id: &str, text: &str) -> Result<SteerReceipt, SubagentError> {
+        if !valid_identity_text(message_id)
+            || text.trim().is_empty()
+            || text.len() > MAX_STEER_BYTES
+        {
+            return Err(SubagentError::InvalidInput(
+                "steering ID/text is empty or over budget".into(),
+            ));
+        }
+        let fingerprint = format!("{:x}", Sha256::digest(text.as_bytes()));
+        let text = crate::secrets::Redactor::new().redact(text);
+        let mut state = self.state.lock();
+        if let Some(receipt) = state.steering.iter().find(|r| r.message_id == message_id) {
+            return if receipt.fingerprint == fingerprint {
+                Ok(receipt.clone())
+            } else {
+                Err(SubagentError::Conflict(message_id.into()))
+            };
+        }
+        if state.status != SubagentStatus::Running || state.steering.len() >= MAX_STEERS {
+            return Err(SubagentError::InvalidInput(
+                "worker is not running or steering limit reached".into(),
+            ));
+        }
+        let entry_id = state
+            .session
+            .write()
+            .append(crate::provider::Role::User, text.clone());
+        let receipt = SteerReceipt {
+            message_id: message_id.into(),
+            text,
+            entry_id,
+            fingerprint,
+        };
+        state.steering.push(receipt.clone());
+        Ok(receipt)
+    }
+
+    fn request_cancel(&self) {
+        let mut state = self.state.lock();
+        if !terminal(state.status) {
+            state.status = SubagentStatus::Stopping;
+            state.cancel_requested = true;
+            if let Some(cancellation) = &state.cancellation {
+                cancellation.cancel();
+            }
+        }
+    }
+
     /// The unique identifier of this subagent.
     pub fn id(&self) -> &str {
         &self.id
@@ -334,12 +530,12 @@ impl SubagentHandle {
     /// Block asynchronously until the subagent completes and return its result.
     pub async fn wait(&self) -> SubagentResult {
         loop {
+            let notified = self.settled.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
             {
                 let guard = self.state.lock();
-                if matches!(
-                    guard.status,
-                    SubagentStatus::Completed | SubagentStatus::Failed | SubagentStatus::Cancelled
-                ) {
+                if terminal(guard.status) {
                     return guard.result.clone().unwrap_or_else(|| SubagentResult {
                         output: String::new(),
                         files_modified: vec![],
@@ -350,8 +546,7 @@ impl SubagentHandle {
                     });
                 }
             }
-            tokio::task::yield_now().await;
-            tokio::time::sleep(Duration::from_millis(5)).await;
+            notified.await;
         }
     }
 
@@ -360,10 +555,7 @@ impl SubagentHandle {
         loop {
             {
                 let guard = self.state.lock();
-                if matches!(
-                    guard.status,
-                    SubagentStatus::Completed | SubagentStatus::Failed | SubagentStatus::Cancelled
-                ) {
+                if terminal(guard.status) {
                     return guard.result.clone().unwrap_or_else(|| SubagentResult {
                         output: String::new(),
                         files_modified: vec![],
@@ -384,14 +576,18 @@ impl SubagentHandle {
         if result.is_some() {
             guard.result = result;
         }
+        if terminal(status) {
+            self.settled.notify_waiters();
+        }
     }
 }
 
 /// Manages the lifecycle of a collection of subagents.
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct SubagentManager {
-    subagents: HashMap<String, SubagentHandle>,
-    parents: HashMap<String, Option<String>>,
+    subagents: Arc<Mutex<HashMap<String, SubagentHandle>>>,
+    root_session_id: Arc<Mutex<Option<String>>>,
+    closed: Arc<Mutex<bool>>,
     provider: Option<Arc<dyn Provider>>,
     tools: Option<Arc<ToolRegistry>>,
     authority: Option<SubagentAuthority>,
@@ -403,8 +599,7 @@ pub struct SubagentManager {
 impl std::fmt::Debug for SubagentManager {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SubagentManager")
-            .field("subagents", &self.subagents.len())
-            .field("parents", &self.parents.len())
+            .field("subagents", &self.subagents.lock().len())
             .field("has_provider", &self.provider.is_some())
             .field("has_authority", &self.authority.is_some())
             .field("subscribers", &self.subscribers.len())
@@ -446,6 +641,12 @@ impl SubagentManager {
         self
     }
 
+    pub(crate) fn clear_execution_context(&mut self) {
+        self.provider = None;
+        self.tools = None;
+        self.authority = None;
+    }
+
     pub fn set_provider(&mut self, provider: Arc<dyn Provider>) {
         self.provider = Some(provider);
     }
@@ -469,192 +670,376 @@ impl SubagentManager {
 
     pub fn running_count(&self) -> usize {
         self.subagents
+            .lock()
             .values()
             .filter(|handle| {
                 matches!(
                     handle.status(),
-                    SubagentStatus::Pending | SubagentStatus::Running
+                    SubagentStatus::Pending | SubagentStatus::Running | SubagentStatus::Stopping
                 )
             })
             .count()
     }
 
-    /// Spawn a new subagent with the given config and prompt.
-    ///
-    /// If `config.workspace_isolation` is true, a work directory is created at
-    /// `.rx4/worktrees/{id}` inside `parent_workspace`.
-    ///
-    /// When a provider is configured, runs [`Agent::prompt`] (blocking the
-    /// current thread via a temporary runtime if needed). Otherwise completes
-    /// offline with the prompt recorded in the result.
+    /// Run a real worker to settlement on a temporary runtime.
     pub fn spawn(
         &mut self,
-        mut config: SubagentConfig,
+        config: SubagentConfig,
         prompt: &str,
         parent_workspace: &Path,
     ) -> Result<SubagentHandle, SubagentError> {
-        if config.model.is_none() {
-            config.model.clone_from(&self.model);
-        }
-        let (handle, workspace) = self.begin_spawn(&config, prompt, parent_workspace)?;
-        let started = Instant::now();
-        let mut result = if let Some(provider) = self.provider.clone() {
-            run_agent_subagent(
-                provider,
-                self.tools.clone(),
-                self.authority.clone(),
-                &config,
-                prompt,
-                &workspace,
-            )
-            .map_err(SubagentError::SpawnFailed)?
-        } else {
-            SubagentResult::offline(&config.name, prompt)
-        };
-        self.finish_spawn(&handle, &mut result, started);
-        if result.error.is_some() {
-            handle.transition(SubagentStatus::Failed, Some(result));
-        } else {
-            handle.transition(SubagentStatus::Completed, Some(result));
-        }
-        Ok(handle)
+        let mut manager = self.clone();
+        let prompt = prompt.to_owned();
+        let workspace = parent_workspace.to_owned();
+        std::thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|e| SubagentError::SpawnFailed(e.to_string()))?;
+            runtime.block_on(async move {
+                let handle = manager.spawn_background(config, &prompt, &workspace)?;
+                handle.wait().await;
+                Ok(handle)
+            })
+        })
+        .join()
+        .map_err(|_| SubagentError::SpawnFailed("worker thread panicked".into()))?
     }
 
-    /// Async spawn that runs the agent loop on the current runtime.
+    /// Start a worker and wait for settlement on the caller's runtime.
     #[cfg(feature = "ipc")]
     pub async fn spawn_async(
         &mut self,
-        mut config: SubagentConfig,
+        config: SubagentConfig,
         prompt: &str,
         parent_workspace: &Path,
     ) -> Result<SubagentHandle, SubagentError> {
-        if config.model.is_none() {
-            config.model.clone_from(&self.model);
-        }
-        let (handle, workspace) = self.begin_spawn(&config, prompt, parent_workspace)?;
-        let started = Instant::now();
-        let mut result = if let Some(provider) = self.provider.clone() {
-            run_agent_subagent_async(
-                provider,
-                self.tools.clone(),
-                self.authority.clone(),
-                &config,
-                prompt,
-                &workspace,
-            )
-            .await
-            .map_err(SubagentError::SpawnFailed)?
-        } else {
-            SubagentResult::offline(&config.name, prompt)
-        };
-        self.finish_spawn(&handle, &mut result, started);
-        if result.error.is_some() {
-            handle.transition(SubagentStatus::Failed, Some(result));
-        } else {
-            handle.transition(SubagentStatus::Completed, Some(result));
-        }
+        let handle = self.spawn_background(config, prompt, parent_workspace)?;
+        handle.wait().await;
         Ok(handle)
+    }
+
+    /// Attach a real host root session. Already-running children retain their authority.
+    pub fn with_root_session(self, id: impl Into<String>) -> Result<Self, SubagentError> {
+        let id = id.into();
+        if !valid_identity_text(&id) {
+            return Err(SubagentError::InvalidInput(
+                "invalid root session ID".into(),
+            ));
+        }
+        {
+            let mut root = self.root_session_id.lock();
+            if root.as_ref().is_some_and(|root| root != &id) {
+                return Err(SubagentError::Conflict(
+                    "root session already attached".into(),
+                ));
+            }
+            *root = Some(id);
+        }
+        Ok(self)
     }
 
     pub fn spawn_background(
         &mut self,
+        config: SubagentConfig,
+        prompt: &str,
+        parent_workspace: &Path,
+    ) -> Result<SubagentHandle, SubagentError> {
+        let root = {
+            let mut root = self.root_session_id.lock();
+            root.get_or_insert_with(|| Uuid::new_v4().to_string())
+                .clone()
+        };
+        let parent_session_id = config
+            .parent_id
+            .as_ref()
+            .and_then(|id| self.get(id))
+            .map(|h| h.snapshot().identity.session_id)
+            .unwrap_or_else(|| root.clone());
+        self.spawn_background_with_identity(
+            config,
+            prompt,
+            parent_workspace,
+            SubagentIdentity {
+                root_session_id: root,
+                parent_session_id,
+                session_id: Uuid::new_v4().to_string(),
+                run_id: Uuid::new_v4().to_string(),
+                request_id: Uuid::new_v4().to_string(),
+            },
+        )
+    }
+
+    /// Reserve stable identity once, rejecting conflicting retries before side effects.
+    pub fn spawn_background_with_identity(
+        &mut self,
         mut config: SubagentConfig,
         prompt: &str,
         parent_workspace: &Path,
+        identity: SubagentIdentity,
     ) -> Result<SubagentHandle, SubagentError> {
         if config.model.is_none() {
             config.model.clone_from(&self.model);
         }
-        let (handle, workspace) = self.begin_spawn(&config, prompt, parent_workspace)?;
-        let provider = self.provider.clone();
-        let tools = self.tools.clone();
-        let authority = self.authority.clone();
-        let subscribers = self.subscribers.clone();
+        if prompt.trim().is_empty()
+            || prompt.len() > MAX_CONTEXT_BYTES
+            || serde_json::to_vec(&config)
+                .map_err(|e| SubagentError::InvalidInput(e.to_string()))?
+                .len()
+                > MAX_CONTEXT_BYTES
+            || !identity.valid()
+        {
+            return Err(SubagentError::InvalidInput(
+                "empty or over-budget worker input".into(),
+            ));
+        }
+        let request = format!(
+            "{:x}",
+            Sha256::digest(
+                serde_json::json!([config, prompt, parent_workspace, identity])
+                    .to_string()
+                    .as_bytes()
+            )
+        );
+        // All clones serialize reservations, shutdown and parent stopping under this lock.
+        let tree = Arc::clone(&self.subagents);
+        let mut tree = tree.lock();
+        if let Some(existing) = tree.values().find(|h| {
+            let s = h.state.lock();
+            s.identity.root_session_id == identity.root_session_id
+                && s.identity.parent_session_id == identity.parent_session_id
+                && s.identity.request_id == identity.request_id
+        }) {
+            return if existing.state.lock().request == request {
+                Ok(existing.clone())
+            } else {
+                Err(SubagentError::Conflict(identity.request_id))
+            };
+        }
+        if !cfg!(feature = "providers") {
+            return Err(SubagentError::SpawnFailed(
+                "providers feature required for worker execution".into(),
+            ));
+        }
+        let provider = self
+            .provider
+            .clone()
+            .ok_or_else(|| SubagentError::SpawnFailed("provider required".into()))?;
+        if tokio::runtime::Handle::try_current().is_err() {
+            return Err(SubagentError::SpawnFailed("async runtime required".into()));
+        }
+        if *self.closed.lock() {
+            return Err(SubagentError::SpawnFailed("manager shut down".into()));
+        }
+        if tree.values().any(|h| {
+            let s = h.state.lock();
+            s.identity.session_id == identity.session_id || s.identity.run_id == identity.run_id
+        }) {
+            return Err(SubagentError::Conflict(
+                "session/run identity already reserved".into(),
+            ));
+        }
+        {
+            let mut root = self.root_session_id.lock();
+            if let Some(root) = root.as_ref() {
+                if root != &identity.root_session_id {
+                    return Err(SubagentError::Conflict("root session mismatch".into()));
+                }
+            } else {
+                *root = Some(identity.root_session_id.clone());
+            }
+        }
+        let (handle, workspace) = self.begin_spawn(
+            &config,
+            prompt,
+            parent_workspace,
+            identity,
+            request,
+            &mut tree,
+        )?;
+        drop(tree);
         let running = self.background_running.fetch_add(1, Ordering::SeqCst) + 1;
-        let background_running = Arc::clone(&self.background_running);
-        let prompt = prompt.to_string();
         emit_subagent_event(
-            &subscribers,
+            &self.subscribers,
             SubagentEvent::Started {
                 id: handle.id.clone(),
                 name: handle.name.clone(),
                 running,
             },
         );
-        handle.state.lock().background_active = true;
+        let manager = self.clone();
         let task_handle = handle.clone();
-        let join_handle = tokio::spawn(execute_background_task(
-            provider,
-            tools,
-            authority,
-            config,
-            prompt,
-            workspace,
-            task_handle,
-            subscribers,
-            background_running,
-        ));
-        handle.state.lock().abort_handle = Some(join_handle.abort_handle());
+        let prompt = prompt.to_owned();
+        tokio::spawn(async move {
+            execute_background_task(provider, manager, config, prompt, workspace, task_handle)
+                .await;
+        });
         Ok(handle)
     }
 
-    /// List all known subagent handles.
-    pub fn list(&self) -> Vec<&SubagentHandle> {
-        self.subagents.values().collect()
+    /// Owned handles remain valid after the manager lock is released.
+    pub fn list(&self) -> Vec<SubagentHandle> {
+        self.subagents.lock().values().cloned().collect()
+    }
+    pub fn get(&self, id: &str) -> Option<SubagentHandle> {
+        self.subagents.lock().get(id).cloned()
     }
 
-    /// Look up a subagent by id.
-    pub fn get(&self, id: &str) -> Option<&SubagentHandle> {
-        self.subagents.get(id)
-    }
-
-    /// Cancel a running or pending subagent.
+    /// Request cancellation for the whole subtree; terminal means settled, not requested.
     pub fn cancel(&mut self, id: &str) -> Result<(), SubagentError> {
-        let handle = self
-            .subagents
-            .get(id)
-            .ok_or_else(|| SubagentError::NotFound(id.to_string()))?;
-        let was_background = {
-            let mut guard = handle.state.lock();
-            if matches!(
-                guard.status,
-                SubagentStatus::Completed | SubagentStatus::Failed | SubagentStatus::Cancelled
-            ) {
-                return Ok(());
+        let tree = self.subagents.lock();
+        if !tree.contains_key(id) {
+            return Err(SubagentError::NotFound(id.into()));
+        }
+        for handle in tree.values() {
+            if is_descendant(&tree, handle.id(), id) {
+                handle.request_cancel();
             }
-            if let Some(abort_handle) = guard.abort_handle.take() {
-                abort_handle.abort();
-            }
-            guard.status = SubagentStatus::Cancelled;
-            guard.result = Some(SubagentResult {
-                output: String::new(),
-                files_modified: vec![],
-                tool_calls: 0,
-                error: Some("cancelled".to_string()),
-                cost: 0.0,
-                duration_seconds: 0,
-            });
-            std::mem::replace(&mut guard.background_active, false)
-        };
-        if was_background {
-            emit_subagent_event(
-                &self.subscribers,
-                SubagentEvent::Finished {
-                    id: handle.id.clone(),
-                    name: handle.name.clone(),
-                    status: SubagentStatus::Cancelled,
-                    running: self.background_running.fetch_sub(1, Ordering::SeqCst) - 1,
-                },
-            );
         }
         Ok(())
     }
 
+    /// Timeout returns current snapshots (possibly Stopping), never a false terminal state.
+    pub async fn cancel_tree_and_wait(
+        &mut self,
+        id: &str,
+        timeout: Duration,
+    ) -> Result<Vec<SubagentSnapshot>, SubagentError> {
+        self.cancel(id)?;
+        let handles = {
+            let tree = self.subagents.lock();
+            tree.values()
+                .filter(|h| is_descendant(&tree, h.id(), id))
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        let _ = tokio::time::timeout(timeout, async {
+            for h in &handles {
+                h.wait().await;
+            }
+        })
+        .await;
+        Ok(handles.iter().map(SubagentHandle::snapshot).collect())
+    }
+
+    /// Seal the family against new work and request cancellation of all live runs.
+    pub fn shutdown(&mut self) {
+        let tree = self.subagents.lock();
+        *self.closed.lock() = true;
+        for h in tree.values() {
+            h.request_cancel();
+        }
+    }
+
+    pub async fn shutdown_and_wait(&mut self, timeout: Duration) -> Vec<SubagentSnapshot> {
+        self.shutdown();
+        let handles = self.list();
+        let _ = tokio::time::timeout(timeout, async {
+            for h in &handles {
+                h.wait().await;
+            }
+        })
+        .await;
+        handles.iter().map(SubagentHandle::snapshot).collect()
+    }
+
+    /// Restore records only. Live persisted states become Interrupted; no provider/tool replay.
+    pub fn restore(
+        &mut self,
+        mut snapshot: SubagentSnapshot,
+    ) -> Result<SubagentHandle, SubagentError> {
+        if !valid_identity_text(&snapshot.id)
+            || !snapshot.identity.valid()
+            || snapshot.session.id != snapshot.identity.session_id
+            || snapshot
+                .parent_id
+                .as_ref()
+                .is_some_and(|id| !valid_identity_text(id))
+            || snapshot.steering.iter().any(|receipt| {
+                !valid_identity_text(&receipt.message_id)
+                    || receipt.fingerprint.len() != 64
+                    || !receipt.fingerprint.bytes().all(|b| b.is_ascii_hexdigit())
+            })
+            || snapshot.request.len() != 64
+            || !snapshot.request.bytes().all(|b| b.is_ascii_hexdigit())
+        {
+            return Err(SubagentError::InvalidInput(
+                "invalid persisted worker identity".into(),
+            ));
+        }
+        snapshot.redact();
+        let mut tree = self.subagents.lock();
+        if tree.contains_key(&snapshot.id)
+            || tree.values().any(|h| {
+                let s = h.state.lock();
+                s.identity.session_id == snapshot.identity.session_id
+                    || s.identity.run_id == snapshot.identity.run_id
+                    || (s.identity.parent_session_id == snapshot.identity.parent_session_id
+                        && s.identity.request_id == snapshot.identity.request_id)
+            })
+        {
+            return Err(SubagentError::Conflict(snapshot.id));
+        }
+        {
+            let mut root = self.root_session_id.lock();
+            if root
+                .as_ref()
+                .is_some_and(|root| root != &snapshot.identity.root_session_id)
+            {
+                return Err(SubagentError::Conflict("restored root mismatch".into()));
+            }
+            *root = Some(snapshot.identity.root_session_id.clone());
+        }
+        if !terminal(snapshot.status) {
+            snapshot.status = SubagentStatus::Interrupted;
+        }
+        let handle = SubagentHandle {
+            id: snapshot.id,
+            name: snapshot.name,
+            state: Arc::new(Mutex::new(SubagentState {
+                status: snapshot.status,
+                result: snapshot.result,
+                worktree_path: None,
+                parent_id: snapshot.parent_id,
+                children: Vec::new(),
+                depth: snapshot.depth,
+                remaining_depth: snapshot.remaining_depth,
+                descendant_count: 0,
+                limits: snapshot.limits,
+                identity: snapshot.identity,
+                request: snapshot.request,
+                session: Arc::new(RwLock::new(snapshot.session)),
+                cancellation: None,
+                cancel_requested: false,
+                steering: snapshot.steering,
+            })),
+            settled: Arc::new(tokio::sync::Notify::new()),
+        };
+        tree.insert(handle.id.clone(), handle.clone());
+        for node in tree.values() {
+            let children = tree
+                .values()
+                .filter(|h| h.parent_id().as_deref() == Some(node.id()))
+                .map(|h| h.id.clone())
+                .collect();
+            let descendants = tree
+                .values()
+                .filter(|h| h.id() != node.id() && is_descendant(&tree, h.id(), node.id()))
+                .count();
+            let mut state = node.state.lock();
+            state.children = children;
+            state.descendant_count = descendants;
+        }
+        Ok(handle)
+    }
+
     pub fn cleanup(&mut self, id: &str) -> Result<(), SubagentError> {
         let handle = self
-            .subagents
             .get(id)
             .ok_or_else(|| SubagentError::NotFound(id.to_string()))?;
+        if !terminal(handle.status()) {
+            return Err(SubagentError::AlreadyRunning(id.into()));
+        }
         if let Some(path) = handle.worktree_path() {
             cleanup_worktree(&path)?;
             handle.state.lock().worktree_path = None;
@@ -664,8 +1049,8 @@ impl SubagentManager {
 
     /// Wait for all subagents to complete and return their results.
     pub async fn wait_all(&self) -> Vec<SubagentResult> {
-        let mut results = Vec::with_capacity(self.subagents.len());
-        for handle in self.subagents.values() {
+        let mut results = Vec::with_capacity(self.subagents.lock().len());
+        for handle in self.list() {
             results.push(handle.wait().await);
         }
         results
@@ -673,7 +1058,7 @@ impl SubagentManager {
 
     /// Synchronous variant of [`wait_all`](Self::wait_all).
     pub fn wait_all_sync(&self) -> Vec<SubagentResult> {
-        self.subagents.values().map(|h| h.wait_sync()).collect()
+        self.list().iter().map(|h| h.wait_sync()).collect()
     }
 
     fn begin_spawn(
@@ -681,18 +1066,17 @@ impl SubagentManager {
         config: &SubagentConfig,
         prompt: &str,
         parent_workspace: &Path,
+        identity: SubagentIdentity,
+        request: String,
+        tree: &mut HashMap<String, SubagentHandle>,
     ) -> Result<(SubagentHandle, PathBuf), SubagentError> {
         let id = Uuid::new_v4().to_string();
-        let worktree_path = if config.workspace_isolation {
-            Some(self.create_worktree(&id, config, prompt, parent_workspace)?)
-        } else {
-            None
-        };
-        let workspace = worktree_path
-            .clone()
-            .unwrap_or_else(|| parent_workspace.to_path_buf());
-
-        let (depth, parent_remaining) = self.resolve_parent(&config.parent_id)?;
+        if config.parent_id.is_none() && identity.parent_session_id != identity.root_session_id {
+            return Err(SubagentError::Conflict(
+                "root parent session mismatch".into(),
+            ));
+        }
+        let (depth, parent_remaining) = self.resolve_parent(&config.parent_id, tree)?;
         if parent_remaining == Some(0) {
             return Err(SubagentError::LimitExceeded(
                 "parent max-depth reached".to_string(),
@@ -709,12 +1093,21 @@ impl SubagentManager {
         }
 
         if let Some(parent_id) = &config.parent_id {
-            let parent = self
-                .subagents
+            let parent = tree
                 .get(parent_id)
                 .ok_or_else(|| SubagentError::NotFound(parent_id.clone()))?;
             {
                 let guard = parent.state.lock();
+                if guard.status == SubagentStatus::Stopping || terminal(guard.status) {
+                    return Err(SubagentError::SpawnFailed(
+                        "parent is no longer running".into(),
+                    ));
+                }
+                if guard.identity.session_id != identity.parent_session_id
+                    || guard.identity.root_session_id != identity.root_session_id
+                {
+                    return Err(SubagentError::Conflict("parent identity mismatch".into()));
+                }
                 if let Some(max) = guard.limits.max_children {
                     if guard.children.len() >= max {
                         return Err(SubagentError::LimitExceeded(format!(
@@ -730,10 +1123,54 @@ impl SubagentManager {
                     }
                 }
             }
-            parent.state.lock().children.push(id.clone());
-            self.increment_descendants(parent_id);
         }
 
+        let mut ancestor = config.parent_id.clone();
+        while let Some(id) = ancestor {
+            let parent = tree
+                .get(&id)
+                .ok_or_else(|| SubagentError::NotFound(id.clone()))?;
+            let state = parent.state.lock();
+            if state
+                .limits
+                .max_descendants
+                .is_some_and(|max| state.descendant_count >= max)
+            {
+                return Err(SubagentError::LimitExceeded(
+                    "ancestor max-descendants reached".into(),
+                ));
+            }
+            ancestor = state.parent_id.clone();
+        }
+        let worktree_path = if config.workspace_isolation {
+            Some(self.create_worktree(&id, config, prompt, parent_workspace)?)
+        } else {
+            None
+        };
+        let workspace = worktree_path
+            .clone()
+            .unwrap_or_else(|| parent_workspace.to_path_buf());
+
+        if let Some(parent_id) = &config.parent_id {
+            if let Some(parent) = tree.get(parent_id) {
+                parent.state.lock().children.push(id.clone());
+            }
+            let mut ancestor = Some(parent_id.clone());
+            while let Some(id) = ancestor {
+                let Some(parent) = tree.get(&id) else { break };
+                let mut state = parent.state.lock();
+                state.descendant_count += 1;
+                ancestor = state.parent_id.clone();
+            }
+        } else if identity.parent_session_id != identity.root_session_id {
+            return Err(SubagentError::Conflict(
+                "root parent session mismatch".into(),
+            ));
+        }
+        let session = Arc::new(RwLock::new(Session::new(
+            &identity.session_id,
+            &config.name,
+        )));
         let state = Arc::new(Mutex::new(SubagentState {
             status: SubagentStatus::Pending,
             result: None,
@@ -744,54 +1181,39 @@ impl SubagentManager {
             remaining_depth: remaining,
             descendant_count: 0,
             limits: config.limits.clone(),
-            abort_handle: None,
-            background_active: false,
+            identity,
+            request,
+            session,
+            cancellation: None,
+            cancel_requested: false,
+            steering: Vec::new(),
         }));
         let handle = SubagentHandle {
             id: id.clone(),
-            name: config.name.clone(),
+            name: crate::secrets::Redactor::new().redact(&config.name),
             state,
+            settled: Arc::new(tokio::sync::Notify::new()),
         };
 
-        self.subagents.insert(id.clone(), handle.clone());
-        self.parents.insert(id.clone(), config.parent_id.clone());
+        tree.insert(id.clone(), handle.clone());
         handle.transition(SubagentStatus::Running, None);
         Ok((handle, workspace))
-    }
-
-    fn finish_spawn(
-        &self,
-        _handle: &SubagentHandle,
-        result: &mut SubagentResult,
-        started: Instant,
-    ) {
-        result.duration_seconds = started.elapsed().as_secs();
     }
 
     fn resolve_parent(
         &self,
         parent_id: &Option<String>,
+        tree: &HashMap<String, SubagentHandle>,
     ) -> Result<(usize, Option<usize>), SubagentError> {
         match parent_id {
             None => Ok((0, None)),
             Some(pid) => {
-                let parent = self
-                    .subagents
+                let parent = tree
                     .get(pid)
                     .ok_or_else(|| SubagentError::NotFound(pid.clone()))?;
                 let guard = parent.state.lock();
                 Ok((guard.depth + 1, guard.remaining_depth))
             }
-        }
-    }
-
-    fn increment_descendants(&mut self, child_id: &str) {
-        let mut current = self.parents.get(child_id).cloned().flatten();
-        while let Some(parent_id) = current {
-            if let Some(handle) = self.subagents.get(&parent_id) {
-                handle.state.lock().descendant_count += 1;
-            }
-            current = self.parents.get(&parent_id).cloned().flatten();
         }
     }
 
@@ -1055,7 +1477,7 @@ fn build_child_agent(
         || policy_from_config(config),
         |parent| restricted_policy(parent, config),
     );
-    let selected_allowed = authority
+    let mut selected_allowed = authority
         .as_ref()
         .and_then(|parent| restricted_allowed_tools(&parent.policy, config));
     if config.use_capsule {
@@ -1063,6 +1485,21 @@ fn build_child_agent(
         let merged = config
             .capsule
             .merge_parent(config.system_prompt.as_deref(), &parent_tools);
+        let allowed = selected_allowed.as_ref().or_else(|| {
+            authority
+                .as_ref()
+                .map(|a| &a.policy.allowlist)
+                .filter(|a| !a.is_empty())
+        });
+        selected_allowed = Some(match allowed {
+            Some(allowed) => merged
+                .allowed_tools
+                .iter()
+                .filter(|tool| allowed.contains(tool))
+                .cloned()
+                .collect(),
+            None => merged.allowed_tools.clone(),
+        });
         if let Some(sys) = &merged.system_prompt {
             agent.set_system_prompt(sys.clone());
         } else {
@@ -1096,7 +1533,7 @@ fn build_child_agent(
             budget,
             config.max_steps.min(authority.max_tool_iterations),
         );
-        if config.allowed_tools.is_some() || config.denied_tools.is_some() {
+        if config.allowed_tools.is_some() || config.denied_tools.is_some() || config.use_capsule {
             agent.set_authorizer(Arc::new(ToolSelectionAuthorizer {
                 inherited: authority.authorizer.clone(),
                 allowed: selected_allowed,
@@ -1111,141 +1548,150 @@ fn build_child_agent(
     agent
 }
 
-fn run_agent_subagent(
-    provider: Arc<dyn Provider>,
-    tools: Option<Arc<ToolRegistry>>,
-    authority: Option<SubagentAuthority>,
-    config: &SubagentConfig,
-    prompt: &str,
-    workspace: &Path,
-) -> Result<SubagentResult, String> {
-    let config = config.clone();
-    let prompt = prompt.to_string();
-    let workspace = workspace.to_path_buf();
-    std::thread::spawn(move || {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|e| e.to_string())?;
-        rt.block_on(async move {
-            let mut agent = build_child_agent(provider, tools, authority, &config, &workspace);
-            let prompt_result = agent.prompt(&prompt).await;
-            let messages = agent.messages.read().clone();
-            let tool_calls = messages
-                .iter()
-                .filter(|m| m.role == crate::provider::Role::Tool)
-                .count();
-            let output = messages
-                .iter()
-                .rev()
-                .find(|m| m.role == crate::provider::Role::Assistant)
-                .map(|m| m.content.clone())
-                .unwrap_or_default();
-            let error = prompt_result.err().map(|e| e.to_string());
-            Ok(SubagentResult {
-                output,
-                files_modified: vec![],
-                tool_calls,
-                error,
-                cost: agent.total_cost(),
-                duration_seconds: 0,
-            })
-        })
-    })
-    .join()
-    .map_err(|_| "subagent thread panicked".to_string())?
+fn is_descendant(tree: &HashMap<String, SubagentHandle>, child: &str, ancestor: &str) -> bool {
+    let mut id = Some(child.to_owned());
+    for _ in 0..=tree.len() {
+        let Some(current) = id else {
+            return false;
+        };
+        if current == ancestor {
+            return true;
+        }
+        id = tree.get(&current).and_then(SubagentHandle::parent_id);
+    }
+    false
 }
 
-async fn run_agent_subagent_async(
-    provider: Arc<dyn Provider>,
-    tools: Option<Arc<ToolRegistry>>,
-    authority: Option<SubagentAuthority>,
-    config: &SubagentConfig,
-    prompt: &str,
-    workspace: &Path,
-) -> Result<SubagentResult, String> {
-    let started = Instant::now();
-    let mut agent = build_child_agent(provider, tools, authority, config, workspace);
-    let prompt_result = agent.prompt(prompt).await;
-    let messages = agent.messages.read().clone();
-    let tool_calls = messages
-        .iter()
-        .filter(|m| m.role == crate::provider::Role::Tool)
-        .count();
-    let output = messages
-        .iter()
-        .rev()
-        .find(|m| m.role == crate::provider::Role::Assistant)
-        .map(|m| m.content.clone())
-        .unwrap_or_default();
-    let error = prompt_result.err().map(|e| e.to_string());
-    Ok(SubagentResult {
-        output,
-        files_modified: vec![],
-        tool_calls,
-        error,
-        cost: agent.total_cost(),
-        duration_seconds: started.elapsed().as_secs(),
-    })
-}
-
-#[allow(clippy::too_many_arguments)]
 async fn execute_background_task(
-    provider: Option<Arc<dyn Provider>>,
-    tools: Option<Arc<ToolRegistry>>,
-    authority: Option<SubagentAuthority>,
+    provider: Arc<dyn Provider>,
+    manager: SubagentManager,
     config: SubagentConfig,
     prompt: String,
     workspace: PathBuf,
-    task_handle: SubagentHandle,
-    subscribers: Vec<SubagentSubscriber>,
-    background_running: Arc<AtomicUsize>,
+    handle: SubagentHandle,
 ) {
     let started = Instant::now();
-    let mut result = if let Some(provider) = provider {
-        match run_agent_subagent_async(provider, tools, authority, &config, &prompt, &workspace)
-            .await
-        {
-            Ok(result) => result,
-            Err(error) => SubagentResult {
-                output: String::new(),
-                files_modified: vec![],
-                tool_calls: 0,
-                error: Some(error),
-                cost: 0.0,
-                duration_seconds: 0,
-            },
+    let mut agent = build_child_agent(
+        provider,
+        manager.tools.clone(),
+        manager.authority.clone(),
+        &config,
+        &workspace,
+    );
+    // A worker owns cooperative tools until they finish. No hedged task can outlive it.
+    agent.async_tools.enabled = false;
+    agent.session = Arc::clone(&handle.state.lock().session);
+    agent.set_subagent_manager(manager.clone(), Some(handle.id.clone()));
+    let cancellation = agent.cancellation_handle();
+    let mut notifications = cancellation.subscribe_cancel();
+    {
+        let mut state = handle.state.lock();
+        state.cancellation = Some(cancellation.clone());
+    }
+    let duration = agent.budget.as_ref().and_then(|b| b.max_duration_seconds);
+    let prompt_result = {
+        let turn = agent.prompt(&prompt);
+        tokio::pin!(turn);
+        if let Some(seconds) = duration {
+            tokio::select! {
+                result=&mut turn=>result,
+                _=tokio::time::sleep(Duration::from_secs(seconds))=> {
+                    handle.request_cancel();
+                    turn.await
+                }
+            }
+        } else {
+            turn.await
         }
-    } else {
-        SubagentResult::offline(&config.name, &prompt)
     };
-
-    result.duration_seconds = started.elapsed().as_secs();
-    if task_handle.status() != SubagentStatus::Cancelled {
-        let status = if result.error.is_some() {
+    // Freeze this parent against new descendants before draining existing children.
+    let stopping = handle.state.lock().cancel_requested;
+    let children = {
+        let tree = manager.subagents.lock();
+        {
+            let mut state = handle.state.lock();
+            if !stopping {
+                state.status = SubagentStatus::Stopping;
+            }
+        }
+        tree.values()
+            .filter(|h| h.id() != handle.id() && is_descendant(&tree, h.id(), handle.id()))
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    for child in &children {
+        child.request_cancel();
+    }
+    let drain = async {
+        for child in &children {
+            child.wait().await;
+        }
+    };
+    tokio::pin!(drain);
+    tokio::select! {
+        _=&mut drain=>{},
+        _=notifications.changed()=>{
+            let _=manager.clone().cancel(handle.id());
+            drain.await;
+        }
+    }
+    let exec = Arc::clone(&agent.exec);
+    let process_cleanup = tokio::task::spawn_blocking(move || exec.shutdown()).await;
+    let snapshot = handle.snapshot();
+    let messages = snapshot.session.provider_messages();
+    let redactor = crate::secrets::Redactor::new();
+    let mut result = SubagentResult {
+        output: messages
+            .iter()
+            .rev()
+            .find(|m| m.role == crate::provider::Role::Assistant)
+            .map(|m| m.content.clone())
+            .unwrap_or_default(),
+        files_modified: vec![],
+        tool_calls: messages
+            .iter()
+            .filter(|m| m.role == crate::provider::Role::Tool)
+            .count(),
+        error: if stopping {
+            Some("cancelled".into())
+        } else {
+            prompt_result
+                .err()
+                .map(|e| redactor.redact(&e.to_string()))
+                .or_else(|| match process_cleanup {
+                    Ok(Ok(())) => None,
+                    Ok(Err(e)) => Some(redactor.redact(&e)),
+                    Err(e) => Some(e.to_string()),
+                })
+        },
+        cost: agent.total_cost(),
+        duration_seconds: started.elapsed().as_secs(),
+    };
+    let status = {
+        let mut state = handle.state.lock();
+        let status = if state.cancel_requested {
+            result.error = Some("cancelled".into());
+            SubagentStatus::Cancelled
+        } else if result.error.is_some() {
             SubagentStatus::Failed
         } else {
             SubagentStatus::Completed
         };
-        task_handle.transition(status, Some(result));
-    }
-
-    let active = {
-        let mut state = task_handle.state.lock();
-        std::mem::replace(&mut state.background_active, false)
+        state.result = Some(result);
+        state.status = status;
+        state.cancellation = None;
+        status
     };
-
-    if active {
-        emit_subagent_event(
-            &subscribers,
-            SubagentEvent::Finished {
-                id: task_handle.id.clone(),
-                name: task_handle.name.clone(),
-                status: task_handle.status(),
-                running: background_running.fetch_sub(1, Ordering::SeqCst) - 1,
-            },
-        );
-    }
+    emit_subagent_event(
+        &manager.subscribers,
+        SubagentEvent::Finished {
+            id: handle.id.clone(),
+            name: handle.name.clone(),
+            status,
+            running: manager.background_running.fetch_sub(1, Ordering::SeqCst) - 1,
+        },
+    );
+    handle.settled.notify_waiters();
 }
 
 #[cfg(test)]
@@ -1269,9 +1715,10 @@ mod tests {
             "test"
         }
 
+        #[cfg(feature = "providers")]
         async fn stream(
             &self,
-            _messages: &[crate::provider::Message],
+            messages: &[crate::provider::Message],
             _system: &Option<String>,
             model: &str,
             _tools: &[serde_json::Value],
@@ -1281,10 +1728,34 @@ mod tests {
             if self.pending {
                 Ok(Box::new(futures::stream::pending()))
             } else {
-                Ok(Box::new(futures::stream::iter([Ok(
-                    crate::provider::StreamEvent::Done,
-                )])))
+                Ok(Box::new(futures::stream::iter([
+                    Ok(crate::provider::StreamEvent::Delta(
+                        messages
+                            .last()
+                            .map(|m| m.content.clone())
+                            .unwrap_or_default(),
+                    )),
+                    Ok(crate::provider::StreamEvent::Done),
+                ])))
             }
+        }
+    }
+
+    #[cfg(feature = "providers")]
+    fn test_manager() -> SubagentManager {
+        SubagentManager::new().with_provider(Arc::new(TestProvider {
+            model: Arc::new(Mutex::new(None)),
+            pending: false,
+        }))
+    }
+
+    fn identity(n: &str) -> SubagentIdentity {
+        SubagentIdentity {
+            root_session_id: "root".into(),
+            parent_session_id: "root".into(),
+            session_id: format!("session-{n}"),
+            run_id: format!("run-{n}"),
+            request_id: format!("request-{n}"),
         }
     }
 
@@ -1381,10 +1852,12 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "providers")]
     struct DenyWriteAuthorizer {
         calls: Arc<AtomicUsize>,
     }
 
+    #[cfg(feature = "providers")]
     impl Authorizer for DenyWriteAuthorizer {
         fn authorize(
             &self,
@@ -1403,10 +1876,12 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "providers")]
     struct DenyAsyncApprover {
         calls: Arc<AtomicUsize>,
     }
 
+    #[cfg(feature = "providers")]
     #[async_trait::async_trait]
     impl AsyncApprover for DenyAsyncApprover {
         async fn approve(
@@ -1439,11 +1914,33 @@ mod tests {
         Arc::new(tools)
     }
 
+    #[cfg(feature = "providers")]
     fn config(name: &str) -> SubagentConfig {
         SubagentConfig {
             name: name.to_string(),
             ..SubagentConfig::default()
         }
+    }
+
+    #[cfg(not(feature = "providers"))]
+    #[tokio::test]
+    async fn workers_fail_closed_when_provider_execution_is_not_compiled() {
+        struct DisabledProvider;
+        #[async_trait::async_trait]
+        impl Provider for DisabledProvider {
+            fn id(&self) -> &str {
+                "disabled"
+            }
+            fn name(&self) -> &str {
+                "disabled"
+            }
+        }
+        let mut manager = SubagentManager::new().with_provider(Arc::new(DisabledProvider));
+        assert!(matches!(
+            manager.spawn_background(SubagentConfig::default(), "task", Path::new(".")),
+            Err(SubagentError::SpawnFailed(_))
+        ));
+        assert!(manager.list().is_empty());
     }
 
     #[test]
@@ -1611,20 +2108,32 @@ mod tests {
         policy.allowlist = vec!["read".into()];
         parent.set_policy(policy);
 
-        let mut child = build_child_agent(
-            Arc::new(OneToolProvider {
-                emitted: AtomicUsize::new(0),
-            }),
-            Some(write_tools(Arc::clone(&executed))),
-            Some(parent.subagent_authority()),
-            &SubagentConfig {
+        for config in [
+            SubagentConfig {
                 allowed_tools: Some(vec!["write".into()]),
-                ..SubagentConfig::default()
+                ..Default::default()
             },
-            Path::new("."),
-        );
+            SubagentConfig {
+                use_capsule: true,
+                capsule: crate::capsule::ContextCapsule {
+                    allowed_tools: vec!["write".into()],
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        ] {
+            let mut child = build_child_agent(
+                Arc::new(OneToolProvider {
+                    emitted: AtomicUsize::new(0),
+                }),
+                Some(write_tools(Arc::clone(&executed))),
+                Some(parent.subagent_authority()),
+                &config,
+                Path::new("."),
+            );
 
-        child.prompt("attempt a write").await.expect("child prompt");
+            child.prompt("attempt a write").await.expect("child prompt");
+        }
         assert_eq!(executed.load(Ordering::SeqCst), 0);
     }
 
@@ -1656,9 +2165,10 @@ mod tests {
         assert_eq!(executed.load(Ordering::SeqCst), 0);
     }
 
+    #[cfg(feature = "providers")]
     #[test]
     fn manager_spawn_returns_handle_with_result() {
-        let mut mgr = SubagentManager::new();
+        let mut mgr = test_manager();
         let handle = mgr
             .spawn(config("worker"), "do the thing", Path::new("."))
             .expect("spawn");
@@ -1669,9 +2179,10 @@ mod tests {
         assert_eq!(result.tool_calls, 0);
     }
 
+    #[cfg(feature = "providers")]
     #[test]
     fn manager_list_and_get() {
-        let mut mgr = SubagentManager::new();
+        let mut mgr = test_manager();
         let h1 = mgr.spawn(config("a"), "p1", Path::new(".")).expect("spawn");
         let h2 = mgr.spawn(config("b"), "p2", Path::new(".")).expect("spawn");
         assert_eq!(mgr.list().len(), 2);
@@ -1680,9 +2191,10 @@ mod tests {
         assert!(mgr.get("nope").is_none());
     }
 
+    #[cfg(feature = "providers")]
     #[test]
     fn manager_cancel_pending_or_running() {
-        let mut mgr = SubagentManager::new();
+        let mut mgr = test_manager();
         let handle = mgr.spawn(config("c"), "p", Path::new(".")).expect("spawn");
         mgr.cancel(handle.id()).expect("cancel");
         let status = handle.status();
@@ -1714,28 +2226,41 @@ mod tests {
             remaining_depth: None,
             descendant_count: 0,
             limits: SubagentLimits::default(),
-            abort_handle: None,
-            background_active: false,
+            identity: identity("state"),
+            request: String::new(),
+            session: Arc::new(RwLock::new(Session::new("state", "state"))),
+            cancellation: None,
+            cancel_requested: false,
+            steering: Vec::new(),
         }));
         let handle = SubagentHandle {
             id: "x".to_string(),
             name: "x".to_string(),
             state,
+            settled: Arc::new(tokio::sync::Notify::new()),
         };
         assert_eq!(handle.status(), SubagentStatus::Pending);
         handle.transition(SubagentStatus::Running, None);
         assert_eq!(handle.status(), SubagentStatus::Running);
         handle.transition(
             SubagentStatus::Completed,
-            Some(SubagentResult::offline("x", "done")),
+            Some(SubagentResult {
+                output: "done".into(),
+                files_modified: vec![],
+                tool_calls: 0,
+                error: None,
+                cost: 0.0,
+                duration_seconds: 0,
+            }),
         );
         assert_eq!(handle.status(), SubagentStatus::Completed);
         assert!(handle.result().is_some());
     }
 
+    #[cfg(feature = "providers")]
     #[test]
     fn wait_all_sync_returns_results() {
-        let mut mgr = SubagentManager::new();
+        let mut mgr = test_manager();
         mgr.spawn(config("a"), "p1", Path::new(".")).expect("spawn");
         mgr.spawn(config("b"), "p2", Path::new(".")).expect("spawn");
         let results = mgr.wait_all_sync();
@@ -1745,6 +2270,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "providers")]
     #[test]
     fn workspace_isolation_creates_and_cleans_worktree() {
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -1754,7 +2280,7 @@ mod tests {
         std::fs::write(tmp.path().join("tracked"), "content").expect("write");
         git_status(tmp.path(), &["add", "tracked"]).expect("add");
         git_status(tmp.path(), &["commit", "-m", "initial"]).expect("commit");
-        let mut mgr = SubagentManager::new();
+        let mut mgr = test_manager();
         let cfg = SubagentConfig {
             name: "iso".to_string(),
             workspace_isolation: true,
@@ -1769,12 +2295,12 @@ mod tests {
         assert!(handle.worktree_path().is_none());
     }
 
-    #[cfg(feature = "ipc")]
+    #[cfg(all(feature = "ipc", feature = "providers"))]
     #[tokio::test]
     async fn background_spawn_reports_lifecycle_and_running_count() {
         let events = Arc::new(Mutex::new(Vec::new()));
         let received = Arc::clone(&events);
-        let mut mgr = SubagentManager::new();
+        let mut mgr = test_manager();
         mgr.subscribe(move |event| received.lock().push(event.clone()));
         let handle = mgr
             .spawn_background(config("worker"), "do the thing", Path::new("."))
@@ -1797,13 +2323,13 @@ mod tests {
 
     #[cfg(all(feature = "ipc", feature = "providers"))]
     #[tokio::test]
-    async fn background_spawn_inherits_model_and_cancel_aborts() {
+    async fn background_spawn_inherits_model_and_cancel_settles() {
         let observed_model = Arc::new(Mutex::new(None));
         let provider = Arc::new(TestProvider {
             model: Arc::clone(&observed_model),
             pending: true,
         });
-        let mut mgr = SubagentManager::new()
+        let mut mgr = test_manager()
             .with_provider(provider)
             .with_model("parent-model");
         let handle = mgr
@@ -1814,7 +2340,7 @@ mod tests {
         }
         assert_eq!(observed_model.lock().as_deref(), Some("parent-model"));
         mgr.cancel(handle.id()).expect("cancel");
-        assert_eq!(handle.status(), SubagentStatus::Cancelled);
+        assert_eq!(handle.status(), SubagentStatus::Stopping);
         assert_eq!(handle.wait().await.error.as_deref(), Some("cancelled"));
         assert_eq!(mgr.running_count(), 0);
     }
@@ -1826,25 +2352,6 @@ mod tests {
         assert!(!c.merge_parent_transcript);
         assert!(c.explore);
         assert_eq!(c.permission_mode, Some(PermissionMode::ReadOnly));
-        let mut parent = SubagentManager::new();
-        let parent_handle = parent
-            .spawn(config("parent"), "parent prompt", Path::new("."))
-            .expect("parent");
-        let mut child_cfg = SubagentConfig::explore("scout");
-        child_cfg.parent_id = Some(parent_handle.id().to_string());
-        let child = parent
-            .spawn(child_cfg, "look around", Path::new("."))
-            .expect("child");
-        let result = child.result().expect("result");
-        assert!(!result.output.contains("parent prompt"));
-        assert!(result.output.contains("look around"));
-        let grandchild_cfg = {
-            let mut c = SubagentConfig::explore("too-deep");
-            c.parent_id = Some(child.id().to_string());
-            c
-        };
-        let denied = parent.spawn(grandchild_cfg, "nope", Path::new("."));
-        assert!(denied.is_err());
     }
 
     #[cfg(feature = "providers")]
@@ -1903,3 +2410,6 @@ mod tests {
         );
     }
 }
+
+#[cfg(all(test, feature = "providers"))]
+mod lifecycle_tests;

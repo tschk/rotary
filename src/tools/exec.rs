@@ -60,6 +60,11 @@ impl ExecRegistry {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            cmd.process_group(0);
+        }
         let mut child = cmd
             .spawn()
             .map_err(|e| format!("failed to spawn {program}: {e}"))?;
@@ -86,6 +91,24 @@ impl ExecRegistry {
             },
         );
         Ok(ExecProcess { process_id })
+    }
+
+    /// Stop every owned process and join its pipe readers before reporting settlement.
+    pub fn shutdown(&self) -> Result<(), String> {
+        let sessions = std::mem::take(&mut *self.sessions.lock());
+        let mut sessions = sessions.into_values().collect::<Vec<_>>();
+        for session in &mut sessions {
+            drop(session.child.stdin.take());
+            terminate_process_group(session.child.id());
+            let _ = session.child.kill();
+        }
+        let mut error = None;
+        for session in &mut sessions {
+            if let Err(e) = finish_session(session) {
+                error = Some(e);
+            }
+        }
+        error.map_or(Ok(()), Err)
     }
 
     pub fn write_stdin(&self, process_id: &str, data: &[u8]) -> Result<usize, String> {
@@ -129,12 +152,45 @@ impl ExecRegistry {
             .remove(process_id)
             .ok_or_else(|| format!("unknown process_id {process_id}"))?;
         drop(session.child.stdin.take());
-        session
-            .child
-            .kill()
-            .map_err(|e| format!("kill failed: {e}"))?;
+        terminate_process_group(session.child.id());
+        let _ = session.child.kill();
         finish_session(&mut session)
     }
+}
+
+/// Each child is created as the leader of its own process group. Signal only
+/// that owned group so descendants holding pipes cannot outlive cancellation.
+pub(crate) fn terminate_process_group(pid: u32) {
+    #[cfg(unix)]
+    {
+        let _ = Command::new("/bin/kill")
+            .args(["-KILL", "--", &format!("-{pid}")])
+            .output();
+        // SIGKILL and pipe EOF precede kernel exit on some platforms. Do not
+        // release the owned group while a descendant is still exiting. Zombies
+        // no longer execute or own descriptors; the direct child is reaped by
+        // finish_session / Child::wait immediately after this barrier.
+        loop {
+            let stopped = Command::new("/bin/ps")
+                .args(["-e", "-o", "pgid=", "-o", "stat="])
+                .output()
+                .ok()
+                .filter(|output| output.status.success())
+                .is_some_and(|output| {
+                    !String::from_utf8_lossy(&output.stdout).lines().any(|line| {
+                        let mut fields = line.split_whitespace();
+                        fields.next().and_then(|group| group.parse::<u32>().ok()) == Some(pid)
+                            && fields.next().is_none_or(|state| !state.starts_with('Z'))
+                    })
+                });
+            if stopped {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = pid;
 }
 
 fn drain_pipe<R: Read + Send + 'static>(mut pipe: R, buf: Arc<Mutex<Vec<u8>>>) -> JoinHandle<()> {
@@ -170,6 +226,7 @@ fn finish_session_timeout(
         {
             Some(status) => return collect_output(session, status.code()),
             None if Instant::now() >= deadline => {
+                terminate_process_group(session.child.id());
                 let _ = session.child.kill();
                 let _ = session.child.wait();
                 let mut output = collect_output(session, None)?;
@@ -319,6 +376,51 @@ fn parse_args(args: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn shutdown_terminates_process_descendants_and_joins_pipe_readers() {
+        let workspace = tempfile::tempdir().unwrap();
+        let marker = workspace.path().join("pids");
+        let command = format!(
+            "sleep 60 & child=$!; echo $$ $child > '{}'; wait $child",
+            marker.display()
+        );
+        let registry = Arc::new(ExecRegistry::new());
+        registry.spawn("bash", &["-c".into(), command]).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let pids = loop {
+            if let Ok(text) = std::fs::read_to_string(&marker) {
+                if let Ok(pids) = text
+                    .split_whitespace()
+                    .map(str::parse::<u32>)
+                    .collect::<Result<Vec<_>, _>>()
+                {
+                    if pids.len() == 2 {
+                        break pids;
+                    }
+                }
+            }
+            assert!(
+                Instant::now() < deadline,
+                "fixture subprocess did not start"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        registry.shutdown().unwrap();
+        assert!(registry.sessions.lock().is_empty());
+        for pid in pids {
+            let status = Command::new("ps")
+                .args(["-p", &pid.to_string(), "-o", "stat="])
+                .output()
+                .unwrap();
+            let state = String::from_utf8_lossy(&status.stdout);
+            assert!(
+                state.trim().is_empty() || state.trim().starts_with('Z'),
+                "owned process still executes: {state}"
+            );
+        }
+    }
 
     #[test]
     fn process_id_and_write_stdin() {

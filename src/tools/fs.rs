@@ -370,6 +370,7 @@ async fn wait_and_drain(
     mut child: tokio::process::Child,
     timeout: Duration,
 ) -> Result<(Vec<u8>, Vec<u8>, i32), String> {
+    let process_id = child.id();
     let mut stdout_pipe = child.stdout.take();
     let mut stderr_pipe = child.stderr.take();
 
@@ -389,18 +390,11 @@ async fn wait_and_drain(
             buf
         };
         let wait_task = async {
-            loop {
-                if ctx.cancellation.is_canceled() {
-                    let _ = child.kill().await;
-                    let _ = child.wait().await;
-                    return Err("command cancelled".to_string());
-                }
-                match child.try_wait() {
-                    Ok(Some(status)) => return Ok(status.code().unwrap_or(-1)),
-                    Ok(None) => tokio::time::sleep(Duration::from_millis(10)).await,
-                    Err(e) => return Err(format!("wait failed: {e}")),
-                }
-            }
+            child
+                .wait()
+                .await
+                .map(|status| status.code().unwrap_or(-1))
+                .map_err(|e| format!("wait failed: {e}"))
         };
         // Drain pipes concurrent with wait — avoid pipe-buffer deadlock.
         let (stdout_buf, stderr_buf, wait_res) = tokio::join!(stdout_task, stderr_task, wait_task);
@@ -414,13 +408,23 @@ async fn wait_and_drain(
         Ok::<_, String>((stdout_buf, stderr_buf, exit_code))
     };
 
-    match tokio::time::timeout(timeout, drain).await {
-        Ok(Ok(v)) => Ok(v),
-        Ok(Err(msg)) => Err(msg),
-        Err(_) => {
+    match tokio::time::timeout(timeout, ctx.cancellation.run(drain)).await {
+        Ok(Ok(result)) => result,
+        outcome => {
+            if let Some(pid) = process_id {
+                tokio::task::spawn_blocking(move || {
+                    crate::tools::exec::terminate_process_group(pid)
+                })
+                .await
+                .map_err(|e| format!("process cleanup failed: {e}"))?;
+            }
             let _ = child.kill().await;
             let _ = child.wait().await;
-            Err(format!("command timed out after {}s", timeout.as_secs()))
+            match outcome {
+                Ok(Err(_)) => Err("command cancelled".into()),
+                Err(_) => Err(format!("command timed out after {}s", timeout.as_secs())),
+                Ok(Ok(result)) => result,
+            }
         }
     }
 }
@@ -492,6 +496,8 @@ async fn run_bash_with_retry(
     let mut escalated = false;
     for attempt in 0..2 {
         let mut cmd = build_command(&ctx, &command, &working_dir, runner.as_deref())?;
+        #[cfg(unix)]
+        cmd.process_group(0);
         let child = cmd.spawn().map_err(|e| format!("failed to execute: {e}"))?;
         let (stdout_buf, stderr_buf, exit_code) =
             wait_and_drain(ctx.clone(), child, timeout).await?;

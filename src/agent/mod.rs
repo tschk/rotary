@@ -623,6 +623,9 @@ pub struct Agent {
     #[cfg(feature = "personality")]
     pub personality: Option<crate::personality::Personality>,
     turn_cancellation: CancellationHandle,
+    subagent_manager: crate::subagent::SubagentManager,
+    subagent_parent_id: Option<String>,
+    subagent_manager_attached: bool,
     subscribers: Vec<Subscriber>,
     pub messages: Arc<RwLock<Vec<Message>>>,
     tool_cache: Cache<String, ToolResult>,
@@ -708,6 +711,9 @@ impl Agent {
             #[cfg(feature = "personality")]
             personality: None,
             turn_cancellation: CancellationHandle::new(),
+            subagent_manager: crate::subagent::SubagentManager::new(),
+            subagent_parent_id: None,
+            subagent_manager_attached: false,
             subscribers: Vec::new(),
             messages: Arc::new(RwLock::new(Vec::new())),
             tool_cache: Cache::builder()
@@ -1119,8 +1125,39 @@ impl Agent {
         self.personality = Some(personality);
     }
 
+    /// Attach a shared family. `parent_id` is set only for a worker in that family.
+    pub fn set_subagent_manager(
+        &mut self,
+        mut manager: crate::subagent::SubagentManager,
+        parent_id: Option<String>,
+    ) {
+        // ToolContext supplies provider/tools per call; do not retain a registry/manager cycle.
+        manager.clear_execution_context();
+        self.subagent_manager = manager;
+        self.subagent_parent_id = parent_id;
+        self.subagent_manager_attached = true;
+    }
+
+    fn selected_subagent_manager(&self) -> crate::subagent::SubagentManager {
+        if self.subagent_manager_attached {
+            self.subagent_manager.clone()
+        } else {
+            self.tools
+                .subagent_manager()
+                .unwrap_or_else(|| self.subagent_manager.clone())
+        }
+    }
+
     pub fn cancel(&self) {
         self.turn_cancellation.cancel();
+        let mut manager = self.selected_subagent_manager();
+        if let Some(id) = &self.subagent_parent_id {
+            let _ = manager.cancel(id);
+        } else {
+            for handle in manager.list() {
+                let _ = manager.cancel(handle.id());
+            }
+        }
     }
 
     pub fn cancellation_handle(&self) -> CancellationHandle {
@@ -1570,6 +1607,45 @@ impl Agent {
     /// Run a prompt through the agent loop.
     /// Streams events to subscribers, executes tools, cycles turns.
     pub async fn prompt(&mut self, text: &str) -> Result<(), AgentError> {
+        let mut manager = self.selected_subagent_manager();
+        let parent_id = self.subagent_parent_id.clone();
+        let cancellation = self.cancellation_handle();
+        let mut notifications = cancellation.subscribe_cancel();
+        let result = {
+            let turn = self.prompt_inner(text);
+            tokio::pin!(turn);
+            tokio::select! {
+                result=&mut turn=>result,
+                _=notifications.changed()=> {
+                    // A cancel racing initial token reset must also cancel the new token.
+                    cancellation.cancel();
+                    for h in manager.list() {
+                        if h.parent_id()==parent_id {let _=manager.cancel(h.id());}
+                    }
+                    turn.await
+                }
+            }
+        };
+        if result.is_err() {
+            let children = manager
+                .list()
+                .into_iter()
+                .filter(|h| h.parent_id() == parent_id)
+                .collect::<Vec<_>>();
+            for h in &children {
+                let _ = manager.cancel(h.id());
+            }
+            for child in children {
+                child.wait().await;
+            }
+        }
+        if result.is_ok() {
+            self.emit(Event::AgentEnd);
+        }
+        result
+    }
+
+    async fn prompt_inner(&mut self, text: &str) -> Result<(), AgentError> {
         let provider = self.provider.clone().ok_or(AgentError::NoProvider)?;
         let tokens = self.context_tokens();
         let context_window = self.context_window();
@@ -2166,7 +2242,6 @@ impl Agent {
         }
 
         self.after_prompt_hooks().await;
-        self.emit(Event::AgentEnd);
         Ok(())
     }
 
@@ -2736,6 +2811,17 @@ impl Agent {
         tool_ctx.patch_hunks = Some(Arc::clone(&self.patch_hunks));
         tool_ctx.process_lifecycle = Some(Arc::clone(&self.process_lifecycle));
         tool_ctx.subagent_authority = Some(self.subagent_authority());
+        tool_ctx.subagent_manager = Some(self.selected_subagent_manager());
+        tool_ctx.subagent_parent_id = self.subagent_parent_id.clone();
+        if let Some(id) = &self.subagent_parent_id {
+            if self
+                .selected_subagent_manager()
+                .get(id)
+                .is_some_and(|h| h.status() == crate::subagent::SubagentStatus::Stopping)
+            {
+                self.turn_cancellation.cancel();
+            }
+        }
         tool_ctx.context_artifacts = Some(Arc::new(self.context_artifact_store()));
         #[cfg(feature = "ipc")]
         {
