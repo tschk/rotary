@@ -61,12 +61,21 @@ def bundle(sources, out):
             # Construct the patch path; never trust arbitrary paths in cells.jsonl.
             patch = root / "patches" / f"{name}__{iid}.patch"
             text = patch.read_text() if patch.exists() else ""
+            original_sha256 = hashlib.sha256(text.encode()).hexdigest()
+            # Never publish a bundled environment, even if a secret scanner is
+            # quiet. Quarantine the whole prediction rather than changing it.
+            exclusion = None
+            if re.search(r'^diff --git [ab]/(?:\.venv[^/ ]*|venv|node_modules|\.ssh|\.aws|\.env)(?:/| )', text, re.M):
+                exclusion = "bundled_environment_or_credentials_path"
+                text = ""
             predictions.append(dict(instance_id=iid, model_name_or_path=name, model_patch=text))
             verdict = cell.get("resolved")
             metadata.append(dict(instance_id=iid, model_name_or_path=name,
                                  historical_resolved=verdict if type(verdict) is bool else None,
                                  historical_adapter_exit=cell.get("adapter_exit"),
                                  patch_available=patch.exists(),
+                                 original_patch_sha256=original_sha256,
+                                 upload_exclusion=exclusion,
                                  generation_provenance="unrecorded"))
     pred = out / "predictions.jsonl"
     pred.write_text("".join(json.dumps(p) + "\n" for p in predictions))
@@ -101,6 +110,8 @@ def run(bundle_dir, output, shard, shards):
     if importlib.metadata.version("swebench") != SCORER:
         raise ValueError("incorrect scorer version")
     meta, predictions = load_bundle(bundle_dir)
+    exclusions = {(c["model_name_or_path"], c["instance_id"]): c.get("upload_exclusion")
+                  for c in meta["cells"]}
     ids = sorted({p["instance_id"] for p in predictions})[shard::shards]
     output = Path(output)
     output.mkdir(parents=True, exist_ok=False)
@@ -138,7 +149,9 @@ def run(bundle_dir, output, shard, shards):
                 name = prediction["model_name_or_path"]
                 cell = dict(instance_id=iid, model_name_or_path=name, image_digest=image_digest,
                             resolved=None, error=None)
-                if not prediction["model_patch"]:
+                if exclusions.get((name, iid)):
+                    cell["error"] = exclusions[name, iid]
+                elif not prediction["model_patch"]:
                     cell.update(resolved=False, error="empty_or_missing_patch")
                 else:
                     try:
@@ -219,6 +232,10 @@ def summarize(bundle_dir, files, out, calibration):
     lines += ["", "## Gold exclusions", ""]
     for iid in sorted(set(ids) - gold_pass):
         lines.append(f"- {iid}: " + ("gold failed" if iid in gold_fail else "gold missing/error"))
+    lines += ["", "## Upload exclusions (retained in planned denominators)", ""]
+    for cell in meta["cells"]:
+        if cell.get("upload_exclusion"):
+            lines.append(f"- {cell['model_name_or_path']}/{cell['instance_id']}: {cell['upload_exclusion']}; original patch not uploaded or scored")
     if calibration:
         lines += ["", "## Calibration", "", "PASS" if not mismatches else "STOP: disagrees with historical official evidence"]
         lines += [f"- {m['model']}/{m['instance_id']}: expected {m['expected']}, actual {m['actual']}, gold {m['gold']}" for m in mismatches]

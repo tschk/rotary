@@ -13,22 +13,27 @@ class ScoringTests(unittest.TestCase):
             root = Path(tmp)
             source = root / "source"
             source.mkdir()
-            (source / "instance_ids.txt").write_text("repo__a-1\nrepo__a-2\n")
+            (source / "instance_ids.txt").write_text("repo__a-1\nrepo__a-2\nrepo__a-3\n")
             (source / "cells.jsonl").write_text(json.dumps(dict(
                 harness="tk", model="gpt-5.6-sol", instance_id="repo__a-1", resolved=True,
                 patch="/private/credentials", raw_log="secret-log", environment={"API_KEY": "secret"}
             )) + "\n")
             (source / "patches").mkdir()
             (source / "patches/tk__gpt-5.6-sol__repo__a-1.patch").write_text("diff --git a/f b/f\n")
+            (source / "patches/tk__gpt-5.6-sol__repo__a-3.patch").write_text(
+                "diff --git a/.venv39/bin/activate b/.venv39/bin/activate\n+private-environment\n")
             out = root / "bundle"
             score.bundle([("tk", source)], out)
             meta, predictions = score.load_bundle(out)
             exported = "".join(f.read_text() for f in out.iterdir())
             self.assertNotIn("secret", exported)
-            self.assertNotIn("credentials", exported)
-            self.assertEqual(len(predictions), 2)
+            self.assertNotIn("/private/credentials", exported)
+            self.assertNotIn("private-environment", exported)
+            self.assertEqual(len(predictions), 3)
             self.assertEqual(predictions[1]["model_patch"], "")
             self.assertFalse(meta["cells"][1]["patch_available"])
+            self.assertEqual(predictions[2]["model_patch"], "")
+            self.assertEqual(meta["cells"][2]["upload_exclusion"], "bundled_environment_or_credentials_path")
             with (out / "predictions.jsonl").open("a") as file:
                 file.write("\n")
             with self.assertRaisesRegex(ValueError, "checksum"):
