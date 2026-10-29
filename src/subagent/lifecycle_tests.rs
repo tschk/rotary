@@ -1071,3 +1071,151 @@ async fn failed_bash_inspection_stays_stopping_until_explicit_retry() {
 async fn persistent_exec_live_or_exiting_observation_is_bounded_and_never_resignalled() {
     assert_unknown_process_settlement_requires_explicit_retry(1, false).await;
 }
+
+#[cfg(unix)]
+fn process_executes(pid: u32) -> bool {
+    let output = Command::new("/bin/ps")
+        .args(["-p", &pid.to_string(), "-o", "stat="])
+        .output()
+        .unwrap();
+    let state = String::from_utf8_lossy(&output.stdout);
+    !state.trim().is_empty() && !state.trim().starts_with('Z')
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn normal_bash_worker_waits_for_shell_exits_first_descendants_before_finished() {
+    for redirect in ["", ">/dev/null 2>&1"] {
+        let workspace = tempfile::tempdir().unwrap();
+        let root = workspace.path().canonicalize().unwrap();
+        let release = root.join("release");
+        let marker = root.join("pid");
+        let command=format!("/bin/sh -c 'while [ ! -f \"$1\" ]; do sleep 0.02; done' sh '{}' {redirect} & child=$!; echo $child > '{}'; echo $child; exit 0",release.display(),marker.display());
+        let tools = ToolRegistry::new();
+        crate::tools::register_builtin_tools(&tools);
+        let mut parent = Agent::new();
+        parent.set_workspace_root(&root);
+        parent.set_policy(Policy::full_access());
+        parent.os_sandbox = None;
+        let mut manager = SubagentManager::new()
+            .with_authority(parent.subagent_authority())
+            .with_tools(Arc::new(tools))
+            .with_provider(Arc::new(ProcessProvider {
+                arguments: serde_json::json!({"command":command,"timeout":5}).to_string(),
+            }));
+        let pid = Arc::new(Mutex::new(None));
+        let finished = Arc::new(AtomicUsize::new(0));
+        let live_at_finish = Arc::new(AtomicUsize::new(0));
+        let (p, f, l) = (
+            Arc::clone(&pid),
+            Arc::clone(&finished),
+            Arc::clone(&live_at_finish),
+        );
+        manager.subscribe(move |event| {
+            if matches!(event, SubagentEvent::Finished { .. }) {
+                if p.lock().is_some_and(process_executes) {
+                    l.fetch_add(1, Ordering::SeqCst);
+                }
+                f.fetch_add(1, Ordering::SeqCst);
+            }
+        });
+        let h = manager
+            .spawn_background(SubagentConfig::default(), "normal shell exit", &root)
+            .unwrap();
+        let child = tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                if let Ok(text) = std::fs::read_to_string(&marker) {
+                    if let Ok(id) = text.trim().parse::<u32>() {
+                        break id;
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            }
+        })
+        .await
+        .unwrap();
+        *pid.lock() = Some(child);
+        let live_before_release = process_executes(child);
+        let early_finished = finished.load(Ordering::SeqCst);
+        std::fs::write(&release, "").unwrap();
+        let result = settled(&h).await;
+        assert!(live_before_release);
+        assert_eq!(
+            early_finished, 0,
+            "normal shell exit discarded a live descendant"
+        );
+        assert!(result.error.is_none());
+        assert_eq!(h.status(), SubagentStatus::Completed);
+        assert_eq!(finished.load(Ordering::SeqCst), 1);
+        assert_eq!(live_at_finish.load(Ordering::SeqCst), 0);
+        assert!(!process_executes(child));
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn exec_wait_worker_finished_requires_inherited_and_redirected_descendants_stopped() {
+    for redirect in ["", ">/dev/null 2>&1"] {
+        let pid = Arc::new(Mutex::new(None));
+        let p = Arc::clone(&pid);
+        let command = format!("sleep 2 {redirect} & echo $!; exit 0");
+        let tools = ToolRegistry::new();
+        tools.register(ToolDefinition::new_boxed(
+            "read",
+            "owned exec wait fixture",
+            "{}",
+            Box::new(move |ctx, _| {
+                let command = command.clone();
+                let p = Arc::clone(&p);
+                Box::pin(async move {
+                    tokio::task::spawn_blocking(move || {
+                        let registry = ctx.exec.as_ref().unwrap();
+                        let process = registry.spawn("/bin/sh", &["-c".into(), command]).unwrap();
+                        match registry.wait_timeout(&process.process_id, Duration::from_millis(20))
+                        {
+                            Ok(output) => {
+                                *p.lock() = Some(output.stdout.trim().parse::<u32>().unwrap());
+                                ToolResult::ok("read", output.stdout)
+                            }
+                            Err(error) => ToolResult::err("read", error),
+                        }
+                    })
+                    .await
+                    .unwrap()
+                })
+            }),
+        ));
+        let mut manager = SubagentManager::new()
+            .with_tools(Arc::new(tools))
+            .with_provider(Arc::new(RoundProvider {
+                requests: Arc::new(Mutex::new(Vec::new())),
+            }));
+        let finished = Arc::new(AtomicUsize::new(0));
+        let live_at_finish = Arc::new(AtomicUsize::new(0));
+        let (p, f, l) = (
+            Arc::clone(&pid),
+            Arc::clone(&finished),
+            Arc::clone(&live_at_finish),
+        );
+        manager.subscribe(move |event| {
+            if matches!(event, SubagentEvent::Finished { .. }) {
+                if p.lock().is_some_and(process_executes) {
+                    l.fetch_add(1, Ordering::SeqCst);
+                }
+                f.fetch_add(1, Ordering::SeqCst);
+            }
+        });
+        let h = manager
+            .spawn_background(
+                SubagentConfig::default(),
+                "exec wait fixture",
+                Path::new("."),
+            )
+            .unwrap();
+        settled(&h).await;
+        assert!(pid.lock().is_some());
+        assert_eq!(finished.load(Ordering::SeqCst), 1);
+        assert_eq!(live_at_finish.load(Ordering::SeqCst), 0);
+        assert!(!process_executes(pid.lock().unwrap()));
+    }
+}

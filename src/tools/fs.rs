@@ -373,81 +373,112 @@ async fn wait_and_drain(
     let mut stdout_pipe = child.stdout.take();
     let mut stderr_pipe = child.stderr.take();
 
+    let deadline = tokio::time::Instant::now() + timeout;
     let drain = async {
         let stdout_task = async {
             let mut buf = Vec::new();
-            if let Some(mut out) = stdout_pipe.take() {
-                let _ = out.read_to_end(&mut buf).await;
+            if let Some(mut pipe) = stdout_pipe.take() {
+                let _ = pipe.read_to_end(&mut buf).await;
             }
             buf
         };
         let stderr_task = async {
             let mut buf = Vec::new();
-            if let Some(mut err) = stderr_pipe.take() {
-                let _ = err.read_to_end(&mut buf).await;
+            if let Some(mut pipe) = stderr_pipe.take() {
+                let _ = pipe.read_to_end(&mut buf).await;
             }
             buf
         };
-        // Keep the direct child unreaped until its pipes close. A shell may
-        // exit while a descendant retains them; retaining Child ownership keeps
-        // its PID/PGID from being recycled before cancellation signals the group.
-        let (stdout_buf, stderr_buf) = tokio::join!(stdout_task, stderr_task);
-        let exit_code = child
-            .wait()
-            .await
-            .map_err(|e| format!("wait failed: {e}"))?
-            .code()
-            .unwrap_or(-1);
-        Ok::<_, String>((stdout_buf, stderr_buf, exit_code))
+        tokio::join!(stdout_task, stderr_task)
     };
-
-    match tokio::time::timeout(timeout, ctx.cancellation.run(drain)).await {
-        Ok(Ok(result)) => result,
-        outcome => {
-            if let Some(pid) = child.id() {
-                let mut group = crate::tools::exec::OwnedProcessGroup::new(pid);
-                loop {
-                    let retry = ctx.process_settlement.retry_notice();
-                    tokio::pin!(retry);
-                    retry.as_mut().enable();
-                    let control = Arc::clone(&ctx.process_settlement);
-                    let attempt = tokio::task::spawn_blocking(move || {
-                        let result = group.try_settle(&control);
-                        (group, result)
-                    })
-                    .await;
-                    match attempt {
-                        Ok((owned, result)) => {
-                            group = owned;
-                            match result {
-                                Ok(()) => {
-                                    ctx.process_settlement.clear();
-                                    break;
-                                }
-                                Err(error) => ctx.process_settlement.record_unknown(error),
-                            }
-                        }
-                        Err(error) => {
-                            ctx.process_settlement.record_unknown(format!(
-                                "process cleanup ownership uncertain: {error}"
-                            ));
-                            // The ownership record was lost with the failed task. No retry
-                            // may reconstruct it or send a signal to a potentially reused ID.
-                            std::future::pending::<()>().await;
-                            return Err("process cleanup ownership lost".into());
-                        }
-                    }
-                    retry.await;
-                }
-            }
-            let _ = child.kill().await;
-            let _ = child.wait().await;
-            match outcome {
-                Ok(Err(_)) => Err("command cancelled".into()),
-                Err(_) => Err(format!("command timed out after {}s", timeout.as_secs())),
-                Ok(Ok(result)) => result,
+    let (buffers, mut stop_reason) =
+        match tokio::time::timeout_at(deadline, ctx.cancellation.run(drain)).await {
+            Ok(Ok(buffers)) => (Some(buffers), None),
+            Ok(Err(_)) => (None, Some("command cancelled".to_string())),
+            Err(_) => (
+                None,
+                Some(format!("command timed out after {}s", timeout.as_secs())),
+            ),
+        };
+    // Pipes closing does not prove that a redirected descendant has stopped.
+    // Never reap the direct child before the owned group is proved stopped.
+    let mut group = crate::tools::exec::OwnedProcessGroup::new(
+        child.id().ok_or("direct child ownership unavailable")?,
+    );
+    loop {
+        if stop_reason.is_none() {
+            if ctx.cancellation.is_canceled() {
+                stop_reason = Some("command cancelled".into());
+            } else if tokio::time::Instant::now() >= deadline {
+                stop_reason = Some(format!("command timed out after {}s", timeout.as_secs()));
             }
         }
+        let retry = ctx.process_settlement.retry_notice();
+        tokio::pin!(retry);
+        retry.as_mut().enable();
+        let control = Arc::clone(&ctx.process_settlement);
+        let stopping = stop_reason.is_some();
+        // Await each bounded helper completely; cancellation must not detach a
+        // helper command or its pipe reader while publishing worker completion.
+        let attempt = tokio::task::spawn_blocking(move || {
+            let result = if stopping {
+                group.try_settle(&control).map(|()| true)
+            } else {
+                group.observe(&control, Duration::from_millis(500))
+            };
+            (group, result)
+        })
+        .await;
+        match attempt {
+            Ok((owned, result)) => {
+                group = owned;
+                match result {
+                    Ok(true) => {
+                        ctx.process_settlement.clear();
+                        break;
+                    }
+                    Ok(false) => {
+                        let _ = ctx
+                            .cancellation
+                            .run(tokio::time::sleep(Duration::from_millis(5)))
+                            .await;
+                    }
+                    Err(error) => {
+                        ctx.process_settlement.record_unknown(error);
+                        retry.await;
+                    }
+                }
+            }
+            Err(error) => {
+                ctx.process_settlement.record_unknown(format!(
+                    "process cleanup ownership lost; external reconciliation required: {error}"
+                ));
+                std::future::pending::<()>().await;
+                return Err("process cleanup ownership lost".into());
+            }
+        }
+    }
+    let exit_code = loop {
+        let retry = ctx.process_settlement.retry_notice();
+        tokio::pin!(retry);
+        retry.as_mut().enable();
+        match child.wait().await {
+            Ok(status) => {
+                ctx.process_settlement.clear();
+                break status.code().unwrap_or(-1);
+            }
+            Err(error) => {
+                ctx.process_settlement
+                    .record_unknown(format!("direct child reaping unconfirmed: {error}"));
+                retry.await;
+            }
+        }
+    };
+    if let Some(reason) = stop_reason {
+        Err(reason)
+    } else {
+        let (stdout, stderr) = buffers.ok_or("process output unavailable")?;
+        Ok((stdout, stderr, exit_code))
     }
 }
 

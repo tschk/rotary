@@ -256,18 +256,55 @@ impl ProcessSettlementControl {
 pub(crate) struct OwnedProcessGroup {
     pid: u32,
     signalled: bool,
+    stopped: bool,
 }
 impl OwnedProcessGroup {
     pub(crate) fn new(pid: u32) -> Self {
         Self {
             pid,
             signalled: false,
+            stopped: false,
         }
     }
+    /// Observe without reaping or signalling. Retain the stopped observation
+    /// with the unreaped Child so later pipe retries never signal a recycled ID.
+    pub(crate) fn observe(
+        &mut self,
+        control: &ProcessSettlementControl,
+        timeout: Duration,
+    ) -> Result<bool, String> {
+        if self.stopped {
+            return Ok(true);
+        }
+        #[cfg(unix)]
+        {
+            #[cfg(test)]
+            let injected = control.inspector.lock().clone();
+            #[cfg(test)]
+            let stopped = match injected {
+                Some(inspector) => inspector(self.pid),
+                None => inspect_process_group(self.pid, timeout),
+            }?;
+            #[cfg(not(test))]
+            let stopped = {
+                let _ = control;
+                inspect_process_group(self.pid, timeout)
+            }?;
+            self.stopped = stopped;
+            Ok(stopped)
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = (control, timeout);
+            Err("process-group observation is unavailable on this platform".into())
+        }
+    }
+
     /// One bounded attempt. Unknown/live states return without releasing ownership.
     pub(crate) fn try_settle(&mut self, control: &ProcessSettlementControl) -> Result<(), String> {
-        #[cfg(all(unix, not(test)))]
-        let _ = control;
+        if self.stopped {
+            return Ok(());
+        }
         #[cfg(unix)]
         {
             let deadline = Instant::now() + Duration::from_secs(1);
@@ -292,19 +329,7 @@ impl OwnedProcessGroup {
                         "process group still live or exiting; inspection deadline reached".into(),
                     );
                 }
-                #[cfg(test)]
-                let injected = control.inspector.lock().clone();
-                #[cfg(test)]
-                let stopped = match injected {
-                    Some(inspector) => inspector(self.pid),
-                    None => {
-                        inspect_process_group(self.pid, remaining.min(Duration::from_millis(500)))
-                    }
-                };
-                #[cfg(not(test))]
-                let stopped =
-                    inspect_process_group(self.pid, remaining.min(Duration::from_millis(500)));
-                if stopped? {
+                if self.observe(control, remaining.min(Duration::from_millis(500)))? {
                     return Ok(());
                 }
                 std::thread::sleep(Duration::from_millis(5).min(remaining));
@@ -313,8 +338,7 @@ impl OwnedProcessGroup {
         #[cfg(not(unix))]
         {
             let _ = control;
-            self.signalled = true;
-            Ok(())
+            Err("process-group settlement is unavailable on this platform".into())
         }
     }
 }
@@ -411,11 +435,31 @@ fn drain_pipe<R: Read + Send + 'static>(mut pipe: R, buf: Arc<Mutex<Vec<u8>>>) -
     })
 }
 
+fn readers_finished(session: &ExecSession) -> bool {
+    session
+        .stdout_thread
+        .as_ref()
+        .is_none_or(JoinHandle::is_finished)
+        && session
+            .stderr_thread
+            .as_ref()
+            .is_none_or(JoinHandle::is_finished)
+}
+
+/// Group termination is already proved by the caller. Keep the direct Child
+/// unreaped until readers finish, so uncertainty retains its PID/PGID ownership.
 fn finish_session(session: &mut ExecSession) -> Result<ExecOutput, String> {
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while !readers_finished(session) {
+        if Instant::now() >= deadline {
+            return Err("process pipe readers have not settled before cleanup deadline".into());
+        }
+        std::thread::sleep(Duration::from_millis(2));
+    }
     let status = session
         .child
         .wait()
-        .map_err(|e| format!("wait failed: {e}"))?;
+        .map_err(|e| format!("direct child reaping unconfirmed: {e}"))?;
     collect_output(session, status.code())
 }
 
@@ -426,42 +470,38 @@ fn finish_session_timeout(
 ) -> Result<ExecOutput, String> {
     let deadline = Instant::now() + timeout;
     loop {
-        match session
-            .child
-            .try_wait()
-            .map_err(|e| format!("wait failed: {e}"))?
-        {
-            Some(status) => return collect_output(session, status.code()),
-            None if Instant::now() >= deadline => {
-                session.group.try_settle(control)?;
-                #[cfg(not(unix))]
-                let _ = session.child.kill();
-                let _ = session.child.wait();
-                let mut output = collect_output(session, None)?;
-                if output.stderr.is_empty() {
-                    output.stderr = format!(
-                        "exec wait timed out after {}s; process killed",
-                        timeout.as_secs()
-                    );
-                } else {
-                    output.stderr.push_str(&format!(
-                        "\nexec wait timed out after {}s; process killed",
-                        timeout.as_secs()
-                    ));
-                }
-                return Ok(output);
+        if Instant::now() >= deadline {
+            session.group.try_settle(control)?;
+            let mut output = finish_session(session)?;
+            output.exit_code = None;
+            if !output.stderr.is_empty() {
+                output.stderr.push('\n');
             }
-            None => std::thread::sleep(Duration::from_millis(20)),
+            output.stderr.push_str(&format!(
+                "exec wait timed out after {}s; process group stopped",
+                timeout.as_secs()
+            ));
+            return Ok(output);
         }
+        // try_wait() would reap the shell before live descendants were known
+        // stopped. Observe the whole owned group first, including normal exit.
+        if session.group.observe(control, Duration::from_millis(500))? && readers_finished(session)
+        {
+            return finish_session(session);
+        }
+        std::thread::sleep(Duration::from_millis(5));
     }
 }
 
 fn collect_output(session: &mut ExecSession, exit_code: Option<i32>) -> Result<ExecOutput, String> {
+    if !readers_finished(session) {
+        return Err("process pipe readers are still active".into());
+    }
     if let Some(handle) = session.stdout_thread.take() {
-        let _ = handle.join();
+        handle.join().map_err(|_| "process stdout reader failed")?;
     }
     if let Some(handle) = session.stderr_thread.take() {
-        let _ = handle.join();
+        handle.join().map_err(|_| "process stderr reader failed")?;
     }
     Ok(ExecOutput {
         process_id: session.process_id.clone(),
@@ -584,6 +624,71 @@ fn parse_args(args: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn shell_exit_wait_settles_inherited_and_redirected_descendants() {
+        for redirect in ["", ">/dev/null 2>&1"] {
+            let registry = Arc::new(ExecRegistry::new());
+            let command = format!("sleep 2 {redirect} & echo $!; exit 0");
+            let process = registry.spawn("/bin/sh", &["-c".into(), command]).unwrap();
+            let start = Instant::now();
+            let output = registry
+                .wait_timeout(&process.process_id, Duration::from_millis(20))
+                .unwrap();
+            let elapsed = start.elapsed();
+            let pid = output.stdout.trim().parse::<u32>().unwrap();
+            registry.shutdown().unwrap();
+            let observed = Command::new("/bin/ps")
+                .args(["-p", &pid.to_string(), "-o", "stat="])
+                .output()
+                .unwrap();
+            let state = String::from_utf8_lossy(&observed.stdout);
+            assert!(
+                state.trim().is_empty() || state.trim().starts_with('Z'),
+                "descendant still executes after successful wait: {state}"
+            );
+            assert!(
+                elapsed < Duration::from_secs(1),
+                "inherited pipe join exceeded wait/cleanup bounds: {elapsed:?}"
+            );
+            assert!(output.exit_code.is_none());
+            assert!(registry.sessions.lock().is_empty());
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pipe_cleanup_timeout_retains_unreaped_owner_until_reader_finishes() {
+        let registry = Arc::new(ExecRegistry::new());
+        let process = registry
+            .spawn("/bin/sh", &["-c".into(), "exit 0".into()])
+            .unwrap();
+        let (release, blocked) = std::sync::mpsc::channel::<()>();
+        {
+            let mut sessions = registry.sessions.lock();
+            let session = sessions.get_mut(&process.process_id).unwrap();
+            session.stdout_thread.take().unwrap().join().unwrap();
+            session.stdout_thread = Some(std::thread::spawn(move || {
+                let _ = blocked.recv_timeout(Duration::from_secs(3));
+            }));
+        }
+        let start = Instant::now();
+        let result = registry.wait_timeout(&process.process_id, Duration::from_millis(20));
+        let elapsed = start.elapsed();
+        let retained = registry.sessions.lock().contains_key(&process.process_id);
+        let signal_count = registry.settlement_control().signal_count();
+        let _ = release.send(());
+        registry.shutdown().unwrap();
+        assert!(result.is_err());
+        assert!(retained);
+        assert!(elapsed < Duration::from_secs(2));
+        assert_eq!(
+            signal_count, 0,
+            "a proved-stopped group must not be signalled while retaining pipe ownership"
+        );
+        assert!(registry.sessions.lock().is_empty());
+    }
 
     #[cfg(unix)]
     #[test]
