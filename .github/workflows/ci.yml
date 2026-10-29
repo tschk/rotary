@@ -1,56 +1,90 @@
-name: CI
+name: Historical patch calibration (execution branch only)
 
 on:
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
+  workflow_dispatch:
+    inputs:
+      calibration:
+        description: Stop on any mismatch with historical official verdicts
+        type: boolean
+        default: true
+      bundle_ref:
+        description: Exact commit containing the reviewed bundle/ directory
+        required: true
+        type: string
 
 permissions:
   contents: read
 
-concurrency:
-  group: ci-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
-
 jobs:
-  check:
-    runs-on: ubuntu-latest
+  score:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 330
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
     steps:
       - uses: actions/checkout@v4
-      - run: git clone https://github.com/tschk/zkr ../zkr
-      - uses: dtolnay/rust-toolchain@stable
-      - run: cargo fmt --check
-      - run: cargo clippy --all-targets --all-features -- -D warnings
-      - run: cargo test
-      - run: cargo test --no-default-features --features providers,builtin-tools,mcp
-      - run: cargo test --all-features
-      - run: cargo build --all-features --release
-      - uses: EmbarkStudios/cargo-deny-action@v2
         with:
-          command: check
-      - run: |
-          if cargo tree --no-default-features --features providers,builtin-tools,mcp -i praefectus; then
-            echo "slim feature set must not pull praefectus" >&2
-            exit 1
-          fi
-          if cargo tree --no-default-features --features providers,builtin-tools,mcp -i fff-search; then
-            echo "slim feature set must not pull fff-search" >&2
-            exit 1
-          fi
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.bundle_ref }}
+          path: inputs
+          persist-credentials: false
+          sparse-checkout: bundle
+      # These are disposable hosted runners, never a self-hosted machine.
+      - name: Free space for one image and its writable container layer
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install 'swebench==5.0.2'
+      - run: pip freeze > scorer-packages.txt
+      - name: Score gold and historical patches, one image at a time
+        run: python scripts/bench/score.py run --bundle inputs/bundle --out scores --shard ${{ matrix.shard }} --shards 20
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: scores-${{ matrix.shard }}
+          path: |
+            scores/
+            scorer-packages.txt
+          retention-days: 14
+          if-no-files-found: error
 
-  msrv:
-    runs-on: ubuntu-latest
+  report:
+    needs: score
+    if: always()
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - run: git clone https://github.com/tschk/zkr ../zkr
-      - uses: dtolnay/rust-toolchain@1.88
-      # fff-search -> neo_frizbee needs nightly AVX512; verify core compiles without it.
-      - run: cargo build --no-default-features --features ipc
-
-  bench-glue:
-    runs-on: ubuntu-latest
-    steps:
+        with:
+          persist-credentials: false
       - uses: actions/checkout@v4
-      - run: sudo apt-get update && sudo apt-get install --no-install-recommends -y luajit
-      - run: scripts/bench/check.sh
+        with:
+          ref: ${{ inputs.bundle_ref }}
+          path: inputs
+          persist-credentials: false
+          sparse-checkout: bundle
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: scores-*
+          path: results
+      - name: Account for every planned cell and every gold exclusion
+        env:
+          CALIBRATION: ${{ inputs.calibration }}
+        run: |
+          args=()
+          if [ "$CALIBRATION" = true ]; then args+=(--calibration); fi
+          python3 scripts/bench/score.py report --bundle inputs/bundle --out report --scores results/scores-*/scores/cells.jsonl "${args[@]}"
+      - run: cat report/REPORT.md >> "$GITHUB_STEP_SUMMARY"
+        if: always()
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: report
+          path: report/
+          retention-days: 30
