@@ -370,7 +370,6 @@ async fn wait_and_drain(
     mut child: tokio::process::Child,
     timeout: Duration,
 ) -> Result<(Vec<u8>, Vec<u8>, i32), String> {
-    let process_id = child.id();
     let mut stdout_pipe = child.stdout.take();
     let mut stderr_pipe = child.stderr.take();
 
@@ -389,34 +388,57 @@ async fn wait_and_drain(
             }
             buf
         };
-        let wait_task = async {
-            child
-                .wait()
-                .await
-                .map(|status| status.code().unwrap_or(-1))
-                .map_err(|e| format!("wait failed: {e}"))
-        };
-        // Drain pipes concurrent with wait — avoid pipe-buffer deadlock.
-        let (stdout_buf, stderr_buf, wait_res) = tokio::join!(stdout_task, stderr_task, wait_task);
-        let exit_code = wait_res?;
-        // If process still has leftover status after pipes closed:
-        let exit_code = if exit_code == -1 {
-            child.wait().await.ok().and_then(|s| s.code()).unwrap_or(-1)
-        } else {
-            exit_code
-        };
+        // Keep the direct child unreaped until its pipes close. A shell may
+        // exit while a descendant retains them; retaining Child ownership keeps
+        // its PID/PGID from being recycled before cancellation signals the group.
+        let (stdout_buf, stderr_buf) = tokio::join!(stdout_task, stderr_task);
+        let exit_code = child
+            .wait()
+            .await
+            .map_err(|e| format!("wait failed: {e}"))?
+            .code()
+            .unwrap_or(-1);
         Ok::<_, String>((stdout_buf, stderr_buf, exit_code))
     };
 
     match tokio::time::timeout(timeout, ctx.cancellation.run(drain)).await {
         Ok(Ok(result)) => result,
         outcome => {
-            if let Some(pid) = process_id {
-                tokio::task::spawn_blocking(move || {
-                    crate::tools::exec::terminate_process_group(pid)
-                })
-                .await
-                .map_err(|e| format!("process cleanup failed: {e}"))?;
+            if let Some(pid) = child.id() {
+                let mut group = crate::tools::exec::OwnedProcessGroup::new(pid);
+                loop {
+                    let retry = ctx.process_settlement.retry_notice();
+                    tokio::pin!(retry);
+                    retry.as_mut().enable();
+                    let control = Arc::clone(&ctx.process_settlement);
+                    let attempt = tokio::task::spawn_blocking(move || {
+                        let result = group.try_settle(&control);
+                        (group, result)
+                    })
+                    .await;
+                    match attempt {
+                        Ok((owned, result)) => {
+                            group = owned;
+                            match result {
+                                Ok(()) => {
+                                    ctx.process_settlement.clear();
+                                    break;
+                                }
+                                Err(error) => ctx.process_settlement.record_unknown(error),
+                            }
+                        }
+                        Err(error) => {
+                            ctx.process_settlement.record_unknown(format!(
+                                "process cleanup ownership uncertain: {error}"
+                            ));
+                            // The ownership record was lost with the failed task. No retry
+                            // may reconstruct it or send a signal to a potentially reused ID.
+                            std::future::pending::<()>().await;
+                            return Err("process cleanup ownership lost".into());
+                        }
+                    }
+                    retry.await;
+                }
             }
             let _ = child.kill().await;
             let _ = child.wait().await;

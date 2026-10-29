@@ -304,6 +304,9 @@ pub struct SubagentSnapshot {
     pub session: Session,
     pub result: Option<SubagentResult>,
     pub steering: Vec<SteerReceipt>,
+    /// Nonempty while process settlement is unknown; no terminal result is published.
+    #[serde(default)]
+    pub settlement_error: Option<String>,
     request: String,
     depth: usize,
     remaining_depth: Option<usize>,
@@ -315,6 +318,9 @@ impl SubagentSnapshot {
         let redactor = crate::secrets::Redactor::new();
         let redact = |text: &mut String| *text = redactor.redact(text);
         redact(&mut self.name);
+        if let Some(error) = &mut self.settlement_error {
+            redact(error);
+        }
         redact(&mut self.session.name);
         for entry in &mut self.session.entries {
             redact(&mut entry.content);
@@ -391,6 +397,7 @@ struct SubagentState {
     session: Arc<RwLock<Session>>,
     cancellation: Option<CancellationHandle>,
     cancel_requested: bool,
+    process_settlement: Arc<crate::tools::exec::ProcessSettlementControl>,
     steering: Vec<SteerReceipt>,
 }
 
@@ -426,6 +433,7 @@ impl SubagentHandle {
             session,
             result: state.result.clone(),
             steering: state.steering.clone(),
+            settlement_error: state.process_settlement.error(),
             request: state.request.clone(),
             depth: state.depth,
             remaining_depth: state.remaining_depth,
@@ -475,11 +483,26 @@ impl SubagentHandle {
         Ok(receipt)
     }
 
+    /// Explicitly retry a bounded process-settlement inspection. This never re-signals a group.
+    pub fn retry_settlement(&self) -> Result<(), SubagentError> {
+        let state = self.state.lock();
+        if terminal(state.status) || state.process_settlement.error().is_none() {
+            return Err(SubagentError::InvalidInput(
+                "worker has no uncertain process settlement to retry".into(),
+            ));
+        }
+        state.process_settlement.retry();
+        Ok(())
+    }
+
     fn request_cancel(&self) {
         let mut state = self.state.lock();
         if !terminal(state.status) {
             state.status = SubagentStatus::Stopping;
             state.cancel_requested = true;
+            if state.process_settlement.error().is_some() {
+                state.process_settlement.retry();
+            }
             if let Some(cancellation) = &state.cancellation {
                 cancellation.cancel();
             }
@@ -990,8 +1013,12 @@ impl SubagentManager {
             }
             *root = Some(snapshot.identity.root_session_id.clone());
         }
-        if !terminal(snapshot.status) {
+        if !terminal(snapshot.status) || snapshot.settlement_error.is_some() {
             snapshot.status = SubagentStatus::Interrupted;
+        }
+        let process_settlement = Arc::new(crate::tools::exec::ProcessSettlementControl::default());
+        if let Some(error) = snapshot.settlement_error {
+            process_settlement.record_unknown(error);
         }
         let handle = SubagentHandle {
             id: snapshot.id,
@@ -1011,6 +1038,7 @@ impl SubagentManager {
                 session: Arc::new(RwLock::new(snapshot.session)),
                 cancellation: None,
                 cancel_requested: false,
+                process_settlement,
                 steering: snapshot.steering,
             })),
             settled: Arc::new(tokio::sync::Notify::new()),
@@ -1186,6 +1214,7 @@ impl SubagentManager {
             session,
             cancellation: None,
             cancel_requested: false,
+            process_settlement: Arc::new(crate::tools::exec::ProcessSettlementControl::default()),
             steering: Vec::new(),
         }));
         let handle = SubagentHandle {
@@ -1583,10 +1612,23 @@ async fn execute_background_task(
     agent.session = Arc::clone(&handle.state.lock().session);
     agent.set_subagent_manager(manager.clone(), Some(handle.id.clone()));
     let cancellation = agent.cancellation_handle();
+    let process_settlement = agent.exec.settlement_control();
+    let weak_state = Arc::downgrade(&handle.state);
+    let stop = cancellation.clone();
+    process_settlement.on_unknown(move || {
+        if let Some(state) = weak_state.upgrade() {
+            let mut state = state.lock();
+            if !terminal(state.status) {
+                state.status = SubagentStatus::Stopping;
+                stop.cancel();
+            }
+        }
+    });
     let mut notifications = cancellation.subscribe_cancel();
     {
         let mut state = handle.state.lock();
         state.cancellation = Some(cancellation.clone());
+        state.process_settlement = Arc::clone(&process_settlement);
     }
     let duration = agent.budget.as_ref().and_then(|b| b.max_duration_seconds);
     let prompt_result = {
@@ -1635,8 +1677,25 @@ async fn execute_background_task(
             drain.await;
         }
     }
-    let exec = Arc::clone(&agent.exec);
-    let process_cleanup = tokio::task::spawn_blocking(move || exec.shutdown()).await;
+    loop {
+        let retry = process_settlement.retry_notice();
+        tokio::pin!(retry);
+        retry.as_mut().enable();
+        let exec = Arc::clone(&agent.exec);
+        match tokio::task::spawn_blocking(move || exec.shutdown()).await {
+            Ok(Ok(())) => break,
+            Ok(Err(error)) => process_settlement.record_unknown(error),
+            Err(error) => {
+                process_settlement.record_unknown(format!(
+                    "process cleanup ownership lost; external reconciliation required: {error}"
+                ));
+                // A panicked owner may have dropped its child records. An empty
+                // registry on retry is not proof that those processes stopped.
+                std::future::pending::<()>().await;
+            }
+        }
+        retry.await;
+    }
     let snapshot = handle.snapshot();
     let messages = snapshot.session.provider_messages();
     let redactor = crate::secrets::Redactor::new();
@@ -1655,14 +1714,7 @@ async fn execute_background_task(
         error: if stopping {
             Some("cancelled".into())
         } else {
-            prompt_result
-                .err()
-                .map(|e| redactor.redact(&e.to_string()))
-                .or_else(|| match process_cleanup {
-                    Ok(Ok(())) => None,
-                    Ok(Err(e)) => Some(redactor.redact(&e)),
-                    Err(e) => Some(e.to_string()),
-                })
+            prompt_result.err().map(|e| redactor.redact(&e.to_string()))
         },
         cost: agent.total_cost(),
         duration_seconds: started.elapsed().as_secs(),
@@ -2231,6 +2283,7 @@ mod tests {
             session: Arc::new(RwLock::new(Session::new("state", "state"))),
             cancellation: None,
             cancel_requested: false,
+            process_settlement: Arc::new(crate::tools::exec::ProcessSettlementControl::default()),
             steering: Vec::new(),
         }));
         let handle = SubagentHandle {

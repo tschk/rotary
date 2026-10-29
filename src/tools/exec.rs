@@ -38,6 +38,7 @@ pub struct ProcessLifecycle {
 pub struct ExecSession {
     pub process_id: String,
     child: Child,
+    group: OwnedProcessGroup,
     stdout: Arc<Mutex<Vec<u8>>>,
     stderr: Arc<Mutex<Vec<u8>>>,
     stdout_thread: Option<JoinHandle<()>>,
@@ -47,6 +48,9 @@ pub struct ExecSession {
 #[derive(Default)]
 pub struct ExecRegistry {
     sessions: Mutex<HashMap<String, ExecSession>>,
+    settlement: Arc<ProcessSettlementControl>,
+    closed: std::sync::atomic::AtomicBool,
+    cleanup_operation: Mutex<()>,
 }
 
 impl ExecRegistry {
@@ -55,6 +59,10 @@ impl ExecRegistry {
     }
 
     pub fn spawn(self: &Arc<Self>, program: &str, args: &[String]) -> Result<ExecProcess, String> {
+        let mut sessions = self.sessions.lock();
+        if self.closed.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err("process registry is shutting down".into());
+        }
         let mut cmd = Command::new(program);
         cmd.args(args)
             .stdin(Stdio::piped())
@@ -79,10 +87,11 @@ impl ExecRegistry {
             .take()
             .map(|pipe| drain_pipe(pipe, Arc::clone(&stderr_buf)));
         let process_id = Uuid::new_v4().to_string();
-        self.sessions.lock().insert(
+        sessions.insert(
             process_id.clone(),
             ExecSession {
                 process_id: process_id.clone(),
+                group: OwnedProcessGroup::new(child.id()),
                 child,
                 stdout: stdout_buf,
                 stderr: stderr_buf,
@@ -93,22 +102,37 @@ impl ExecRegistry {
         Ok(ExecProcess { process_id })
     }
 
-    /// Stop every owned process and join its pipe readers before reporting settlement.
+    pub fn settlement_control(&self) -> Arc<ProcessSettlementControl> {
+        Arc::clone(&self.settlement)
+    }
+
+    /// One bounded cleanup attempt. Unknown sessions stay owned for explicit retry.
     pub fn shutdown(&self) -> Result<(), String> {
+        self.closed.store(true, std::sync::atomic::Ordering::SeqCst);
+        let _operation = self.cleanup_operation.lock();
         let sessions = std::mem::take(&mut *self.sessions.lock());
-        let mut sessions = sessions.into_values().collect::<Vec<_>>();
-        for session in &mut sessions {
-            drop(session.child.stdin.take());
-            terminate_process_group(session.child.id());
-            let _ = session.child.kill();
-        }
+        let mut pending = HashMap::new();
         let mut error = None;
-        for session in &mut sessions {
-            if let Err(e) = finish_session(session) {
+        for (id, mut session) in sessions {
+            drop(session.child.stdin.take());
+            let result = session.group.try_settle(&self.settlement).and_then(|()| {
+                #[cfg(not(unix))]
+                let _ = session.child.kill();
+                finish_session(&mut session).map(|_| ())
+            });
+            if let Err(e) = result {
+                pending.insert(id, session);
                 error = Some(e);
             }
         }
-        error.map_or(Ok(()), Err)
+        self.sessions.lock().extend(pending);
+        if let Some(error) = error {
+            self.settlement.record_unknown(error.clone());
+            Err(error)
+        } else {
+            self.settlement.clear();
+            Ok(())
+        }
     }
 
     pub fn write_stdin(&self, process_id: &str, data: &[u8]) -> Result<usize, String> {
@@ -135,6 +159,7 @@ impl ExecRegistry {
     }
 
     pub fn wait_timeout(&self, process_id: &str, timeout: Duration) -> Result<ExecOutput, String> {
+        let _operation = self.cleanup_operation.lock();
         let mut session = self
             .sessions
             .lock()
@@ -142,55 +167,236 @@ impl ExecRegistry {
             .ok_or_else(|| format!("unknown process_id {process_id}"))?;
         // Close stdin so readers like `cat`/`python` don't wait forever for EOF.
         drop(session.child.stdin.take());
-        finish_session_timeout(&mut session, timeout)
+        let result = finish_session_timeout(&mut session, timeout, &self.settlement);
+        if let Err(error) = &result {
+            self.settlement.record_unknown(error.clone());
+            self.sessions.lock().insert(process_id.into(), session);
+        }
+        result
     }
 
     pub fn kill(&self, process_id: &str) -> Result<ExecOutput, String> {
+        let _operation = self.cleanup_operation.lock();
         let mut session = self
             .sessions
             .lock()
             .remove(process_id)
             .ok_or_else(|| format!("unknown process_id {process_id}"))?;
         drop(session.child.stdin.take());
-        terminate_process_group(session.child.id());
-        let _ = session.child.kill();
-        finish_session(&mut session)
+        let result = session.group.try_settle(&self.settlement).and_then(|()| {
+            #[cfg(not(unix))]
+            let _ = session.child.kill();
+            finish_session(&mut session)
+        });
+        if let Err(error) = &result {
+            self.settlement.record_unknown(error.clone());
+            self.sessions.lock().insert(process_id.into(), session);
+        }
+        result
     }
 }
 
-/// Each child is created as the leader of its own process group. Signal only
-/// that owned group so descendants holding pipes cannot outlive cancellation.
-pub(crate) fn terminate_process_group(pid: u32) {
-    #[cfg(unix)]
-    {
-        let _ = Command::new("/bin/kill")
-            .args(["-KILL", "--", &format!("-{pid}")])
-            .output();
-        // SIGKILL and pipe EOF precede kernel exit on some platforms. Do not
-        // release the owned group while a descendant is still exiting. Zombies
-        // no longer execute or own descriptors; the direct child is reaped by
-        // finish_session / Child::wait immediately after this barrier.
-        loop {
-            let stopped = Command::new("/bin/ps")
-                .args(["-e", "-o", "pgid=", "-o", "stat="])
-                .output()
-                .ok()
-                .filter(|output| output.status.success())
-                .is_some_and(|output| {
-                    !String::from_utf8_lossy(&output.stdout).lines().any(|line| {
-                        let mut fields = line.split_whitespace();
-                        fields.next().and_then(|group| group.parse::<u32>().ok()) == Some(pid)
-                            && fields.next().is_none_or(|state| !state.starts_with('Z'))
-                    })
-                });
-            if stopped {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(10));
+type SettlementUnknownCallback = Arc<dyn Fn() + Send + Sync>;
+#[cfg(test)]
+type SettlementInspector = Arc<dyn Fn(u32) -> Result<bool, String> + Send + Sync>;
+
+/// Process cleanup observation shared by an Agent and its worker handle.
+/// An error means settlement is unknown. Retry is explicit and never re-signals a group.
+#[derive(Default)]
+pub struct ProcessSettlementControl {
+    error: Mutex<Option<String>>,
+    retry: tokio::sync::Notify,
+    on_unknown: Mutex<Option<SettlementUnknownCallback>>,
+    #[cfg(test)]
+    inspector: Mutex<Option<SettlementInspector>>,
+    #[cfg(test)]
+    signals: std::sync::atomic::AtomicUsize,
+}
+
+impl ProcessSettlementControl {
+    pub fn error(&self) -> Option<String> {
+        self.error.lock().clone()
+    }
+    pub fn retry(&self) {
+        if self.error.lock().is_some() {
+            self.retry.notify_one();
         }
     }
-    #[cfg(not(unix))]
-    let _ = pid;
+    pub(crate) fn record_unknown(&self, error: String) {
+        let callback = self.on_unknown.lock().clone();
+        if let Some(callback) = callback {
+            callback();
+        }
+        // Publish uncertainty only after the worker is Stopping. A concurrent
+        // snapshot may see Stopping without details, never Running with unknown cleanup.
+        *self.error.lock() = Some(crate::secrets::Redactor::new().redact(&error));
+    }
+    pub(crate) fn clear(&self) {
+        *self.error.lock() = None;
+    }
+    pub(crate) fn on_unknown(&self, callback: impl Fn() + Send + Sync + 'static) {
+        *self.on_unknown.lock() = Some(Arc::new(callback));
+    }
+    pub(crate) fn retry_notice(&self) -> tokio::sync::futures::Notified<'_> {
+        self.retry.notified()
+    }
+    #[cfg(test)]
+    pub(crate) fn set_inspector(
+        &self,
+        inspector: impl Fn(u32) -> Result<bool, String> + Send + Sync + 'static,
+    ) {
+        *self.inspector.lock() = Some(Arc::new(inspector));
+    }
+    #[cfg(test)]
+    pub(crate) fn signal_count(&self) -> usize {
+        self.signals.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+pub(crate) struct OwnedProcessGroup {
+    pid: u32,
+    signalled: bool,
+}
+impl OwnedProcessGroup {
+    pub(crate) fn new(pid: u32) -> Self {
+        Self {
+            pid,
+            signalled: false,
+        }
+    }
+    /// One bounded attempt. Unknown/live states return without releasing ownership.
+    pub(crate) fn try_settle(&mut self, control: &ProcessSettlementControl) -> Result<(), String> {
+        #[cfg(all(unix, not(test)))]
+        let _ = control;
+        #[cfg(unix)]
+        {
+            let deadline = Instant::now() + Duration::from_secs(1);
+            if !self.signalled {
+                // Reserve before attempting the signal: even an uncertain signal
+                // result must never cause a recycled PGID to be signalled later.
+                self.signalled = true;
+                #[cfg(test)]
+                control
+                    .signals
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let _ = bounded_control_command(
+                    "/bin/kill",
+                    &["-KILL", "--", &format!("-{}", self.pid)],
+                    Duration::from_millis(500),
+                );
+            }
+            loop {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    return Err(
+                        "process group still live or exiting; inspection deadline reached".into(),
+                    );
+                }
+                #[cfg(test)]
+                let injected = control.inspector.lock().clone();
+                #[cfg(test)]
+                let stopped = match injected {
+                    Some(inspector) => inspector(self.pid),
+                    None => {
+                        inspect_process_group(self.pid, remaining.min(Duration::from_millis(500)))
+                    }
+                };
+                #[cfg(not(test))]
+                let stopped =
+                    inspect_process_group(self.pid, remaining.min(Duration::from_millis(500)));
+                if stopped? {
+                    return Ok(());
+                }
+                std::thread::sleep(Duration::from_millis(5).min(remaining));
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = control;
+            self.signalled = true;
+            Ok(())
+        }
+    }
+}
+
+#[cfg(unix)]
+fn inspect_process_group(pid: u32, timeout: Duration) -> Result<bool, String> {
+    let bytes = bounded_control_command("/bin/ps", &["-e", "-o", "pgid=", "-o", "stat="], timeout)?;
+    let table = String::from_utf8(bytes)
+        .map_err(|_| "process inspection returned invalid text".to_string())?;
+    process_group_stopped(pid, &table)
+}
+
+#[cfg(unix)]
+fn process_group_stopped(pid: u32, table: &str) -> Result<bool, String> {
+    for line in table.lines().filter(|line| !line.trim().is_empty()) {
+        let mut fields = line.split_whitespace();
+        let group = fields
+            .next()
+            .and_then(|group| group.parse::<u32>().ok())
+            .ok_or("invalid process group observation")?;
+        let state = fields.next().ok_or("missing process state observation")?;
+        if group == pid && !state.starts_with('Z') {
+            return Ok(false);
+        }
+    }
+    // Zombies cannot execute or hold pipe descriptors. The direct child stays
+    // owned and is reaped by wait() after this observation succeeds.
+    Ok(true)
+}
+
+#[cfg(unix)]
+fn bounded_control_command(
+    program: &str,
+    args: &[&str],
+    timeout: Duration,
+) -> Result<Vec<u8>, String> {
+    let mut child = Command::new(program)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| format!("process inspection command unavailable: {e}"))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or("process inspection output unavailable")?;
+    let reader = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        stdout
+            .take(1024 * 1024 + 1)
+            .read_to_end(&mut bytes)
+            .map(|_| bytes)
+    });
+    let deadline = Instant::now() + timeout;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Ok(status),
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(2)),
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                break Err("process inspection command timed out".to_string());
+            }
+            Err(e) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                break Err(format!("process inspection wait failed: {e}"));
+            }
+        }
+    };
+    let bytes = reader
+        .join()
+        .map_err(|_| "process inspection reader failed")?
+        .map_err(|e| format!("process inspection read failed: {e}"))?;
+    if !status?.success() {
+        return Err("process inspection command failed".into());
+    }
+    if bytes.len() > 1024 * 1024 {
+        return Err("process inspection output exceeded limit".into());
+    }
+    Ok(bytes)
 }
 
 fn drain_pipe<R: Read + Send + 'static>(mut pipe: R, buf: Arc<Mutex<Vec<u8>>>) -> JoinHandle<()> {
@@ -216,6 +422,7 @@ fn finish_session(session: &mut ExecSession) -> Result<ExecOutput, String> {
 fn finish_session_timeout(
     session: &mut ExecSession,
     timeout: Duration,
+    control: &ProcessSettlementControl,
 ) -> Result<ExecOutput, String> {
     let deadline = Instant::now() + timeout;
     loop {
@@ -226,7 +433,8 @@ fn finish_session_timeout(
         {
             Some(status) => return collect_output(session, status.code()),
             None if Instant::now() >= deadline => {
-                terminate_process_group(session.child.id());
+                session.group.try_settle(control)?;
+                #[cfg(not(unix))]
                 let _ = session.child.kill();
                 let _ = session.child.wait();
                 let mut output = collect_output(session, None)?;
@@ -376,6 +584,54 @@ fn parse_args(args: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn inspection_commands_time_out_and_unavailable_commands_are_unknown() {
+        let start = Instant::now();
+        assert!(bounded_control_command("/bin/sleep", &["10"], Duration::from_millis(20)).is_err());
+        assert!(start.elapsed() < Duration::from_secs(2));
+        assert!(bounded_control_command(
+            "/nonexistent-rx4-inspector",
+            &[],
+            Duration::from_millis(20)
+        )
+        .is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn live_and_kernel_exit_states_are_unsettled_and_zombies_do_not_execute() {
+        for state in ["R", "S", "?E"] {
+            assert!(!process_group_stopped(42, &format!("42 {state}\n")).unwrap());
+        }
+        assert!(process_group_stopped(42, "42 Z\n").unwrap());
+        assert!(process_group_stopped(42, "43 R\n").unwrap());
+        assert!(process_group_stopped(42, "malformed observation").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn uncertain_shutdown_retains_ownership_and_explicit_retry_never_resignals() {
+        let registry = Arc::new(ExecRegistry::new());
+        registry.spawn("sleep", &["60".into()]).unwrap();
+        let control = registry.settlement_control();
+        control.set_inspector(|_| Err("fixture ps failure".into()));
+        let start = Instant::now();
+        assert!(registry.shutdown().is_err());
+        assert!(start.elapsed() < Duration::from_secs(1));
+        assert!(control.error().is_some());
+        assert_eq!(registry.sessions.lock().len(), 1);
+        assert_eq!(control.signal_count(), 1);
+        assert!(registry.spawn("sleep", &["60".into()]).is_err());
+        assert!(registry.shutdown().is_err());
+        assert_eq!(control.signal_count(), 1);
+        control.set_inspector(|_| Ok(true));
+        registry.shutdown().unwrap();
+        assert!(registry.sessions.lock().is_empty());
+        assert_eq!(control.signal_count(), 1);
+        assert!(control.error().is_none());
+    }
 
     #[cfg(unix)]
     #[test]

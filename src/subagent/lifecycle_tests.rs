@@ -478,7 +478,7 @@ async fn shell_process_is_reaped_before_worker_cancellation_settles() {
     let root = workspace.path().canonicalize().unwrap();
     let pidfile = root.join("child.pid");
     let command = format!(
-        "sleep 60 & child=$!; echo $$ $child > '{}'; wait $child",
+        "sleep 60 & child=$!; echo $$ $child > '{}'; exit 0",
         pidfile.display()
     );
     let tools = ToolRegistry::new();
@@ -716,6 +716,7 @@ async fn restored_snapshot_redacts_all_text_and_rejects_secret_identity() {
     let secret = "sk-abcdefghijklmnopqrstuvwxyz0123456789";
     let mut snapshot = h.snapshot();
     snapshot.name = secret.into();
+    snapshot.settlement_error = Some(secret.into());
     snapshot.session.name = secret.into();
     snapshot.session.entries[0].content = secret.into();
     snapshot.session.entries[0].tool_call_id = Some(secret.into());
@@ -744,6 +745,9 @@ async fn restored_snapshot_redacts_all_text_and_rejects_secret_identity() {
     assert!(!encoded.contains(secret));
     assert!(!restored_h.name().contains(secret));
     assert!(!restored_h.result().unwrap().output.contains(secret));
+    snapshot.status = SubagentStatus::Completed;
+    let contradictory = SubagentManager::new().restore(snapshot.clone()).unwrap();
+    assert_eq!(contradictory.status(), SubagentStatus::Interrupted);
     snapshot.identity.run_id = secret.into();
     assert!(SubagentManager::new().restore(snapshot).is_err());
     manager.shutdown_and_wait(Duration::from_secs(3)).await;
@@ -918,4 +922,152 @@ async fn explicit_calling_family_is_shared_by_spawn_list_and_cancel_tools() {
     assert!(!cancelled.is_error);
     settled(&h).await;
     assert_eq!(h.status(), SubagentStatus::Cancelled);
+}
+
+#[cfg(unix)]
+async fn assert_unknown_process_settlement_requires_explicit_retry(initial: usize, use_bash: bool) {
+    let mode = Arc::new(AtomicUsize::new(initial));
+    let inspections = Arc::new(AtomicUsize::new(0));
+    let started = Arc::new(Semaphore::new(0));
+    let observed = Arc::new(Mutex::new(None));
+    let tools = ToolRegistry::new();
+    let (m, c, s, o) = (
+        Arc::clone(&mode),
+        Arc::clone(&inspections),
+        Arc::clone(&started),
+        Arc::clone(&observed),
+    );
+    tools.register(ToolDefinition::new_boxed(
+        if use_bash { "bash" } else { "read" },
+        "owned cleanup fixture",
+        "{}",
+        Box::new(move |ctx, args| {
+            let (m, c, s, o) = (
+                Arc::clone(&m),
+                Arc::clone(&c),
+                Arc::clone(&s),
+                Arc::clone(&o),
+            );
+            Box::pin(async move {
+                let control = Arc::clone(&ctx.process_settlement);
+                control.set_inspector(move |_| {
+                    c.fetch_add(1, Ordering::SeqCst);
+                    match m.load(Ordering::SeqCst) {
+                        0 => Err("fixture ps failed: unknown process state".into()),
+                        1 => Ok(false),
+                        _ => Ok(true),
+                    }
+                });
+                *o.lock() = Some(Arc::clone(&control));
+                if use_bash {
+                    s.add_permits(1);
+                    crate::tools::fs::exec_bash(ctx, args).await
+                } else {
+                    ctx.exec
+                        .as_ref()
+                        .unwrap()
+                        .spawn("sleep", &["60".into()])
+                        .unwrap();
+                    s.add_permits(1);
+                    ToolResult::ok("read", "process spawned")
+                }
+            })
+        }),
+    ));
+    let workspace = tempfile::tempdir().unwrap();
+    let root = workspace.path().canonicalize().unwrap();
+    let mut parent = Agent::new();
+    parent.set_workspace_root(&root);
+    parent.set_policy(Policy::full_access());
+    parent.os_sandbox = None;
+    let mut manager = SubagentManager::new()
+        .with_tools(Arc::new(tools))
+        .with_authority(parent.subagent_authority());
+    if use_bash {
+        manager.set_provider(Arc::new(ProcessProvider {
+            arguments: r#"{"command":"exec sleep 60"}"#.into(),
+        }));
+    } else {
+        manager.set_provider(Arc::new(RoundProvider {
+            requests: Arc::new(Mutex::new(Vec::new())),
+        }));
+    }
+    let events = Arc::new(AtomicUsize::new(0));
+    let event_count = Arc::clone(&events);
+    manager.subscribe(move |event| {
+        if matches!(event, SubagentEvent::Finished { .. }) {
+            event_count.fetch_add(1, Ordering::SeqCst);
+        }
+    });
+    let worker = manager
+        .spawn_background(
+            SubagentConfig {
+                permission_mode: Some(PermissionMode::FullAccess),
+                ..Default::default()
+            },
+            "owned task",
+            &root,
+        )
+        .unwrap();
+    entered(&started, 1).await;
+    let before = Instant::now();
+    let snapshots = manager
+        .cancel_tree_and_wait(worker.id(), Duration::from_millis(10))
+        .await
+        .unwrap();
+    assert!(before.elapsed() < Duration::from_secs(1));
+    assert_eq!(snapshots[0].status, SubagentStatus::Stopping);
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if worker.snapshot().settlement_error.is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+    })
+    .await
+    .expect("explicit uncertainty recorded");
+    assert!(worker.result().is_none());
+    assert_eq!(events.load(Ordering::SeqCst), 0);
+    let control = observed.lock().clone().unwrap();
+    assert_eq!(control.signal_count(), 1);
+    let count = inspections.load(Ordering::SeqCst);
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    assert_eq!(
+        inspections.load(Ordering::SeqCst),
+        count,
+        "no uncontrolled inspection loop while unknown"
+    );
+    mode.store(1, Ordering::SeqCst);
+    worker.retry_settlement().unwrap();
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while inspections.load(Ordering::SeqCst) == count {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(worker.status(), SubagentStatus::Stopping);
+    assert_eq!(events.load(Ordering::SeqCst), 0);
+    assert_eq!(control.signal_count(), 1);
+    mode.store(2, Ordering::SeqCst);
+    worker.retry_settlement().unwrap();
+    settled(&worker).await;
+    assert_eq!(worker.status(), SubagentStatus::Cancelled);
+    assert_eq!(events.load(Ordering::SeqCst), 1);
+    assert_eq!(control.signal_count(), 1);
+    assert!(worker.snapshot().settlement_error.is_none());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn failed_bash_inspection_stays_stopping_until_explicit_retry() {
+    assert_unknown_process_settlement_requires_explicit_retry(0, true).await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn persistent_exec_live_or_exiting_observation_is_bounded_and_never_resignalled() {
+    assert_unknown_process_settlement_requires_explicit_retry(1, false).await;
 }

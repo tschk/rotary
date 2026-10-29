@@ -1160,6 +1160,15 @@ impl Agent {
         }
     }
 
+    /// An inspection error means owned process execution has not been proved settled.
+    pub fn process_settlement_error(&self) -> Option<String> {
+        self.exec.settlement_control().error()
+    }
+    /// Retry process observation/cleanup without re-signalling an owned group.
+    pub fn retry_process_settlement(&self) {
+        self.exec.settlement_control().retry();
+    }
+
     pub fn cancellation_handle(&self) -> CancellationHandle {
         self.turn_cancellation.clone()
     }
@@ -2803,6 +2812,7 @@ impl Agent {
         tool_ctx.sandbox_layer = crate::sandbox::SandboxLayer::Userspace;
         tool_ctx.sandbox_retries = Some(Arc::clone(&self.sandbox_retries));
         tool_ctx.exec = Some(Arc::clone(&self.exec));
+        tool_ctx.process_settlement = self.exec.settlement_control();
         tool_ctx.subtasks = Some(Arc::clone(&self.subtasks));
         tool_ctx.evidence = Some(Arc::clone(&self.evidence));
         tool_ctx.allow_complete_subtask = self.subtasks_enabled;
