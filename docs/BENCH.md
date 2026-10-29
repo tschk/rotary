@@ -155,3 +155,36 @@ from another task's or a stale trial's reward.
 
 Sample matches Pier: filesystem iterdir order, then Random(seed).shuffle,
 then first n. Seed 0 / n=20 starts with meriyah-explicit-resource-declarations.
+
+## Reproducible historical scoring and usage coverage
+
+`scripts/bench/score.py bundle` exports only patches and allowlisted cell
+metadata. Inspect the bundle and scan it for credentials before uploading;
+never upload agent logs or environment dumps. `score.py run` uses pinned
+SWE-bench Verified data and SWE-bench 5.0.2, records the actual Epoch image
+digest, scores the reference patch first, then scores each harness patch in
+an isolated container. Images are pulled and deleted one instance at a time.
+The manual-only `.github/workflows/score.yml` parallelizes instances across
+20 shards; it has no push or scheduled trigger.
+
+Calibration must reproduce every historical official verdict (codex 7/10,
+tk 6/10) and pass every reference patch before a full run is permitted.
+Disagreement is a finding, not permission to change the expected results.
+Reports retain every planned cell, distinguish missing scores from failures,
+and show reference-patch failures and missing reference verdicts alongside
+both planned-sample and reference-eligible denominators. An eligible-only
+rate is conditional on those exclusions, not a rate for the original sample.
+
+New generation runs record the harness executable version and SHA-256,
+arguments with the prompt replaced by its digest, timeout, requested model,
+effort, dataset revision and sample checksum. Historical provenance remains
+explicitly unrecorded; it cannot be reconstructed from a filename.
+
+Terminal JSON usage events are captured for codex, pi, omp and opencode.
+tk/fx or unsupported event formats retain unknown usage, not zero tokens.
+Interrupted runs can have incomplete subtotals; the report states coverage.
+Costs are either harness estimates or calculated from an explicit `pricing`
+object in a model entry: `input`, `output`, `cache_read`, `cache_write` in
+USD per million tokens, plus `source` and `as_of`. Without a usable estimate
+or price snapshot, cost stays unknown. These are estimates, not invoices;
+subscription charges and missing historical token usage are not inferred.

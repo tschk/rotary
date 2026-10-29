@@ -66,6 +66,7 @@ if [[ ! -f "$PROMPT_FILE" ]]; then
 fi
 
 PROMPT=$(cat "$PROMPT_FILE")
+BENCH_ROOT=$(cd "$(dirname "$0")/.." && pwd)
 help_text=$("$OMP" --help 2>&1 || true)
 
 cd "$TASK_DIR"
@@ -77,20 +78,6 @@ fi
 if grep -q -- '--auto-approve' <<<"$help_text"; then
   cmd+=(--auto-approve)
 fi
+if grep -q -- '--mode' <<<"$help_text"; then cmd+=(--mode json); fi
 cmd+=("$PROMPT")
-
-run() {
-  "${cmd[@]}" </dev/null
-}
-
-if [[ -n "${BENCH_AGENT_TIMEOUT:-}" ]]; then
-  if command -v gtimeout >/dev/null 2>&1; then
-    gtimeout --signal=TERM "$BENCH_AGENT_TIMEOUT" "${cmd[@]}" </dev/null
-  elif command -v timeout >/dev/null 2>&1; then
-    timeout --signal=TERM "$BENCH_AGENT_TIMEOUT" "${cmd[@]}" </dev/null
-  else
-    run
-  fi
-else
-  run
-fi
+exec python3 "$BENCH_ROOT/lib/execute.py" omp "$PROMPT_FILE" -- "${cmd[@]}"

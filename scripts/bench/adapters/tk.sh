@@ -64,6 +64,7 @@ if [[ ! -f "$PROMPT_FILE" ]]; then
 fi
 
 PROMPT=$(cat "$PROMPT_FILE")
+BENCH_ROOT=$(cd "$(dirname "$0")/.." && pwd)
 help_text=$("$TK" exec --help 2>&1 || true)
 
 cd "$TASK_DIR"
@@ -76,17 +77,6 @@ if grep -q -- '--effort' <<<"$help_text"; then
 else
   echo "tk.sh: note: tk exec has no --effort yet; model=$MODEL effort=$EFFORT (pass-through skipped)" >&2
 fi
+if grep -q -- '--json' <<<"$help_text"; then cmd+=(--json); fi
 cmd+=("$PROMPT")
-
-run() {
-  "${cmd[@]}" </dev/null
-}
-
-TIMEOUT_SECS=${BENCH_AGENT_TIMEOUT:-21600}
-if command -v gtimeout >/dev/null 2>&1; then
-  gtimeout --signal=TERM "$TIMEOUT_SECS" "${cmd[@]}" </dev/null
-elif command -v timeout >/dev/null 2>&1; then
-  timeout --signal=TERM "$TIMEOUT_SECS" "${cmd[@]}" </dev/null
-else
-  run
-fi
+exec python3 "$BENCH_ROOT/lib/execute.py" tk "$PROMPT_FILE" -- "${cmd[@]}"
