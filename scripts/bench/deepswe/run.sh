@@ -143,10 +143,10 @@ while read -r verb h _m reason; do
 done <<EOF
 $(luajit "$ROOT/lib/config.lua" matrix "$MODELS_JSON" "$MID" "$HARNESSES" "$IDS_FILE" "$PLAN")
 EOF
-export BENCH_PROVENANCE
-BENCH_PROVENANCE=$(luajit "$ROOT/lib/config.lua" provenance "$ROOT" "$MODELS_JSON" "$IDS_FILE")
 export BENCH_AGENT_TIMEOUT=${BENCH_AGENT_TIMEOUT:-21600}
 export TK_MAX_TURNS=${TK_MAX_TURNS:-400}
+export BENCH_PROVENANCE
+BENCH_PROVENANCE=$(luajit "$ROOT/lib/config.lua" provenance "$ROOT" "$MODELS_JSON" "$IDS_FILE")
 
 cell_exists() {
   luajit "$ROOT/lib/config.lua" cell-exists "$CELLS" "$1" "$2" "$3"
@@ -163,7 +163,11 @@ pier_verify() {
   iid=$2
   patch=$3
   job_parent="$OUT/pier/${harness}"
+  job_name="${harness}__${MID}__${iid}"
   mkdir -p "$job_parent"
+  # Fresh job dir per cell, cleared even when the verifier is skipped, so a
+  # stale trial can never be read as this one.
+  rm -rf "${job_parent:?}/$job_name"
   if [ -z "$PIER" ] || [ ! -x "$PIER" ]; then
     echo "pier missing; skip verifier" >&2
     return 1
@@ -174,9 +178,6 @@ pier_verify() {
   fi
   export PYTHONPATH="$HERE${PYTHONPATH:+:$PYTHONPATH}"
   export DOCKER_DEFAULT_PLATFORM="${DOCKER_DEFAULT_PLATFORM:-linux/amd64}"
-  job_name="${harness}__${MID}__${iid}"
-  # Fresh job dir per cell so a stale trial can never be read as this one.
-  rm -rf "${job_parent:?}/$job_name"
   set +e
   # Cap the verifier env's memory: task test suites can balloon
   # (pystan fits hit 5.5GB) and thrash the host for every other trial.
@@ -228,9 +229,13 @@ for harness in $RUN_HARNESSES; do
     unscored=not_verified
     adapter_model=$(cat "${patch}.model" 2>/dev/null || true)
     if [ "$SKIP_EVAL" -eq 0 ]; then
-      pier_verify "$harness" "$iid" "$patch" >>"$log" 2>&1 || true
-      reward_json=$(luajit "$HERE/reward.lua" "$OUT/pier/${harness}/${harness}__${MID}__${iid}" 2>>"$log" || echo null)
-      [ "$reward_json" = "null" ] && unscored=verifier_no_reward
+      # Read a reward only when this attempt actually ran the verifier.
+      if pier_verify "$harness" "$iid" "$patch" >>"$log" 2>&1; then
+        reward_json=$(luajit "$HERE/reward.lua" "$OUT/pier/${harness}/${harness}__${MID}__${iid}" 2>>"$log" || echo null)
+        [ "$reward_json" = "null" ] && unscored=verifier_no_reward
+      else
+        reward_json=null
+      fi
       if [ "$reward_json" != "null" ]; then
         unscored=""
         verifier=pier

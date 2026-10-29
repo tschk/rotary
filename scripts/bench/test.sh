@@ -30,7 +30,8 @@ grep -Fq '| codex | m | not_configured |' "$T/r2/REPORT.md" || fail "excluded pa
 echo "ok report denominators"
 
 # --- 2. A model only runs on harnesses it is configured for. --------------
-luajit "$ROOT/lib/config.lua" matrix "$ROOT/models.json" "gpt-5.6-sol deepseek-v4-flash" "codex opencode" > "$T/matrix.txt"
+luajit "$ROOT/lib/config.lua" matrix "$ROOT/models.json" "gpt-5.6-sol deepseek-v4-flash gpt-5.6-sol" "codex opencode codex" > "$T/matrix.txt"
+[[ "$(grep -c 'run codex gpt-5.6-sol' "$T/matrix.txt")" == 1 ]] || fail "repeated selection planned a pair twice"
 grep -qx 'run codex gpt-5.6-sol' "$T/matrix.txt" || fail "configured pair not run"
 grep -qx 'run opencode deepseek-v4-flash' "$T/matrix.txt" || fail "configured pair not run"
 grep -qx 'skip codex deepseek-v4-flash not_configured' "$T/matrix.txt" || fail "unconfigured pair not skipped"
@@ -74,6 +75,17 @@ reward "$jobs/tk__m__$long_a/new/verifier/reward.json" 0
 rm -rf "$jobs/tk__m__$long_a/old"
 out=$(luajit "$ROOT/deepswe/reward.lua" "$jobs/tk__m__$long_a")
 [[ "$out" == *'"reward":0'* && "$out" == *"/tk__m__$long_a/new/"* ]] || fail "own reward not read: $out"
+
+# A rerun whose verifier is skipped (no Pier here) must not reuse a stale reward.
+mkdir -p "$T/tasks" "$T/home" && cp -R "$task" "$T/tasks/t1"
+mkdir -p "$T/tasks/t1/environment" "$T/tasks/t1/tests"
+echo 'FROM scratch' > "$T/tasks/t1/environment/Dockerfile"
+printf '#!/bin/sh\n' > "$T/tasks/t1/tests/test.sh"
+reward "$T/deep/pier/codex/codex__gpt-5.6-sol__t1/old/verifier/reward.json" 1
+env HOME="$T/home" PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin BENCH_ADAPTERS="$T/adapters" \
+  "$ROOT/deepswe/run.sh" --n 1 --tasks "$T/tasks" --harness codex --out "$T/deep" >/dev/null 2>&1
+grep -q '"adapter_exit":0' "$T/deep/cells.jsonl" || fail "DeepSWE fixture run failed: $(cat "$T/deep/logs/"*.log)"
+grep -q '"resolved":null' "$T/deep/cells.jsonl" || fail "stale reward scored a cell whose verifier never ran: $(cat "$T/deep/cells.jsonl")"
 echo "ok DeepSWE reward isolation"
 
 echo "bench integrity tests passed"

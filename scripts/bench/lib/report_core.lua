@@ -200,7 +200,7 @@ local function run(style, argv)
     end
     local rate, ci, upper, status
     if g.scored == 0 then
-      rate, ci, upper, status = "n/a (" .. (deep_swe and "no Pier verifier reward.json" or "no official eval") .. ")", "—", "—", "NOT SCORED"
+      rate, ci, upper, status = "n/a (" .. (deep_swe and "no Pier verifier reward.json" or "no official eval") .. ")", "—", "100%", "NOT SCORED"
     else
       rate = string.format("%d/%d (%d%%)", g.ok, n, pct(g.ok, n))
       upper = string.format("%d%%", pct(g.ok + n - g.scored, n))

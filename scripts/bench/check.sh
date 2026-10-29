@@ -40,7 +40,7 @@ smoke=$(mktemp -d "${TMPDIR:-/tmp}/rotary-bench-lua.XXXXXX")
 trap 'rm -rf "$smoke"' EXIT
 luajit "$ROOT/lib/cell.lua" --cells "$smoke/cells.jsonl" --harness tk --model smoke --instance null-cell --seconds 3
 luajit "$ROOT/lib/report.lua" --cells "$smoke/cells.jsonl" --out-dir "$smoke/report" --meta '{}' >/dev/null
-grep -Fq '| tk | smoke | n/a (no official eval) | — | — | 0/1 (0%) | NOT SCORED |' "$smoke/report/REPORT.md"
+grep -Fq '| tk | smoke | n/a (no official eval) | — | 100% | 0/1 (0%) | NOT SCORED |' "$smoke/report/REPORT.md"
 grep -Fq '| tk | smoke | null-cell | null | 3 |' "$smoke/report/REPORT.md"
 echo "ok Lua cell/report null handling"
 "$ROOT/test.sh"

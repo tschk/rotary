@@ -12,7 +12,7 @@ MID=${BENCH_MODEL_ID:?BENCH_MODEL_ID is required}
 cfg() { luajit "$ROOT/lib/config.lua" model-get "$MODELS_JSON" "$MID" "$@"; }
 # Resolve the model from models.json only. A missing harness entry must not
 # fall through to the adapter's default model under this model's label.
-if ! BENCH_MODEL=$(cfg "$HARNESS/model" 2>/dev/null); then
+if ! BENCH_MODEL=$(cfg "$HARNESS/model" 2>/dev/null) || [ -z "$BENCH_MODEL" ]; then
   echo "thin_task: model $MID has no $HARNESS entry in models.json; refusing to run" >&2
   exit 3
 fi

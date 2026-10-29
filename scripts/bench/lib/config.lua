@@ -151,11 +151,14 @@ elseif command == "matrix" then
   -- own model id; adapter defaults would silently run a different model.
   need(3)
   local cfg = models(args[1])
-  local pairs_, excluded = {}, {}
+  local pairs_, excluded, seen = {}, {}, {}
   for _, id in ipairs(split_words(args[2])) do
     local value = model(cfg, id)
     if not value then fail("unknown model: " .. id) end
     for _, harness in ipairs(split_words(args[3])) do
+      -- Repeated --model/--harness must not plan (and count) a pair twice.
+      if seen[harness .. "\0" .. id] then goto continue end
+      seen[harness .. "\0" .. id] = true
       local entry = value[harness]
       if type(entry) == "table" and type(entry.model) == "string" and entry.model ~= "" then
         pairs_[#pairs_ + 1] = { harness = harness, model = id }
@@ -164,6 +167,7 @@ elseif command == "matrix" then
         excluded[#excluded + 1] = { harness = harness, model = id, reason = "not_configured" }
         print("skip " .. harness .. " " .. id .. " not_configured")
       end
+      ::continue::
     end
   end
   if args[4] and args[5] then
