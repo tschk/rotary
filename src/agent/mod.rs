@@ -834,9 +834,7 @@ impl Agent {
 
     pub fn set_policy(&mut self, policy: Policy) {
         self.policy = policy;
-        // A custom authorizer may have captured the previous policy. Drop the
-        // snapshot so subsequent calls use the new live policy by default.
-        self.authorizer = None;
+        self.invalidate_snapshot_authorizer();
         self.ensure_userspace_sandbox();
         if self.policy.enable_os_sandbox && self.os_sandbox.is_none() && !self.os_sandbox_failed {
             if let Err(e) = self.enable_os_sandbox() {
@@ -851,7 +849,7 @@ impl Agent {
         let profile = mode::profile(scope);
         // Scope changes mode/sandbox only — keep host shell lists / allowlists.
         self.policy.apply_scope(&profile.policy);
-        self.authorizer = None;
+        self.invalidate_snapshot_authorizer();
         self.ensure_userspace_sandbox();
         if self.policy.enable_os_sandbox && self.os_sandbox.is_none() && !self.os_sandbox_failed {
             if let Err(e) = self.enable_os_sandbox() {
@@ -882,9 +880,21 @@ impl Agent {
 
     /// Replace the pre-tool authorizer (pi-style host policy).
     /// Prefer leaving unset so each tool call uses a fresh [`PolicyAuthorizer`] from `policy`.
-    /// If you install a snapshot authorizer, re-set it after `set_policy` / `set_scope`.
+    /// Snapshot authorizers are dropped on policy, scope and workspace changes.
+    /// Gates that use the supplied live policy can opt into surviving those
+    /// changes through [`Authorizer::uses_live_policy`].
     pub fn set_authorizer(&mut self, authorizer: Arc<dyn Authorizer>) {
         self.authorizer = Some(authorizer);
+    }
+
+    fn invalidate_snapshot_authorizer(&mut self) {
+        if !self
+            .authorizer
+            .as_ref()
+            .is_some_and(|gate| gate.uses_live_policy())
+        {
+            self.authorizer = None;
+        }
     }
 
     /// Drop custom authorizer; subsequent tools use live `policy` via [`PolicyAuthorizer`].
@@ -1030,7 +1040,7 @@ impl Agent {
         }
 
         self.workspace_root = new_root;
-        self.authorizer = None;
+        self.invalidate_snapshot_authorizer();
         // Rebuild confinement against the new root while retaining custom
         // allow/deny lists and network policy.
         self.sandbox = Some(Arc::new(match sandbox_config {
@@ -3879,12 +3889,185 @@ mod tests {
         assert_eq!(base.as_deref(), Some("host instructions"));
     }
 
+    #[test]
+    fn live_authorizer_tracks_policy_scope_and_workspace_changes() {
+        struct LiveGate;
+        impl Authorizer for LiveGate {
+            fn uses_live_policy(&self) -> bool {
+                true
+            }
+            fn authorize(
+                &self,
+                policy: &Policy,
+                tool: &str,
+                args: &str,
+                approver: Option<&dyn Approver>,
+                root: Option<&std::path::Path>,
+            ) -> Decision {
+                PolicyAuthorizer::new().authorize(policy, tool, args, approver, root)
+            }
+        }
+        let first = tempfile::tempdir().unwrap();
+        let second = tempfile::tempdir().unwrap();
+        let args =
+            serde_json::json!({"path": first.path().join("a.txt"), "content": "x"}).to_string();
+        let mut agent = Agent::new();
+        agent.set_workspace_root(first.path());
+        agent.set_authorizer(Arc::new(LiveGate));
+        let decide = |agent: &Agent| {
+            agent
+                .authorizer
+                .as_ref()
+                .expect("live gate retained")
+                .authorize(
+                    &agent.policy,
+                    "write",
+                    &args,
+                    None,
+                    Some(&agent.workspace_root),
+                )
+        };
+        agent.set_policy(Policy::read_only());
+        assert_eq!(decide(&agent), Decision::Ask);
+        agent.set_scope(Scope::Coding);
+        assert_eq!(decide(&agent), Decision::Allow);
+        agent.set_scope(Scope::Plan);
+        assert_eq!(decide(&agent), Decision::Ask);
+        agent.set_workspace_root(second.path());
+        assert_eq!(decide(&agent), Decision::Deny);
+        agent.set_scope(Scope::Coding);
+        assert_eq!(decide(&agent), Decision::Deny);
+        agent.set_workspace_root(first.path());
+        assert_eq!(decide(&agent), Decision::Allow);
+        agent.clear_authorizer();
+        assert!(agent.authorizer.is_none(), "explicit removal still works");
+    }
+
     #[cfg(feature = "ipc")]
     #[test]
     fn agent_tool_context_gets_lsp_manager() {
         let agent = Agent::new();
         let tool_ctx = agent.tool_context();
         assert!(tool_ctx.lsp.is_some());
+    }
+
+    /// Security regression: model-controlled mode tools must not remove the
+    /// host's approval gate from subsequent calls in the same prompt turn.
+    #[cfg(all(feature = "providers", feature = "builtin-tools"))]
+    #[tokio::test]
+    async fn model_plan_mode_round_trip_cannot_remove_live_approval_gate() {
+        use crate::provider::{Provider, ProviderError, StreamEvent, StreamResult};
+        use std::collections::VecDeque;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct Script(parking_lot::Mutex<VecDeque<ToolCall>>);
+        #[async_trait::async_trait]
+        impl Provider for Script {
+            fn id(&self) -> &str {
+                "approval-regression"
+            }
+            fn name(&self) -> &str {
+                "approval-regression"
+            }
+            async fn stream(
+                &self,
+                _: &[Message],
+                _: &Option<String>,
+                _: &str,
+                _: &[serde_json::Value],
+                _: Option<&str>,
+            ) -> Result<StreamResult, ProviderError> {
+                let mut events = Vec::new();
+                if let Some(call) = self.0.lock().pop_front() {
+                    events.push(Ok(StreamEvent::ToolCall(call)));
+                }
+                events.push(Ok(StreamEvent::Done));
+                Ok(Box::new(futures::stream::iter(events)))
+            }
+        }
+        struct LiveApprovalGate;
+        impl Authorizer for LiveApprovalGate {
+            fn uses_live_policy(&self) -> bool {
+                true
+            }
+            fn authorize(
+                &self,
+                policy: &Policy,
+                tool: &str,
+                args: &str,
+                _: Option<&dyn Approver>,
+                root: Option<&std::path::Path>,
+            ) -> Decision {
+                let decision = PolicyAuthorizer::new().authorize(policy, tool, args, None, root);
+                if decision == Decision::Allow && matches!(tool, "write" | "bash") {
+                    Decision::Ask
+                } else {
+                    decision
+                }
+            }
+        }
+        #[derive(Default)]
+        struct DenyAndRecord(parking_lot::Mutex<Vec<String>>);
+        impl Approver for DenyAndRecord {
+            fn approve(&self, call: &ToolCall) -> Decision {
+                self.0.lock().push(call.name.clone());
+                Decision::Deny
+            }
+        }
+        let root = tempfile::tempdir().unwrap();
+        let runs = Arc::new(AtomicUsize::new(0));
+        let tools = ToolRegistry::new();
+        crate::register_builtin_tools(&tools);
+        for name in ["write", "bash"] {
+            let runs = runs.clone();
+            tools.register(
+                ToolDefinition::new_boxed(
+                    name,
+                    "",
+                    "{}",
+                    Box::new(move |_, _| {
+                        runs.fetch_add(1, Ordering::SeqCst);
+                        Box::pin(async { ToolResult::ok("", "executed") })
+                    }),
+                )
+                .with_effect(ToolEffect::Write),
+            );
+        }
+        let mut calls = VecDeque::new();
+        for name in [
+            "write",
+            "bash",
+            "enter_plan_mode",
+            "exit_plan_mode",
+            "write",
+            "bash",
+        ] {
+            calls.push_back(ToolCall {
+                id: format!("call-{}", calls.len()),
+                name: name.into(),
+                arguments: match name {
+                    "write" => r#"{"path":"approval.txt","content":"x"}"#,
+                    "bash" => r#"{"command":"git status"}"#,
+                    _ => "{}",
+                }
+                .into(),
+            });
+        }
+        let mut agent = Agent::new();
+        agent.set_workspace_root(root.path());
+        agent.set_tools(tools);
+        agent.set_policy(
+            Policy::workspace_write()
+                .with_os_sandbox(false)
+                .with_shell_allow(["git *"]),
+        );
+        agent.set_provider(Arc::new(Script(parking_lot::Mutex::new(calls))));
+        let approver = Arc::new(DenyAndRecord::default());
+        agent.set_authorizer(Arc::new(LiveApprovalGate));
+        agent.set_approver(approver.clone());
+        agent.prompt("exercise approval gate").await.unwrap();
+        assert_eq!(*approver.0.lock(), ["write", "bash", "write", "bash"]);
+        assert_eq!(runs.load(Ordering::SeqCst), 0, "tools ran without approval");
     }
 
     #[tokio::test]
