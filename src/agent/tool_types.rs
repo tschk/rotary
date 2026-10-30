@@ -130,9 +130,16 @@ impl ToolResult {
 }
 
 /// Context passed to tool execution — provides workspace root, cancellation, etc.
+#[derive(Clone)]
 pub struct ToolContext {
     pub workspace_root: std::path::PathBuf,
     pub cancellation: CancellationToken,
+    /// Trusted isolated Lua helper; absent uses the packaged executable sibling.
+    pub script_worker: Option<std::path::PathBuf>,
+    #[cfg(feature = "script")]
+    pub(crate) script_lease: Option<Arc<crate::tools::exec::ScriptLease>>,
+    #[cfg(feature = "script")]
+    pub(crate) script_run_id: Option<String>,
     pub sandbox: Option<std::sync::Arc<crate::sandbox::SandboxManager>>,
     pub os_sandbox: Option<std::sync::Arc<crate::sandbox::OsSandboxRunner>>,
     /// When true, policy requested OS sandboxing but the runner was unavailable.
@@ -198,6 +205,11 @@ impl ToolContext {
         Self {
             workspace_root: workspace_root.into(),
             cancellation: CancellationToken::new(false),
+            script_worker: None,
+            #[cfg(feature = "script")]
+            script_lease: None,
+            #[cfg(feature = "script")]
+            script_run_id: None,
             sandbox: None,
             os_sandbox: None,
             os_sandbox_required: false,

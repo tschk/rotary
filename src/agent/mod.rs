@@ -658,6 +658,9 @@ pub struct Agent {
     pub mcp: Option<Arc<crate::mcp::McpRegistry>>,
     cassette_replay: bool,
     process_lifecycle: Arc<parking_lot::Mutex<Vec<crate::tools::exec::ProcessLifecycle>>>,
+    pub script_worker: Option<std::path::PathBuf>,
+    #[cfg(feature = "script")]
+    script_run_id: String,
 }
 
 impl Agent {
@@ -749,6 +752,9 @@ impl Agent {
             mcp: None,
             cassette_replay: false,
             process_lifecycle: Arc::new(parking_lot::Mutex::new(Vec::new())),
+            script_worker: None,
+            #[cfg(feature = "script")]
+            script_run_id: String::new(),
         };
         // Always attach userspace workspace sandbox (path confinement for FS tools).
         agent.ensure_userspace_sandbox();
@@ -937,6 +943,7 @@ impl Agent {
     /// when a host wants its own manager to obey this agent's authority.
     pub fn subagent_authority(&self) -> crate::subagent::SubagentAuthority {
         crate::subagent::SubagentAuthority {
+            script_worker: self.script_worker.clone(),
             policy: self.policy.clone(),
             scope: self.scope_profile.as_ref().map(|profile| profile.scope),
             authorizer: self.authorizer.clone(),
@@ -959,6 +966,7 @@ impl Agent {
         max_tool_iterations: usize,
     ) {
         self.policy = policy;
+        self.script_worker = authority.script_worker.clone();
         if let Some(scope) = authority.scope {
             self.scope = scope;
             self.scope_profile = Some(mode::profile(scope));
@@ -1616,6 +1624,10 @@ impl Agent {
     /// Run a prompt through the agent loop.
     /// Streams events to subscribers, executes tools, cycles turns.
     pub async fn prompt(&mut self, text: &str) -> Result<(), AgentError> {
+        #[cfg(feature = "script")]
+        {
+            self.script_run_id = uuid::Uuid::new_v4().to_string();
+        }
         let mut manager = self.selected_subagent_manager();
         let parent_id = self.subagent_parent_id.clone();
         let cancellation = self.cancellation_handle();
@@ -1648,6 +1660,8 @@ impl Agent {
                 child.wait().await;
             }
         }
+        #[cfg(feature = "script")]
+        self.exec.wait_scripts_for(Some(&self.script_run_id)).await;
         if result.is_ok() {
             self.emit(Event::AgentEnd);
         }
@@ -2381,6 +2395,18 @@ impl Agent {
                     continue;
                 }
                 let ctx = Arc::clone(ctx);
+                #[cfg(feature = "script")]
+                let (ctx, script_dispatch) = if normalize_tool_name(&call.name) == "script" {
+                    let lease = self.exec.reserve_script_for(Some(&self.script_run_id));
+                    let mut owned = (*ctx).clone();
+                    owned.script_lease = Some(lease.clone());
+                    (
+                        Arc::new(owned),
+                        Some(crate::tools::exec::ScriptDispatchGuard(lease)),
+                    )
+                } else {
+                    (ctx, None)
+                };
                 let tools = Arc::clone(&self.tools);
                 let policy = self.policy.clone();
                 let scope_profile = self.scope_profile.clone();
@@ -2392,6 +2418,8 @@ impl Agent {
                 let (tx, rx) = tokio::sync::mpsc::channel(1);
                 let task_call = call.clone();
                 let handle = tokio::spawn(async move {
+                    #[cfg(feature = "script")]
+                    let _script_dispatch = script_dispatch;
                     let result = Agent::run_tool_call(
                         &tools,
                         &policy,
@@ -2800,6 +2828,11 @@ impl Agent {
 
     fn tool_context(&self) -> ToolContext {
         let mut tool_ctx = ToolContext::new(self.workspace_root.clone());
+        tool_ctx.script_worker = self.script_worker.clone();
+        #[cfg(feature = "script")]
+        {
+            tool_ctx.script_run_id = Some(self.script_run_id.clone());
+        }
         tool_ctx.provider = self.provider.clone();
         tool_ctx.tools = Some(Arc::clone(&self.tools));
         tool_ctx.os_sandbox_required = self.policy.enable_os_sandbox && self.os_sandbox.is_none();

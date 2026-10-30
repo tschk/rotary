@@ -121,6 +121,7 @@ pub struct SubagentBudget {
 /// delegation.
 #[derive(Clone)]
 pub struct SubagentAuthority {
+    pub(crate) script_worker: Option<PathBuf>,
     pub(crate) policy: Policy,
     pub(crate) scope: Option<Scope>,
     pub(crate) authorizer: Option<Arc<dyn Authorizer>>,

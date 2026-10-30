@@ -7,6 +7,10 @@ pub mod exec;
 mod extended;
 pub(crate) mod fs;
 mod pipeline;
+#[cfg(feature = "script")]
+mod script;
+#[cfg(feature = "script")]
+pub use script::worker::main as script_worker_main;
 pub mod spill;
 
 use crate::agent::{ToolContext, ToolDefinition, ToolEffect, ToolRegistry, ToolResult};
@@ -282,6 +286,9 @@ pub fn register_builtin_tools(registry: &ToolRegistry) {
         ),
     ];
 
+    #[cfg(feature = "script")]
+    registry.register(script::script_tool());
+
     for (name, desc, params, exec, effect) in tools {
         registry
             .register(ToolDefinition::new_fn(*name, *desc, *params, *exec).with_effect(*effect));
@@ -476,6 +483,8 @@ mod tests {
             "lsp_references",
             "exec",
             "tool_pipeline",
+            #[cfg(feature = "script")]
+            "script",
         ];
 
         assert_eq!(registry.count(), expected_tools.len());

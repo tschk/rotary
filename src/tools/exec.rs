@@ -43,6 +43,7 @@ pub struct ExecSession {
     stderr: Arc<Mutex<Vec<u8>>>,
     stdout_thread: Option<JoinHandle<()>>,
     stderr_thread: Option<JoinHandle<()>>,
+    protocol_done: Option<Arc<std::sync::atomic::AtomicBool>>,
 }
 
 #[derive(Default)]
@@ -51,11 +52,67 @@ pub struct ExecRegistry {
     settlement: Arc<ProcessSettlementControl>,
     closed: std::sync::atomic::AtomicBool,
     cleanup_operation: Mutex<()>,
+    #[cfg(feature = "script")]
+    scripts: Mutex<Vec<Arc<ScriptLease>>>,
+}
+
+#[cfg(feature = "script")]
+#[derive(Default)]
+pub(crate) struct ScriptLease {
+    owner: Option<String>,
+    pub started: std::sync::atomic::AtomicBool,
+    pub cancel: std::sync::atomic::AtomicBool,
+    pub done: std::sync::atomic::AtomicBool,
+    pub changed: tokio::sync::Notify,
+}
+#[cfg(feature = "script")]
+impl ScriptLease {
+    pub fn cancel(&self) {
+        self.cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+        self.changed.notify_waiters();
+    }
+    pub fn finish(&self) {
+        self.done.store(true, std::sync::atomic::Ordering::SeqCst);
+        self.changed.notify_waiters();
+    }
+    pub async fn cancelled(&self) {
+        loop {
+            let notice = self.changed.notified();
+            if self.cancel.load(std::sync::atomic::Ordering::SeqCst) {
+                return;
+            }
+            notice.await;
+        }
+    }
+}
+#[cfg(feature = "script")]
+pub(crate) struct ScriptDispatchGuard(pub Arc<ScriptLease>);
+#[cfg(feature = "script")]
+impl Drop for ScriptDispatchGuard {
+    fn drop(&mut self) {
+        if !self.0.started.load(std::sync::atomic::Ordering::SeqCst) {
+            self.0.finish();
+        }
+    }
+}
+#[cfg(feature = "script")]
+pub(crate) struct ProtocolProcess {
+    pub id: String,
+    pub stdin: std::process::ChildStdin,
+    pub stdout: std::process::ChildStdout,
+    pub done: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl ExecRegistry {
     pub fn new() -> Self {
         Self::default()
+    }
+    #[cfg(feature = "script")]
+    pub(crate) fn with_settlement_control(settlement: Arc<ProcessSettlementControl>) -> Self {
+        Self {
+            settlement,
+            ..Self::default()
+        }
     }
 
     pub fn spawn(self: &Arc<Self>, program: &str, args: &[String]) -> Result<ExecProcess, String> {
@@ -97,9 +154,120 @@ impl ExecRegistry {
                 stderr: stderr_buf,
                 stdout_thread,
                 stderr_thread,
+                protocol_done: None,
             },
         );
         Ok(ExecProcess { process_id })
+    }
+
+    #[cfg(all(test, feature = "script"))]
+    pub(crate) fn reserve_script(&self) -> Arc<ScriptLease> {
+        self.reserve_script_for(None)
+    }
+
+    #[cfg(feature = "script")]
+    pub(crate) fn reserve_script_for(&self, owner: Option<&str>) -> Arc<ScriptLease> {
+        let lease = Arc::new(ScriptLease {
+            owner: owner.map(str::to_owned),
+            ..ScriptLease::default()
+        });
+        self.scripts.lock().push(lease.clone());
+        lease
+    }
+
+    #[cfg(all(test, feature = "script"))]
+    pub(crate) async fn wait_scripts(&self) {
+        self.wait_scripts_for(None).await;
+    }
+
+    #[cfg(feature = "script")]
+    pub(crate) async fn wait_scripts_for(&self, owner: Option<&str>) {
+        let leases = self
+            .scripts
+            .lock()
+            .iter()
+            .filter(|lease| owner.is_none_or(|owner| lease.owner.as_deref() == Some(owner)))
+            .cloned()
+            .collect::<Vec<_>>();
+        for lease in leases {
+            loop {
+                let notice = lease.changed.notified();
+                if lease.done.load(std::sync::atomic::Ordering::SeqCst) {
+                    break;
+                }
+                notice.await;
+            }
+        }
+        self.scripts
+            .lock()
+            .retain(|lease| !lease.done.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[cfg(feature = "script")]
+    pub(crate) fn spawn_protocol(&self, mut cmd: Command) -> Result<ProtocolProcess, String> {
+        #[cfg(not(unix))]
+        return Err("isolated scripts require supported Unix process settlement".into());
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            let mut sessions = self.sessions.lock();
+            if self.closed.load(std::sync::atomic::Ordering::SeqCst) {
+                return Err("process registry is shutting down".into());
+            }
+            cmd.stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .process_group(0);
+            let mut child = cmd
+                .spawn()
+                .map_err(|e| format!("script helper spawn failed: {e}"))?;
+            let stdin = child.stdin.take().expect("configured stdin");
+            let stdout = child.stdout.take().expect("configured stdout");
+            let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let id = Uuid::new_v4().to_string();
+            sessions.insert(
+                id.clone(),
+                ExecSession {
+                    process_id: id.clone(),
+                    group: OwnedProcessGroup::new(child.id()),
+                    child,
+                    stdout: Arc::new(Mutex::new(Vec::new())),
+                    stderr: Arc::new(Mutex::new(Vec::new())),
+                    stdout_thread: None,
+                    stderr_thread: None,
+                    protocol_done: Some(done.clone()),
+                },
+            );
+            Ok(ProtocolProcess {
+                id,
+                stdin,
+                stdout,
+                done,
+            })
+        }
+    }
+
+    #[cfg(feature = "script")]
+    pub(crate) fn terminate_protocol(&self, id: &str) -> Result<(), String> {
+        let _operation = self.cleanup_operation.lock();
+        let mut sessions = self.sessions.lock();
+        // Another registered cleanup owner may already have proved/reaped it.
+        let Some(session) = sessions.get_mut(id) else {
+            return Ok(());
+        };
+        session
+            .group
+            .try_settle(&self.settlement)
+            .inspect_err(|error| self.settlement.record_unknown(error.clone()))
+    }
+
+    #[cfg(feature = "script")]
+    pub(crate) fn finish_protocol(&self, id: &str) -> Result<(), String> {
+        self.kill_if_present(id)?;
+        if self.sessions.lock().is_empty() {
+            self.settlement.clear();
+        }
+        Ok(())
     }
 
     pub fn settlement_control(&self) -> Arc<ProcessSettlementControl> {
@@ -176,12 +344,15 @@ impl ExecRegistry {
     }
 
     pub fn kill(&self, process_id: &str) -> Result<ExecOutput, String> {
+        self.kill_if_present(process_id)?
+            .ok_or_else(|| format!("unknown process_id {process_id}"))
+    }
+
+    fn kill_if_present(&self, process_id: &str) -> Result<Option<ExecOutput>, String> {
         let _operation = self.cleanup_operation.lock();
-        let mut session = self
-            .sessions
-            .lock()
-            .remove(process_id)
-            .ok_or_else(|| format!("unknown process_id {process_id}"))?;
+        let Some(mut session) = self.sessions.lock().remove(process_id) else {
+            return Ok(None);
+        };
         drop(session.child.stdin.take());
         let result = session.group.try_settle(&self.settlement).and_then(|()| {
             #[cfg(not(unix))]
@@ -192,7 +363,7 @@ impl ExecRegistry {
             self.settlement.record_unknown(error.clone());
             self.sessions.lock().insert(process_id.into(), session);
         }
-        result
+        result.map(Some)
     }
 }
 
@@ -437,9 +608,13 @@ fn drain_pipe<R: Read + Send + 'static>(mut pipe: R, buf: Arc<Mutex<Vec<u8>>>) -
 
 fn readers_finished(session: &ExecSession) -> bool {
     session
-        .stdout_thread
+        .protocol_done
         .as_ref()
-        .is_none_or(JoinHandle::is_finished)
+        .is_none_or(|done| done.load(std::sync::atomic::Ordering::SeqCst))
+        && session
+            .stdout_thread
+            .as_ref()
+            .is_none_or(JoinHandle::is_finished)
         && session
             .stderr_thread
             .as_ref()
@@ -655,6 +830,132 @@ mod tests {
             assert!(output.exit_code.is_none());
             assert!(registry.sessions.lock().is_empty());
         }
+    }
+
+    #[cfg(all(unix, feature = "script"))]
+    #[tokio::test(flavor = "current_thread")]
+    async fn script_supervisor_unknown_cleanup_waits_for_explicit_retry() {
+        let registry = Arc::new(ExecRegistry::new());
+        let control = registry.settlement_control();
+        let inspections = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let observed = inspections.clone();
+        *control.inspector.lock() = Some(Arc::new(move |_| {
+            observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Err("injected helper cleanup uncertainty".into())
+        }));
+        let root = tempfile::tempdir().unwrap();
+        let mut ctx = ToolContext::new(root.path());
+        // A trusted test executable that never sends hello exercises the real watchdog.
+        ctx.script_worker = Some("/bin/sh".into());
+        ctx.exec = Some(registry.clone());
+        ctx.process_settlement = control.clone();
+        let tools = crate::agent::ToolRegistry::new();
+        crate::tools::register_builtin_tools(&tools);
+        let task = tokio::spawn(async move {
+            tools
+                .execute(
+                    "script",
+                    &Arc::new(ctx),
+                    r#"{"code":"return 42","timeout_ms":1000}"#,
+                )
+                .await
+                .unwrap()
+        });
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while control.error().is_none() {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(!task.is_finished());
+        assert_eq!(registry.sessions.lock().len(), 1);
+        let count = inspections.load(std::sync::atomic::Ordering::SeqCst);
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert_eq!(inspections.load(std::sync::atomic::Ordering::SeqCst), count);
+        assert_eq!(control.signals.load(std::sync::atomic::Ordering::SeqCst), 1);
+        *control.inspector.lock() = None;
+        control.retry();
+        let result = tokio::time::timeout(Duration::from_secs(3), task)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            result.is_error && result.content.contains("timed out"),
+            "{}",
+            result.content
+        );
+        assert_eq!(control.signals.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert!(registry.sessions.lock().is_empty());
+    }
+
+    #[cfg(feature = "script")]
+    #[tokio::test]
+    async fn script_run_drain_does_not_wait_for_another_owner() {
+        let registry = ExecRegistry::new();
+        let first = registry.reserve_script_for(Some("first"));
+        let unrelated = registry.reserve_script_for(Some("other"));
+        first.finish();
+        tokio::time::timeout(
+            Duration::from_millis(50),
+            registry.wait_scripts_for(Some("first")),
+        )
+        .await
+        .unwrap();
+        assert!(!unrelated.done.load(std::sync::atomic::Ordering::SeqCst));
+        unrelated.finish();
+        registry.wait_scripts().await;
+    }
+
+    #[cfg(all(unix, feature = "script"))]
+    #[tokio::test]
+    async fn script_protocol_uncertainty_keeps_ownership_and_registry_reusable() {
+        let registry = Arc::new(ExecRegistry::new());
+        let lease = registry.reserve_script();
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", "sleep 30"]);
+        command.env_clear();
+        let process = registry.spawn_protocol(command).unwrap();
+        *registry.settlement.inspector.lock() = Some(Arc::new(|_| {
+            Err("injected script inspection failure".into())
+        }));
+        assert!(registry.terminate_protocol(&process.id).is_err());
+        assert_eq!(registry.sessions.lock().len(), 1);
+        assert_eq!(
+            registry
+                .settlement
+                .signals
+                .load(std::sync::atomic::Ordering::SeqCst),
+            1
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), registry.wait_scripts())
+                .await
+                .is_err()
+        );
+        drop(process.stdin);
+        drop(process.stdout);
+        process
+            .done
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        *registry.settlement.inspector.lock() = None;
+        registry.finish_protocol(&process.id).unwrap();
+        assert_eq!(
+            registry
+                .settlement
+                .signals
+                .load(std::sync::atomic::Ordering::SeqCst),
+            1
+        );
+        lease.finish();
+        registry.wait_scripts().await;
+        let ordinary = registry
+            .spawn("/bin/sh", &["-c".into(), "exit 0".into()])
+            .unwrap();
+        registry
+            .wait_timeout(&ordinary.process_id, Duration::from_secs(1))
+            .unwrap();
+        assert!(!registry.closed.load(std::sync::atomic::Ordering::SeqCst));
     }
 
     #[cfg(unix)]
