@@ -1,7 +1,6 @@
 use super::common::{parse_num_field, parse_str_field};
 use crate::agent::{ToolContext, ToolFuture, ToolResult};
 use crate::mode::Scope;
-use crate::subagent::SubagentManager;
 use dashmap::DashMap;
 use parking_lot::Mutex;
 #[cfg(any(test, feature = "providers"))]
@@ -433,7 +432,7 @@ pub(crate) fn exec_todo(ctx: Arc<ToolContext>, args: String) -> ToolFuture {
 }
 
 pub(crate) fn exec_spawn_agent(ctx: Arc<ToolContext>, args: String) -> ToolFuture {
-    let mut manager = SubagentManager::new();
+    let mut manager = ctx.subagent_manager.clone().unwrap_or_default();
     if let Some(provider) = ctx.provider.clone() {
         manager = manager.with_provider(provider);
     }

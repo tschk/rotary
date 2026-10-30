@@ -198,6 +198,13 @@ impl MultiAgentCoordinator {
         }
     }
 
+    /// Attach the configured engine manager used for real execution.
+    /// Without a provider on this manager, spawning fails closed.
+    pub fn with_manager(mut self, manager: SubagentManager) -> Self {
+        self.manager = manager;
+        self
+    }
+
     /// Create a coordinator with an event bus of the given capacity.
     #[cfg(feature = "ipc")]
     pub fn with_event_bus(capacity: usize) -> Self {
@@ -257,9 +264,9 @@ impl MultiAgentCoordinator {
         Ok(handle)
     }
 
-    /// Spawn a team of agents in parallel. Each task is spawned immediately;
-    /// because the underlying manager mocks synchronous execution, all handles
-    /// are already completed by the time this returns.
+    /// Run team tasks synchronously through the configured manager.
+    /// Returned handles have settled. Hosts use `spawn_background` directly
+    /// when they need concurrent execution.
     pub fn spawn_team(
         &mut self,
         tasks: Vec<TeamTask>,
@@ -399,6 +406,42 @@ mod tests {
     use super::*;
     use crate::permissions::PermissionMode;
 
+    #[cfg(feature = "providers")]
+    struct FixtureProvider;
+    #[cfg(feature = "providers")]
+    #[async_trait::async_trait]
+    impl crate::provider::Provider for FixtureProvider {
+        fn id(&self) -> &str {
+            "team-fixture"
+        }
+        fn name(&self) -> &str {
+            "team-fixture"
+        }
+        #[cfg(feature = "providers")]
+        async fn stream(
+            &self,
+            messages: &[crate::provider::Message],
+            _: &Option<String>,
+            _: &str,
+            _: &[serde_json::Value],
+            _: Option<&str>,
+        ) -> Result<crate::provider::StreamResult, crate::provider::ProviderError> {
+            Ok(Box::new(futures::stream::iter([
+                Ok(crate::provider::StreamEvent::Delta(
+                    messages
+                        .last()
+                        .map(|m| m.content.clone())
+                        .unwrap_or_default(),
+                )),
+                Ok(crate::provider::StreamEvent::Done),
+            ])))
+        }
+    }
+    #[cfg(feature = "providers")]
+    fn fixture_manager() -> SubagentManager {
+        SubagentManager::new().with_provider(std::sync::Arc::new(FixtureProvider))
+    }
+
     #[test]
     fn agent_role_default_tools_differ() {
         assert_ne!(
@@ -446,9 +489,10 @@ mod tests {
         assert!(matches!(err, MultiAgentError::ProfileNotFound(_)));
     }
 
+    #[cfg(feature = "providers")]
     #[test]
     fn spawn_named_succeeds_with_registered_profile() {
-        let mut coord = MultiAgentCoordinator::new();
+        let mut coord = MultiAgentCoordinator::new().with_manager(fixture_manager());
         coord.register_profile(AgentProfile::for_role("worker", AgentRole::Worker));
         let handle = coord
             .spawn_named("worker", "build it", Path::new("."))
@@ -474,9 +518,10 @@ mod tests {
         assert!(coord.send("right", "left", Message::user("nope")).is_err());
     }
 
+    #[cfg(feature = "providers")]
     #[test]
     fn spawn_team_uses_default_worker_for_unnamed_tasks() {
-        let mut coord = MultiAgentCoordinator::new();
+        let mut coord = MultiAgentCoordinator::new().with_manager(fixture_manager());
         let tasks = vec![
             TeamTask {
                 name: "t1".to_string(),
@@ -494,9 +539,10 @@ mod tests {
         assert!(handles.iter().all(|h| h.result().is_some()));
     }
 
+    #[cfg(feature = "providers")]
     #[test]
     fn spawn_team_uses_registered_profiles() {
-        let mut coord = MultiAgentCoordinator::new();
+        let mut coord = MultiAgentCoordinator::new().with_manager(fixture_manager());
         coord.register_profile(AgentProfile::for_role("rev", AgentRole::Reviewer));
         let tasks = vec![TeamTask {
             name: "rev1".to_string(),
@@ -508,9 +554,10 @@ mod tests {
         assert_eq!(handles[0].name(), "rev");
     }
 
+    #[cfg(feature = "providers")]
     #[test]
     fn collect_results_returns_one_per_spawned() {
-        let mut coord = MultiAgentCoordinator::new();
+        let mut coord = MultiAgentCoordinator::new().with_manager(fixture_manager());
         coord.register_profile(AgentProfile::for_role("worker", AgentRole::Worker));
         coord
             .spawn_named("worker", "a", Path::new("."))
@@ -529,10 +576,10 @@ mod tests {
         coord.broadcast("hello");
     }
 
-    #[cfg(feature = "ipc")]
+    #[cfg(all(feature = "ipc", feature = "providers"))]
     #[tokio::test]
     async fn event_bus_emits_spawn_and_broadcast() {
-        let mut coord = MultiAgentCoordinator::with_event_bus(16);
+        let mut coord = MultiAgentCoordinator::with_event_bus(16).with_manager(fixture_manager());
         let mut rx = coord.subscribe().expect("bus");
         coord.register_profile(AgentProfile::for_role("worker", AgentRole::Worker));
         coord

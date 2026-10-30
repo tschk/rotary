@@ -40,17 +40,25 @@ pub type ToolFuture = Pin<Box<dyn Future<Output = ToolResult> + Send>>;
 #[derive(Clone)]
 pub struct CancellationHandle {
     source: Arc<RwLock<CancellationTokenSource>>,
+    notifications: tokio::sync::watch::Sender<u64>,
 }
 
 impl CancellationHandle {
     pub(crate) fn new() -> Self {
         Self {
             source: Arc::new(RwLock::new(CancellationTokenSource::new())),
+            notifications: tokio::sync::watch::channel(0).0,
         }
     }
 
     pub fn cancel(&self) {
         self.source.read().cancel();
+        self.notifications
+            .send_modify(|generation| *generation = generation.wrapping_add(1));
+    }
+
+    pub(crate) fn subscribe_cancel(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.notifications.subscribe()
     }
 
     pub(crate) fn reset(&self) -> CancellationToken {
@@ -122,9 +130,16 @@ impl ToolResult {
 }
 
 /// Context passed to tool execution — provides workspace root, cancellation, etc.
+#[derive(Clone)]
 pub struct ToolContext {
     pub workspace_root: std::path::PathBuf,
     pub cancellation: CancellationToken,
+    /// Trusted isolated Lua helper; absent uses the packaged executable sibling.
+    pub script_worker: Option<std::path::PathBuf>,
+    #[cfg(feature = "script")]
+    pub(crate) script_lease: Option<Arc<crate::tools::exec::ScriptLease>>,
+    #[cfg(feature = "script")]
+    pub(crate) script_run_id: Option<String>,
     pub sandbox: Option<std::sync::Arc<crate::sandbox::SandboxManager>>,
     pub os_sandbox: Option<std::sync::Arc<crate::sandbox::OsSandboxRunner>>,
     /// When true, policy requested OS sandboxing but the runner was unavailable.
@@ -137,6 +152,9 @@ pub struct ToolContext {
     /// Authority snapshot inherited by model-requested subagents. The agent
     /// populates this; tool implementations must not synthesize one.
     pub subagent_authority: Option<crate::subagent::SubagentAuthority>,
+    /// Shared worker family; child calls retain the same tree and real parent.
+    pub subagent_manager: Option<crate::subagent::SubagentManager>,
+    pub subagent_parent_id: Option<String>,
     /// Session-scoped artifacts retained outside the provider context.
     pub context_artifacts: Option<Arc<crate::context_artifact::ContextArtifactStore>>,
     /// Tools may request a scope switch; Agent applies after the tool batch.
@@ -159,6 +177,7 @@ pub struct ToolContext {
     pub sandbox_layer: crate::sandbox::SandboxLayer,
     pub sandbox_retries: Option<Arc<parking_lot::Mutex<Vec<crate::sandbox::EscalateRetry>>>>,
     pub exec: Option<Arc<crate::tools::exec::ExecRegistry>>,
+    pub process_settlement: Arc<crate::tools::exec::ProcessSettlementControl>,
     pub subtasks: Option<Arc<parking_lot::RwLock<Vec<crate::subtask::Subtask>>>>,
     pub evidence: Option<Arc<parking_lot::RwLock<crate::subtask::EvidenceLedger>>>,
     pub allow_complete_subtask: bool,
@@ -186,12 +205,19 @@ impl ToolContext {
         Self {
             workspace_root: workspace_root.into(),
             cancellation: CancellationToken::new(false),
+            script_worker: None,
+            #[cfg(feature = "script")]
+            script_lease: None,
+            #[cfg(feature = "script")]
+            script_run_id: None,
             sandbox: None,
             os_sandbox: None,
             os_sandbox_required: false,
             provider: None,
             tools: None,
             subagent_authority: None,
+            subagent_manager: None,
+            subagent_parent_id: None,
             context_artifacts: None,
             pending_scope: None,
             todo_state: None,
@@ -209,6 +235,7 @@ impl ToolContext {
             sandbox_layer: crate::sandbox::SandboxLayer::Userspace,
             sandbox_retries: None,
             exec: None,
+            process_settlement: Arc::new(crate::tools::exec::ProcessSettlementControl::default()),
             subtasks: None,
             evidence: None,
             allow_complete_subtask: false,
@@ -318,13 +345,24 @@ impl ToolDefinition {
 /// Concurrent tool registry using dashmap (grok pattern).
 pub struct ToolRegistry {
     tools: dashmap::DashMap<String, ToolDefinition>,
+    subagent_manager: parking_lot::RwLock<Option<crate::subagent::SubagentManager>>,
 }
 
 impl ToolRegistry {
     pub fn new() -> Self {
         Self {
             tools: dashmap::DashMap::new(),
+            subagent_manager: parking_lot::RwLock::new(None),
         }
+    }
+
+    pub(crate) fn bind_subagent_manager(&self, mut manager: crate::subagent::SubagentManager) {
+        manager.clear_execution_context();
+        *self.subagent_manager.write() = Some(manager);
+    }
+
+    pub(crate) fn subagent_manager(&self) -> Option<crate::subagent::SubagentManager> {
+        self.subagent_manager.read().clone()
     }
 
     pub fn register(&self, tool: ToolDefinition) {

@@ -623,6 +623,9 @@ pub struct Agent {
     #[cfg(feature = "personality")]
     pub personality: Option<crate::personality::Personality>,
     turn_cancellation: CancellationHandle,
+    subagent_manager: crate::subagent::SubagentManager,
+    subagent_parent_id: Option<String>,
+    subagent_manager_attached: bool,
     subscribers: Vec<Subscriber>,
     pub messages: Arc<RwLock<Vec<Message>>>,
     tool_cache: Cache<String, ToolResult>,
@@ -655,6 +658,9 @@ pub struct Agent {
     pub mcp: Option<Arc<crate::mcp::McpRegistry>>,
     cassette_replay: bool,
     process_lifecycle: Arc<parking_lot::Mutex<Vec<crate::tools::exec::ProcessLifecycle>>>,
+    pub script_worker: Option<std::path::PathBuf>,
+    #[cfg(feature = "script")]
+    script_run_id: String,
 }
 
 impl Agent {
@@ -708,6 +714,9 @@ impl Agent {
             #[cfg(feature = "personality")]
             personality: None,
             turn_cancellation: CancellationHandle::new(),
+            subagent_manager: crate::subagent::SubagentManager::new(),
+            subagent_parent_id: None,
+            subagent_manager_attached: false,
             subscribers: Vec::new(),
             messages: Arc::new(RwLock::new(Vec::new())),
             tool_cache: Cache::builder()
@@ -743,6 +752,9 @@ impl Agent {
             mcp: None,
             cassette_replay: false,
             process_lifecycle: Arc::new(parking_lot::Mutex::new(Vec::new())),
+            script_worker: None,
+            #[cfg(feature = "script")]
+            script_run_id: String::new(),
         };
         // Always attach userspace workspace sandbox (path confinement for FS tools).
         agent.ensure_userspace_sandbox();
@@ -931,6 +943,7 @@ impl Agent {
     /// when a host wants its own manager to obey this agent's authority.
     pub fn subagent_authority(&self) -> crate::subagent::SubagentAuthority {
         crate::subagent::SubagentAuthority {
+            script_worker: self.script_worker.clone(),
             policy: self.policy.clone(),
             scope: self.scope_profile.as_ref().map(|profile| profile.scope),
             authorizer: self.authorizer.clone(),
@@ -953,6 +966,7 @@ impl Agent {
         max_tool_iterations: usize,
     ) {
         self.policy = policy;
+        self.script_worker = authority.script_worker.clone();
         if let Some(scope) = authority.scope {
             self.scope = scope;
             self.scope_profile = Some(mode::profile(scope));
@@ -1119,8 +1133,48 @@ impl Agent {
         self.personality = Some(personality);
     }
 
+    /// Attach a shared family. `parent_id` is set only for a worker in that family.
+    pub fn set_subagent_manager(
+        &mut self,
+        mut manager: crate::subagent::SubagentManager,
+        parent_id: Option<String>,
+    ) {
+        // ToolContext supplies provider/tools per call; do not retain a registry/manager cycle.
+        manager.clear_execution_context();
+        self.subagent_manager = manager;
+        self.subagent_parent_id = parent_id;
+        self.subagent_manager_attached = true;
+    }
+
+    fn selected_subagent_manager(&self) -> crate::subagent::SubagentManager {
+        if self.subagent_manager_attached {
+            self.subagent_manager.clone()
+        } else {
+            self.tools
+                .subagent_manager()
+                .unwrap_or_else(|| self.subagent_manager.clone())
+        }
+    }
+
     pub fn cancel(&self) {
         self.turn_cancellation.cancel();
+        let mut manager = self.selected_subagent_manager();
+        if let Some(id) = &self.subagent_parent_id {
+            let _ = manager.cancel(id);
+        } else {
+            for handle in manager.list() {
+                let _ = manager.cancel(handle.id());
+            }
+        }
+    }
+
+    /// An inspection error means owned process execution has not been proved settled.
+    pub fn process_settlement_error(&self) -> Option<String> {
+        self.exec.settlement_control().error()
+    }
+    /// Retry process observation/cleanup without re-signalling an owned group.
+    pub fn retry_process_settlement(&self) {
+        self.exec.settlement_control().retry();
     }
 
     pub fn cancellation_handle(&self) -> CancellationHandle {
@@ -1570,6 +1624,51 @@ impl Agent {
     /// Run a prompt through the agent loop.
     /// Streams events to subscribers, executes tools, cycles turns.
     pub async fn prompt(&mut self, text: &str) -> Result<(), AgentError> {
+        #[cfg(feature = "script")]
+        {
+            self.script_run_id = uuid::Uuid::new_v4().to_string();
+        }
+        let mut manager = self.selected_subagent_manager();
+        let parent_id = self.subagent_parent_id.clone();
+        let cancellation = self.cancellation_handle();
+        let mut notifications = cancellation.subscribe_cancel();
+        let result = {
+            let turn = self.prompt_inner(text);
+            tokio::pin!(turn);
+            tokio::select! {
+                result=&mut turn=>result,
+                _=notifications.changed()=> {
+                    // A cancel racing initial token reset must also cancel the new token.
+                    cancellation.cancel();
+                    for h in manager.list() {
+                        if h.parent_id()==parent_id {let _=manager.cancel(h.id());}
+                    }
+                    turn.await
+                }
+            }
+        };
+        if result.is_err() {
+            let children = manager
+                .list()
+                .into_iter()
+                .filter(|h| h.parent_id() == parent_id)
+                .collect::<Vec<_>>();
+            for h in &children {
+                let _ = manager.cancel(h.id());
+            }
+            for child in children {
+                child.wait().await;
+            }
+        }
+        #[cfg(feature = "script")]
+        self.exec.wait_scripts_for(Some(&self.script_run_id)).await;
+        if result.is_ok() {
+            self.emit(Event::AgentEnd);
+        }
+        result
+    }
+
+    async fn prompt_inner(&mut self, text: &str) -> Result<(), AgentError> {
         let provider = self.provider.clone().ok_or(AgentError::NoProvider)?;
         let tokens = self.context_tokens();
         let context_window = self.context_window();
@@ -2166,7 +2265,6 @@ impl Agent {
         }
 
         self.after_prompt_hooks().await;
-        self.emit(Event::AgentEnd);
         Ok(())
     }
 
@@ -2297,6 +2395,18 @@ impl Agent {
                     continue;
                 }
                 let ctx = Arc::clone(ctx);
+                #[cfg(feature = "script")]
+                let (ctx, script_dispatch) = if normalize_tool_name(&call.name) == "script" {
+                    let lease = self.exec.reserve_script_for(Some(&self.script_run_id));
+                    let mut owned = (*ctx).clone();
+                    owned.script_lease = Some(lease.clone());
+                    (
+                        Arc::new(owned),
+                        Some(crate::tools::exec::ScriptDispatchGuard(lease)),
+                    )
+                } else {
+                    (ctx, None)
+                };
                 let tools = Arc::clone(&self.tools);
                 let policy = self.policy.clone();
                 let scope_profile = self.scope_profile.clone();
@@ -2308,6 +2418,8 @@ impl Agent {
                 let (tx, rx) = tokio::sync::mpsc::channel(1);
                 let task_call = call.clone();
                 let handle = tokio::spawn(async move {
+                    #[cfg(feature = "script")]
+                    let _script_dispatch = script_dispatch;
                     let result = Agent::run_tool_call(
                         &tools,
                         &policy,
@@ -2716,6 +2828,11 @@ impl Agent {
 
     fn tool_context(&self) -> ToolContext {
         let mut tool_ctx = ToolContext::new(self.workspace_root.clone());
+        tool_ctx.script_worker = self.script_worker.clone();
+        #[cfg(feature = "script")]
+        {
+            tool_ctx.script_run_id = Some(self.script_run_id.clone());
+        }
         tool_ctx.provider = self.provider.clone();
         tool_ctx.tools = Some(Arc::clone(&self.tools));
         tool_ctx.os_sandbox_required = self.policy.enable_os_sandbox && self.os_sandbox.is_none();
@@ -2728,6 +2845,7 @@ impl Agent {
         tool_ctx.sandbox_layer = crate::sandbox::SandboxLayer::Userspace;
         tool_ctx.sandbox_retries = Some(Arc::clone(&self.sandbox_retries));
         tool_ctx.exec = Some(Arc::clone(&self.exec));
+        tool_ctx.process_settlement = self.exec.settlement_control();
         tool_ctx.subtasks = Some(Arc::clone(&self.subtasks));
         tool_ctx.evidence = Some(Arc::clone(&self.evidence));
         tool_ctx.allow_complete_subtask = self.subtasks_enabled;
@@ -2736,6 +2854,17 @@ impl Agent {
         tool_ctx.patch_hunks = Some(Arc::clone(&self.patch_hunks));
         tool_ctx.process_lifecycle = Some(Arc::clone(&self.process_lifecycle));
         tool_ctx.subagent_authority = Some(self.subagent_authority());
+        tool_ctx.subagent_manager = Some(self.selected_subagent_manager());
+        tool_ctx.subagent_parent_id = self.subagent_parent_id.clone();
+        if let Some(id) = &self.subagent_parent_id {
+            if self
+                .selected_subagent_manager()
+                .get(id)
+                .is_some_and(|h| h.status() == crate::subagent::SubagentStatus::Stopping)
+            {
+                self.turn_cancellation.cancel();
+            }
+        }
         tool_ctx.context_artifacts = Some(Arc::new(self.context_artifact_store()));
         #[cfg(feature = "ipc")]
         {
