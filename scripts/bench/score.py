@@ -20,6 +20,7 @@ from pathlib import Path
 DATASET = "SWE-bench/SWE-bench_Verified"
 REVISION = "78f471bf655a3137b2e8a75af1501690ec009ec3"
 SCORER = "5.0.2"
+CONTAINER_LIMITS = dict(Memory=6 * 1024**3, PidsLimit=1024, NetworkMode="none")
 
 
 def digest(path):
@@ -100,6 +101,31 @@ def load_bundle(directory):
     return meta, predictions
 
 
+def enforce_container_limits(client):
+    """Apply limits at the persistent API boundary; verify before any start."""
+    create = client.api.create_container
+    observations = []
+
+    def limited_create(*args, **kwargs):
+        host = dict(kwargs.get("host_config") or {})
+        host.update(CONTAINER_LIMITS)
+        kwargs["host_config"] = host
+        result = create(*args, **kwargs)
+        try:
+            actual = client.api.inspect_container(result["Id"])["HostConfig"]
+            observed = {key: actual.get(key) for key in ("Memory", "PidsLimit", "NetworkMode")}
+            if observed != {key: host[key] for key in observed}:
+                raise RuntimeError("daemon did not apply evaluation container limits")
+            observations.append(dict(container_id=result["Id"], host_config=observed))
+        except Exception:
+            client.api.remove_container(result["Id"], force=True)
+            raise
+        return result
+
+    client.api.create_container = limited_create
+    return observations
+
+
 def run(bundle_dir, output, shard, shards):
     """One image at a time, no live model calls, no filesystem-wide pruning."""
     from datasets import load_dataset
@@ -117,17 +143,13 @@ def run(bundle_dir, output, shard, shards):
     output.mkdir(parents=True, exist_ok=False)
     dataset = {r["instance_id"]: r for r in load_dataset(DATASET, revision=REVISION, split="test")}
     client = docker.from_env()
-    # Memory and PID limits also apply to gold controls and every model patch.
-    create = client.containers.create
-
-    def limited_create(*args, **kwargs):
-        return create(*args, **kwargs, mem_limit="6g", pids_limit=1024, network_mode="none")
-
-    client.containers.create = limited_create
+    observations = enforce_container_limits(client)
     provenance = dict(dataset=DATASET, revision=REVISION, scorer=SCORER,
                       predictions_sha256=meta["predictions_sha256"],
                       python=platform.python_version(), machine=platform.machine(),
-                      timeout_seconds=1800, memory_limit="6g", pids_limit=1024, network="none",
+                      timeout_seconds=1800,
+                      requested_host_config=CONTAINER_LIMITS,
+                      isolation_evidence="per-cell inspected_host_configs; requests alone are not proof",
                       workflow_run_id=__import__("os").environ.get("GITHUB_RUN_ID"))
     write(output / "provenance.json", provenance)
     results = output / "cells.jsonl"
@@ -157,7 +179,11 @@ def run(bundle_dir, output, shard, shards):
                     try:
                         # Unique per model: upstream names containers by run+instance.
                         run_id = f"rotary-{shard}-{name}"
+                        observation_start = len(observations)
                         run_instance(spec, prediction, client, run_id, timeout=1800)
+                        cell["inspected_host_configs"] = observations[observation_start:]
+                        if not cell["inspected_host_configs"]:
+                            raise RuntimeError("no inspected evaluation container")
                         report = Path("logs/run_evaluation") / run_id / name / iid / "report.json"
                         evidence = json.loads(report.read_text())[iid]
                         if type(evidence.get("resolved")) is not bool:
@@ -197,7 +223,14 @@ def summarize(bundle_dir, files, out, calibration):
     gold_pass = {i for i in ids if results.get(("gold", i), {}).get("resolved") is True}
     gold_fail = {i for i in ids if results.get(("gold", i), {}).get("resolved") is False}
     gold_unscored = set(ids) - gold_pass - gold_fail
+    evaluated = [c for c in results.values() if c.get("evidence_sha256")]
+    isolation_verified = bool(evaluated) and all(
+        c.get("inspected_host_configs") and all(o.get("host_config") == CONTAINER_LIMITS
+                                               for o in c["inspected_host_configs"])
+        for c in evaluated)
     lines = ["# Historical patch evaluation", "",
+             "**Isolation: daemon configurations verified for graded cells.**" if isolation_verified else
+             "**Isolation NOT verified: these data do not establish isolated evaluation results.**", "",
              f"**Gold controls: {len(gold_pass)}/{len(ids)} passed; {len(gold_fail)} failed; "
              f"{len(gold_unscored)} missing/error.**", "",
              "Gold-failed and gold-unscored instances are excluded from eligible rates, listed below.",
@@ -242,15 +275,18 @@ def summarize(bundle_dir, files, out, calibration):
         if cell.get("upload_exclusion"):
             lines.append(f"- {cell['model_name_or_path']}/{cell['instance_id']}: {cell['upload_exclusion']}; original patch not uploaded or scored")
     if calibration:
-        lines += ["", "## Calibration", "", "PASS" if not mismatches else "STOP: disagrees with historical official evidence"]
+        verdict = "STOP: disagrees with historical official evidence" if mismatches else (
+            "PASS" if isolation_verified else "STOP: missing verified container isolation")
+        lines += ["", "## Calibration", "", verdict]
         lines += [f"- {m['model']}/{m['instance_id']}: expected {m['expected']}, actual {m['actual']}, gold {m['gold']}" for m in mismatches]
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
     write(out / "summary.json", dict(gold_pass=len(gold_pass), gold_fail=sorted(gold_fail),
                                       gold_unscored=sorted(gold_unscored), models=summary,
+                                      isolation_verified=isolation_verified,
                                       calibration_mismatches=mismatches))
     (out / "REPORT.md").write_text("\n".join(lines) + "\n")
-    return not mismatches
+    return not mismatches and (not calibration or isolation_verified)
 
 
 def main():

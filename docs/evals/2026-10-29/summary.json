@@ -1,4 +1,8 @@
 {
+  "isolation_verified": false,
+  "evaluation_status": "bridge_networked_historical_results; not_isolated",
+  "published_run_network_access": true,
+  "provenance_correction": "The Docker SDK collection monkeypatch was ineffective. The published run had bridge-network access; requested per-container memory/PID limits were not applied. Original daemon inspections were not saved. Archive isolation fields are erroneous requested values, not observations. Independent replay reproduced verdicts and identified network-sensitive test-level differences without changing unresolved verdicts.",
   "calibration_mismatches": [],
   "gold_fail": [
     "psf__requests-1724",

@@ -158,17 +158,24 @@ then first n. Seed 0 / n=20 starts with meriyah-explicit-resource-declarations.
 
 ## Reproducible historical scoring and usage coverage
 
-[The calibrated full historical evaluation](evals/2026-10-29/REPORT.md)
-includes durable grading evidence, per-image digests and all exclusions.
-Four of 500 reference patches failed under this scorer configuration;
-OMP and pi retain unscored cells, so their observed rates are lower bounds.
+[The full historical evaluation and isolation correction](evals/2026-10-29/REPORT.md)
+retain durable grading evidence, per-image digests and all exclusions.
+**Its isolation claims are withdrawn:** the old Docker collection patch
+did not apply memory/PID limits or disable networking. Counts remain
+historical observations, not isolated evaluation results; all 500 tasks
+could behave differently under enforced isolation. The reproduced counts
+are retained as bridge-networked results; no mixed-condition subset rerun
+has replaced them. Four reference patches failed in that run, and OMP/pi
+also retain unscored cells.
 
 `scripts/bench/score.py bundle` exports only patches and allowlisted cell
 metadata. Inspect the bundle and scan it for credentials before uploading;
 never upload agent logs or environment dumps. `score.py run` uses pinned
 SWE-bench Verified data and SWE-bench 5.0.2, records the actual Epoch image
 digest, scores the reference patch first, then scores each harness patch in
-an isolated container. Images are pulled and deleted one instance at a time.
+a container whose limits are inspected before it starts. Requested and
+observed configuration are separate; missing inspection evidence prevents
+an isolation claim. Images are pulled and deleted one instance at a time.
 The manual-only `.github/workflows/score.yml` parallelizes instances across
 20 shards; it has no push or scheduled trigger.
 

@@ -2,12 +2,78 @@
 import json
 import tempfile
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
 from pathlib import Path
 
 import score
 
 
 class ScoringTests(unittest.TestCase):
+    def test_limits_reach_fresh_collections_and_fail_closed_on_bad_inspection(self):
+        class API:
+            ignore_limits = False
+            removed = False
+
+            def create_container(self, **kwargs):
+                self.config = {} if self.ignore_limits else kwargs["host_config"]
+                return {"Id": "fixture"}
+
+            def inspect_container(self, _):
+                return {"HostConfig": self.config}
+
+            def remove_container(self, _, force):
+                self.removed = force
+
+        class Client:
+            api = API()
+
+            @property
+            def containers(self):
+                return SimpleNamespace(create=self.api.create_container)
+
+        client = Client()
+        observed = score.enforce_container_limits(client)
+        self.assertIsNot(client.containers, client.containers)
+        client.containers.create(image="fixture", host_config={"CapAdd": ["SYS_ADMIN"]})
+        self.assertEqual(client.api.config, dict(Memory=6442450944, PidsLimit=1024,
+                                                NetworkMode="none", CapAdd=["SYS_ADMIN"]))
+        self.assertEqual(observed[0]["host_config"], dict(Memory=6442450944, PidsLimit=1024, NetworkMode="none"))
+        client.api.ignore_limits = True
+        with self.assertRaisesRegex(RuntimeError, "daemon did not apply"):
+            client.containers.create(image="fixture")
+        self.assertTrue(client.api.removed)
+        self.assertEqual(len(observed), 1)
+
+    def test_real_docker_sdk_serializes_limits_and_inspects_returned_configuration(self):
+        try:
+            import docker
+        except ImportError:
+            self.skipTest("Docker SDK unavailable; run again in the scorer environment")
+        client = docker.DockerClient(version="1.45")
+        requests = []
+
+        def post(_, **kwargs):
+            requests.append(kwargs["data"])
+            return {"Id": "fixture"}
+
+        def inspect(_):
+            return {"Id": "fixture", "HostConfig": requests[-1]["HostConfig"]}
+
+        with patch.object(client.api, "_post_json", side_effect=post), \
+             patch.object(client.api, "_result", side_effect=lambda response, *args: response), \
+             patch.object(client.api, "inspect_container", side_effect=inspect):
+            observed = score.enforce_container_limits(client)
+            for _ in range(2):
+                client.containers.create("fixture", command="true", cap_add=["SYS_ADMIN"])
+            self.assertEqual(len(observed), 2)
+            for request in requests:
+                self.assertEqual(request["HostConfig"]["Memory"], 6442450944)
+                self.assertEqual(request["HostConfig"]["PidsLimit"], 1024)
+                self.assertEqual(request["HostConfig"]["NetworkMode"], "none")
+                self.assertEqual(request["HostConfig"]["CapAdd"], ["SYS_ADMIN"])
+        client.close()
+
     def test_bundle_retains_missing_cells_without_exporting_private_metadata(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -60,6 +126,20 @@ class ScoringTests(unittest.TestCase):
             self.assertEqual(report["models"]["tk"], dict(planned=4, resolved=2, eligible=2,
                              eligible_resolved=1, scored=1, gold_excluded=2, status="INCOMPLETE"))
             self.assertEqual(len(report["calibration_mismatches"]), 3)
+            self.assertFalse(report["isolation_verified"])
+            for cell in results:
+                cell["evidence_sha256"] = "fixture"
+                cell["inspected_host_configs"] = [dict(host_config=dict(
+                    Memory=6442450944, PidsLimit=1024, NetworkMode="none"))]
+            (root / "cells.jsonl").write_text("".join(json.dumps(c) + "\n" for c in results))
+            score.summarize(root, [root / "cells.jsonl"], root / "report", False)
+            verified = json.loads((root / "report/summary.json").read_text())
+            self.assertTrue(verified["isolation_verified"])
+            results[0]["inspected_host_configs"][0]["host_config"]["NetworkMode"] = "bridge"
+            (root / "cells.jsonl").write_text("".join(json.dumps(c) + "\n" for c in results))
+            score.summarize(root, [root / "cells.jsonl"], root / "report", False)
+            unverified = json.loads((root / "report/summary.json").read_text())
+            self.assertFalse(unverified["isolation_verified"])
 
 
 if __name__ == "__main__":
