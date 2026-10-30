@@ -193,9 +193,15 @@ elseif command == "provenance" then
   end
   local repo = common.quote(args[1])
   local status = capture("git -C " .. repo .. " status --porcelain --untracked-files=no")
+  local dataset_revision = "unrecorded"
+  if args[4] then
+    local ok, data = pcall(common.read_json, args[4]:gsub("%.jsonl$", ".meta.json"))
+    if ok and data.sample_sha256 == sha256(args[4]) then dataset_revision = data.revision end
+  end
   io.write(json.encode({
     git_commit = capture("git -C " .. repo .. " rev-parse HEAD") or json.null,
     git_dirty = status ~= nil,
+    dataset_revision = dataset_revision,
     models_sha256 = sha256(args[2]),
     instance_ids_sha256 = sha256(args[3]),
     started_utc = os.date("!%Y-%m-%dT%H:%M:%SZ"),

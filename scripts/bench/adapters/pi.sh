@@ -55,6 +55,7 @@ if [[ ! -f "$PROMPT_FILE" ]]; then
 fi
 
 PROMPT=$(cat "$PROMPT_FILE")
+BENCH_ROOT=$(cd "$(dirname "$0")/.." && pwd)
 help_text=$("$PI" --help 2>&1 || true)
 cd "$TASK_DIR"
 # ask_question is how Pi stops on "Which option?" in --print mode.
@@ -62,20 +63,6 @@ cmd=("$PI" --provider "$PROVIDER" --model "$MODEL" --thinking "$EFFORT" --print 
 if grep -q -- 'ask_question' <<<"$help_text"; then
   cmd+=(--exclude-tools ask_question)
 fi
+if grep -q -- '--mode' <<<"$help_text"; then cmd+=(--mode json); fi
 cmd+=("$PROMPT")
-
-run() {
-  "${cmd[@]}" </dev/null
-}
-
-if [[ -n "${BENCH_AGENT_TIMEOUT:-}" ]]; then
-  if command -v gtimeout >/dev/null 2>&1; then
-    gtimeout --signal=TERM "$BENCH_AGENT_TIMEOUT" "${cmd[@]}" </dev/null
-  elif command -v timeout >/dev/null 2>&1; then
-    timeout --signal=TERM "$BENCH_AGENT_TIMEOUT" "${cmd[@]}" </dev/null
-  else
-    run
-  fi
-else
-  run
-fi
+exec python3 "$BENCH_ROOT/lib/execute.py" pi "$PROMPT_FILE" -- "${cmd[@]}"

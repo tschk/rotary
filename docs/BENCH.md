@@ -155,3 +155,65 @@ from another task's or a stale trial's reward.
 
 Sample matches Pier: filesystem iterdir order, then Random(seed).shuffle,
 then first n. Seed 0 / n=20 starts with meriyah-explicit-resource-declarations.
+
+## Reproducible historical scoring and usage coverage
+
+[The full historical evaluation and isolation correction](evals/2026-10-29/REPORT.md)
+retain durable grading evidence, per-image digests and all exclusions.
+**Its isolation claims are withdrawn:** the old Docker collection patch
+did not apply memory/PID limits or disable networking. Counts remain
+historical observations, not isolated evaluation results; all 500 tasks
+could behave differently under enforced isolation. The reproduced counts
+are retained as bridge-networked results; no mixed-condition subset rerun
+has replaced them. Four reference patches failed in that run, and OMP/pi
+also retain unscored cells.
+
+`scripts/bench/score.py bundle` exports only patches and allowlisted cell
+metadata. Inspect the bundle and scan it for credentials before uploading;
+never upload agent logs or environment dumps. `score.py run` uses pinned
+SWE-bench Verified data and SWE-bench 5.0.2, records the actual Epoch image
+digest, scores the reference patch first, then scores each harness patch in
+a container whose limits are inspected before it starts. Requested and
+observed configuration are separate; missing inspection evidence prevents
+an isolation claim. Images are pulled and deleted one instance at a time.
+The manual-only `.github/workflows/score.yml` parallelizes instances across
+20 shards; it has no push or scheduled trigger.
+
+Calibration must reproduce every historical official verdict (codex 7/10,
+tk 6/10) and pass every reference patch before a full run is permitted.
+Disagreement is a finding, not permission to change the expected results.
+Reports retain every planned cell, distinguish missing scores from failures,
+and show reference-patch failures and missing reference verdicts alongside
+both planned-sample and reference-eligible denominators. An eligible-only
+rate is conditional on those exclusions, not a rate for the original sample.
+
+New generation runs record the harness executable version and SHA-256,
+arguments with the prompt replaced by its digest, timeout, requested model,
+effort, dataset revision and sample checksum. Historical provenance remains
+explicitly unrecorded; it cannot be reconstructed from a filename.
+
+Terminal JSON usage events are captured for codex, pi, omp and opencode.
+tk/fx or unsupported event formats retain unknown usage, not zero tokens.
+Interrupted runs can have incomplete subtotals; the report states coverage.
+Costs are either harness estimates or calculated from an explicit `pricing`
+object in a model entry: `input`, `output`, `cache_read`, `cache_write` in
+USD per million tokens, plus `source` and `as_of`. Without a usable estimate
+or price snapshot, cost stays unknown. These are estimates, not invoices;
+subscription charges and missing historical token usage are not inferred.
+
+### Historical OMP workspace-collection defect
+
+The full500 OMP predictions for `sphinx-doc__sphinx-8593` and
+`sphinx-doc__sphinx-9229` contain entire `.venv311` and `.venv39` trees.
+This is a harness defect: prediction collection captured unrelated workspace
+artifacts and could capture other files, not just virtual environments.
+Both predictions are quarantined whole before upload; their cells stay in
+the planned denominator as unscored, with original patch checksums recorded.
+
+The initial secret scan flagged four Sourcegraph-token matches in the first
+patch. All four are false positives on Git binary-patch index lines for Babel
+`locale-data/{ce_RU,ceb,haw_US,he}.dat`. Decoding each binary payload and
+recomputing its Git blob hash reproduced the flagged value exactly. These
+are content hashes, not live credentials; no rotation or authentication
+probe is needed. Neither environment-bearing patch was uploaded. The final
+allowlisted bundle passed a complete secret scan with no findings.

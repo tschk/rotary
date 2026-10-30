@@ -170,6 +170,7 @@ local function run(style, argv)
   lines[#lines + 1] = "- Docker: " .. pystr(meta.docker or "unknown")
   local prov = meta.provenance
   if type(prov) == "table" then
+    lines[#lines + 1] = "- Dataset revision: " .. pystr(prov.dataset_revision or "unrecorded")
     lines[#lines + 1] = string.format("- Provenance: rotary `%s`%s, models.json sha256 `%s`, instance set sha256 `%s`, %s → %s",
       pystr(prov.git_commit), prov.git_dirty and " (dirty tree)" or "", pystr(prov.models_sha256),
       pystr(prov.instance_ids_sha256), pystr(prov.started_utc), pystr(meta.finished_utc))
@@ -243,17 +244,42 @@ local function run(style, argv)
   for _, issue in ipairs(issues) do lines[#lines + 1] = "- " .. issue end
 
   lines[#lines + 1] = ""
+  lines[#lines + 1] = "## Tokens and cost coverage"
+  lines[#lines + 1] = ""
+  lines[#lines + 1] = "Missing usage/cost is unknown, not zero. Costs are harness estimates or explicit dated rate snapshots, not invoices."
+  lines[#lines + 1] = ""
+  lines[#lines + 1] = "| harness | model | complete usage/planned | priced/planned | known USD subtotal |"
+  lines[#lines + 1] = "|---|---|---|---|---|"
+  for _, g in ipairs(groups) do
+    local known, priced, usd = 0, 0, 0
+    for _, cell in ipairs(g.rows) do
+      local e = cell.execution
+      if type(e) == "table" and e ~= common.json.null and e.usage_complete == true then
+        known = known + 1
+        if type(e.cost_usd) == "number" then priced = priced + 1; usd = usd + e.cost_usd end
+      end
+    end
+    lines[#lines + 1] = string.format("| %s | %s | %d/%d | %d/%d | %s |",
+      g.harness, g.model, known, #g.rows, priced, #g.rows, priced > 0 and string.format("%.6f", usd) or "unknown")
+  end
+
+  lines[#lines + 1] = ""
   lines[#lines + 1] = "## Cells"
   lines[#lines + 1] = ""
-  lines[#lines + 1] = "| harness | model | instance_id | resolved | seconds | unscored reason |"
-  lines[#lines + 1] = "|---|---|---|---|---|---|"
+  lines[#lines + 1] = "| harness | model | instance_id | resolved | seconds | unscored reason | input/output/cache-read/cache-write | USD estimate | usage complete |"
+  lines[#lines + 1] = "|---|---|---|---|---|---|---|---|---|"
   for _, cell in ipairs(rows) do
     local resolved_text, reason = "null", unscored_reason(cell)
     if cell.missing then resolved_text = "missing" end
     if cell.resolved == true then resolved_text, reason = "true", "" end
     if cell.resolved == false then resolved_text, reason = "false", "" end
-    lines[#lines + 1] = string.format("| %s | %s | %s | %s | %s | %s |",
-      cell.harness, cell.model, cell.instance_id, resolved_text, pystr(cell.seconds or ""), reason)
+    local execution = cell.execution or {}
+    local tokens = type(execution.tokens) == "table" and execution.tokens ~= common.json.null and execution.tokens or nil
+    local token_text = tokens and string.format("%s/%s/%s/%s", tokens.input, tokens.output, tokens.cache_read, tokens.cache_write) or "unknown"
+    local cost = type(execution.cost_usd) == "number" and string.format("%.6f", execution.cost_usd) or "unknown"
+    lines[#lines + 1] = string.format("| %s | %s | %s | %s | %s | %s | %s | %s | %s |",
+      cell.harness, cell.model, cell.instance_id, resolved_text, pystr(cell.seconds or ""), reason,
+      token_text, cost, execution.usage_complete == true and "yes" or "no")
   end
   lines[#lines + 1] = ""
   local report = table.concat(lines, "\n")
