@@ -1,7 +1,9 @@
-"""Public upload and reporting contracts, independent of Docker and network."""
+"""Scoring contracts; set ROTARY_TEST_DOCKER=1 for a real-daemon smoke test."""
 import json
+import os
 import tempfile
 import unittest
+import uuid
 from types import SimpleNamespace
 from unittest.mock import patch
 from pathlib import Path
@@ -73,6 +75,58 @@ class ScoringTests(unittest.TestCase):
                 self.assertEqual(request["HostConfig"]["NetworkMode"], "none")
                 self.assertEqual(request["HostConfig"]["CapAdd"], ["SYS_ADMIN"])
         client.close()
+
+    @unittest.skipUnless(os.environ.get("ROTARY_TEST_DOCKER") == "1", "real Docker test is opt-in")
+    def test_real_daemon_limits_before_start_and_mismatch_removal(self):
+        import docker
+
+        client = docker.from_env()
+        containers = []
+        pulled = False
+        image = None
+        try:
+            try:
+                image = client.images.get("busybox:1.37")
+            except docker.errors.ImageNotFound:
+                image = client.images.pull("busybox:1.37")
+                pulled = True
+            observations = score.enforce_container_limits(client)
+            prefix = "rotary-isolation-" + uuid.uuid4().hex
+            for index in range(2):
+                container = client.containers.create(image.id, command=["sleep", "60"],
+                                                     name=f"{prefix}-{index}", cap_add=["SYS_ADMIN"])
+                containers.append(container)
+                container.reload()
+                self.assertFalse(container.attrs["State"]["Running"])
+                host = container.attrs["HostConfig"]
+                self.assertEqual({key: host[key] for key in ("Memory", "PidsLimit", "NetworkMode")},
+                                 dict(Memory=6442450944, PidsLimit=1024, NetworkMode="none"))
+                container.start()
+                interfaces = container.exec_run(["ls", "/sys/class/net"])
+                self.assertEqual(interfaces.exit_code, 0)
+                self.assertEqual(interfaces.output.strip(), b"lo")
+            self.assertEqual(len(observations), 2)
+
+            inspect = client.api.inspect_container
+            rejected_name = prefix + "-rejected"
+
+            def wrong_inspection(identifier):
+                attrs = inspect(identifier)
+                attrs["HostConfig"]["NetworkMode"] = "bridge"
+                return attrs
+
+            with patch.object(client.api, "inspect_container", side_effect=wrong_inspection):
+                with self.assertRaisesRegex(RuntimeError, "daemon did not apply"):
+                    containers.append(client.containers.create(image.id, name=rejected_name))
+            with self.assertRaises(docker.errors.NotFound):
+                inspect(rejected_name)
+            self.assertEqual(len(observations), 2)
+        finally:
+            for container in containers:
+                container.remove(force=True)
+            if pulled and image is not None:
+                client.images.remove(image.id)
+            client.close()
 
     def test_bundle_retains_missing_cells_without_exporting_private_metadata(self):
         with tempfile.TemporaryDirectory() as tmp:
