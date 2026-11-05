@@ -44,6 +44,8 @@ grep -Fq '| tk | smoke | n/a (no official eval) | — | 100% | 0/1 (0%) | NOT SC
 grep -Fq '| tk | smoke | null-cell | null | 3 |' "$smoke/report/REPORT.md"
 echo "ok Lua cell/report null handling"
 "$ROOT/test.sh"
+PYTHONDONTWRITEBYTECODE=1 python3 "$ROOT/test_score.py"
+PYTHONDONTWRITEBYTECODE=1 python3 "$ROOT/test_execution.py"
 
 "$ROOT/run.sh" --help >/dev/null
 echo "ok run.sh --help"
