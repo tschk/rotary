@@ -55,8 +55,9 @@ and scheduling. Each item needs an end-to-end contract test before release.
   remains supported throughout 0.x and is planned for removal in 1.0. A loaded
   legacy session is written with an integrity header and checksum on its next
   successful `save_jsonl`; saving does not restore skipped records or verify
-  the original file. Preserve fork, projection, and artifact references during
-  recovery. See `src/session.rs`.
+  the original file. Loads with unverified or skipped records warn on standard
+  error, but hosts that discard standard error can miss the warning. Preserve
+  fork, projection, and artifact references during recovery. See `src/session.rs`.
 - **MCP concurrency and rich resources.** `McpClient` holds one mutex across
   each request, and `read_resource` returns the first text item. Discovery
   follows tool and resource pagination. Support concurrent request IDs,
@@ -72,7 +73,8 @@ and scheduling. Each item needs an end-to-end contract test before release.
   pipelines and durable worker handles exist. Restored interrupted workers
   report recorded calls without results; they are not replayed because their
   effects may already have occurred. Snapshots may omit effects, so hosts must
-  not treat the report as exhaustive. Expose checkpoints and cancellation to
+  not treat the report as exhaustive. Restoration warns on standard error,
+  which hosts must retain. Expose checkpoints and cancellation to
   hosts. Keep approval and scheduling with the host. See `src/agent/mod.rs`,
   `src/subagent.rs`, and `src/agent/pipeline.rs`.
 

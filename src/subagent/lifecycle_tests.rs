@@ -217,6 +217,22 @@ async fn restored_worker_reports_calls_with_unknown_outcomes() {
     manager.shutdown_and_wait(Duration::from_secs(3)).await;
 }
 
+#[test]
+fn interrupted_restore_warns_without_a_logging_subscriber() {
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "subagent::lifecycle_tests::restored_worker_reports_calls_with_unknown_outcomes",
+            "--nocapture",
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert!(String::from_utf8(output.stderr)
+        .unwrap()
+        .contains("WARNING: interrupted worker recovery did not replay tool calls"));
+}
+
 #[tokio::test]
 async fn empty_and_oversized_requests_fail_before_reservation() {
     let (mut manager, _, _) = pending_manager();

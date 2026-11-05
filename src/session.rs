@@ -483,6 +483,13 @@ impl Session {
                 skipped_lines.push(index + 1 + line_offset);
             }
         }
+        if !integrity_verified || !skipped_lines.is_empty() {
+            let _ = writeln!(
+                std::io::stderr().lock(),
+                "WARNING: session recovery requires attention: integrity_verified={integrity_verified}, skipped_records={}; inspect load_jsonl_with_report before using recovered data",
+                skipped_lines.len()
+            );
+        }
         Ok((
             session,
             SessionRecoveryReport {
@@ -1041,6 +1048,22 @@ not valid json at all
         assert!(report.skipped_lines.is_empty());
         assert_eq!(upgraded.entries.len(), 1);
         assert_eq!(upgraded.entries[0].content, "preserved message");
+    }
+
+    #[test]
+    fn legacy_load_warns_even_if_report_is_discarded() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "session::tests::load_jsonl_recovers_from_malformed_lines",
+                "--nocapture",
+            ])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        assert!(stderr.contains("WARNING: session recovery requires attention"));
+        assert!(stderr.contains("integrity_verified=false"));
     }
 
     #[test]

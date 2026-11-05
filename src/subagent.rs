@@ -20,6 +20,7 @@ use parking_lot::{Mutex, RwLock};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1047,6 +1048,12 @@ impl SubagentManager {
         }
         if !terminal(snapshot.status) || snapshot.settlement_error.is_some() {
             snapshot.status = SubagentStatus::Interrupted;
+        }
+        if snapshot.status == SubagentStatus::Interrupted {
+            let _ = writeln!(
+                std::io::stderr().lock(),
+                "WARNING: interrupted worker recovery did not replay tool calls; inspect recovery_report and external state before acting"
+            );
         }
         let process_settlement = Arc::new(crate::tools::exec::ProcessSettlementControl::default());
         if let Some(error) = snapshot.settlement_error {

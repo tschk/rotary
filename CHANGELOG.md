@@ -81,6 +81,8 @@ Patch release on crates.io `0.7.1` (git `Cargo.toml` had lagged at `0.6.5`).
   `..`.
 
 ### Added
+- Session recovery with unverified or skipped records, and interrupted worker
+  restoration, write warnings to standard error even without a logging subscriber.
 - Interrupted worker recovery reports identify recorded tool calls without a
   result and explain why they were not replayed; snapshots may omit effects.
 - Durable session `projection` ledger so semantic compaction survives the next provider request.
