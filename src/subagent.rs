@@ -2281,13 +2281,15 @@ mod tests {
                 for requested in modes {
                     for from in scopes {
                         for to in scopes {
-                            for live in [false, true] {
+                            for live in [None, Some(false), Some(true)] {
                                 let mut parent = Agent::new();
                                 parent.set_scope(parent_scope);
                                 let mut policy = Policy::read_only();
                                 policy.mode = parent_mode;
                                 parent.set_policy(policy);
-                                parent.set_authorizer(Arc::new(ApprovalGate(live)));
+                                if let Some(live) = live {
+                                    parent.set_authorizer(Arc::new(ApprovalGate(live)));
+                                }
                                 let mut child = build_child_agent(
                                     Arc::new(OneToolProvider {
                                         emitted: AtomicUsize::new(0),
@@ -2305,7 +2307,7 @@ mod tests {
                                 for scope in [from, to] {
                                     child.set_scope(scope);
                                     let case = || {
-                                        format!("parent={parent_mode:?}/{parent_scope:?}, child={requested:?}, transition={from:?}->{to:?}, at={scope:?}")
+                                        format!("parent={parent_mode:?}/{parent_scope:?}, child={requested:?}, transition={from:?}->{to:?}, gate={live:?}, at={scope:?}")
                                     };
                                     assert!(
                                         rank(child.policy.mode) <= rank(parent_mode),
@@ -2333,8 +2335,35 @@ mod tests {
                                     );
                                     let decision =
                                         gate.authorize(&child.policy, "write", "{}", None, None);
-                                    assert_ne!(decision, Decision::Allow, "{}", case());
-                                    if parent_scope == Scope::Coding
+                                    let parent_decision = if crate::mode::tool_allowed(
+                                        &crate::mode::profile(parent_scope),
+                                        "write",
+                                    ) {
+                                        crate::permissions::PolicyAuthorizer::new().authorize(
+                                            &parent.policy,
+                                            "write",
+                                            "{}",
+                                            None,
+                                            None,
+                                        )
+                                    } else {
+                                        Decision::Deny
+                                    };
+                                    let decision_rank = |value| match value {
+                                        Decision::Deny => 0,
+                                        Decision::Ask => 1,
+                                        Decision::Allow => 2,
+                                    };
+                                    assert!(
+                                        decision_rank(decision) <= decision_rank(parent_decision),
+                                        "{}",
+                                        case()
+                                    );
+                                    if live.is_some() {
+                                        assert_ne!(decision, Decision::Allow, "{}", case());
+                                    }
+                                    if live.is_some()
+                                        && parent_scope == Scope::Coding
                                         && parent_mode == PermissionMode::FullAccess
                                         && requested == PermissionMode::FullAccess
                                         && scope == Scope::Coding
