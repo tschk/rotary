@@ -75,6 +75,11 @@ Patch release on crates.io `0.7.1` (git `Cargo.toml` had lagged at `0.6.5`).
 
 ## Unreleased
 
+### Breaking
+- `SessionRecoveryReport` has a new public `integrity_verified` field. Struct
+  literals must supply it, and exhaustive destructuring must include it or use
+  `..`.
+
 ### Added
 - Durable session `projection` ledger so semantic compaction survives the next provider request.
 - Typed `Event::Recovery` for empty-turn Prefill/Nudge and stuck-tool recovery.

@@ -1020,6 +1020,30 @@ not valid json at all
     }
 
     #[test]
+    fn saving_legacy_session_adds_integrity_envelope() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("legacy.jsonl");
+        let entry = serde_json::json!({
+            "id": 1,
+            "parent_id": null,
+            "role": "user",
+            "content": "preserved message"
+        });
+        std::fs::write(&path, format!("{entry}\n")).unwrap();
+
+        let (session, report) = Session::load_jsonl_with_report(&path).unwrap();
+        assert!(!report.integrity_verified);
+        assert!(report.skipped_lines.is_empty());
+        assert_eq!(session.save_jsonl(dir.path()).unwrap(), path);
+
+        let (upgraded, report) = Session::load_jsonl_with_report(&path).unwrap();
+        assert!(report.integrity_verified);
+        assert!(report.skipped_lines.is_empty());
+        assert_eq!(upgraded.entries.len(), 1);
+        assert_eq!(upgraded.entries[0].content, "preserved message");
+    }
+
+    #[test]
     fn saved_session_detects_truncation_and_content_changes() {
         let dir = tempfile::tempdir().unwrap();
         let mut session = Session::new("integrity", "test");

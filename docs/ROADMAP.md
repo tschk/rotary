@@ -51,8 +51,12 @@ and scheduling. Each item needs an end-to-end contract test before release.
   `load_jsonl_with_report` identifies skipped records and whether the envelope
   was verified. Legacy files have no checksum, so truncation or a missing
   header cannot be distinguished from legacy data. Hosts that require
-  integrity must reject unverified reports. Preserve fork, projection, and
-  artifact references during recovery. See `src/session.rs`.
+  integrity must reject unverified reports. Headerless legacy session reading
+  remains supported throughout 0.x and is planned for removal in 1.0. A loaded
+  legacy session is written with an integrity header and checksum on its next
+  successful `save_jsonl`; saving does not restore skipped records or verify
+  the original file. Preserve fork, projection, and artifact references during
+  recovery. See `src/session.rs`.
 - **MCP concurrency and rich resources.** `McpClient` holds one mutex across
   each request, and `read_resource` returns the first text item. Discovery
   follows tool and resource pagination. Support concurrent request IDs,
