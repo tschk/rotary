@@ -960,6 +960,12 @@ struct ToolSelectionAuthorizer {
 }
 
 impl Authorizer for ToolSelectionAuthorizer {
+    fn uses_live_policy(&self) -> bool {
+        self.inherited
+            .as_ref()
+            .is_none_or(|authorizer| authorizer.uses_live_policy())
+    }
+
     fn authorize(
         &self,
         policy: &Policy,
@@ -1600,6 +1606,129 @@ mod tests {
         child.prompt("attempt a write").await.expect("child prompt");
         assert_eq!(approvals.load(Ordering::SeqCst), 1);
         assert_eq!(executed.load(Ordering::SeqCst), 0);
+    }
+
+    #[cfg(all(feature = "providers", feature = "builtin-tools"))]
+    #[tokio::test]
+    async fn filtered_child_retains_live_gate_after_model_scope_transition() {
+        use crate::permissions::{Approver, Decision, PolicyAuthorizer};
+        use crate::provider::{Message, ProviderError, StreamEvent, StreamResult};
+        use std::collections::VecDeque;
+
+        struct Script(Mutex<VecDeque<crate::agent::ToolCall>>);
+        #[async_trait::async_trait]
+        impl Provider for Script {
+            fn id(&self) -> &str {
+                "scope-test"
+            }
+            fn name(&self) -> &str {
+                "scope-test"
+            }
+            async fn stream(
+                &self,
+                _: &[Message],
+                _: &Option<String>,
+                _: &str,
+                _: &[serde_json::Value],
+                _: Option<&str>,
+            ) -> Result<StreamResult, ProviderError> {
+                let mut events = Vec::new();
+                if let Some(call) = self.0.lock().pop_front() {
+                    events.push(Ok(StreamEvent::ToolCall(call)));
+                }
+                events.push(Ok(StreamEvent::Done));
+                Ok(Box::new(futures::stream::iter(events)))
+            }
+        }
+        struct Gate;
+        impl Authorizer for Gate {
+            fn uses_live_policy(&self) -> bool {
+                true
+            }
+            fn authorize(
+                &self,
+                policy: &Policy,
+                tool: &str,
+                args: &str,
+                approver: Option<&dyn Approver>,
+                root: Option<&Path>,
+            ) -> Decision {
+                let decision =
+                    PolicyAuthorizer::new().authorize(policy, tool, args, approver, root);
+                if tool == "write" && decision == Decision::Allow {
+                    Decision::Ask
+                } else {
+                    decision
+                }
+            }
+        }
+        struct Deny(Arc<AtomicUsize>);
+        impl Approver for Deny {
+            fn approve(&self, _: &crate::agent::ToolCall) -> Decision {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                Decision::Deny
+            }
+        }
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("private.txt"), "filtered content").unwrap();
+        let mut parent = Agent::new();
+        parent.set_workspace_root(root.path());
+        parent.set_scope(Scope::Coding);
+        parent.set_policy(Policy::workspace_write().with_os_sandbox(false));
+        parent.set_authorizer(Arc::new(Gate));
+        let approvals = Arc::new(AtomicUsize::new(0));
+        parent.set_approver(Arc::new(Deny(approvals.clone())));
+        let tools = ToolRegistry::new();
+        crate::register_builtin_tools(&tools);
+        let calls = [
+            "write",
+            "enter_plan_mode",
+            "exit_plan_mode",
+            "write",
+            "read",
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(i, name)| crate::agent::ToolCall {
+            id: format!("call-{i}"),
+            name: name.into(),
+            arguments: match name {
+                "write" => r#"{"path":"blocked.txt","content":"blocked"}"#,
+                "read" => r#"{"path":"private.txt"}"#,
+                _ => "{}",
+            }
+            .into(),
+        })
+        .collect();
+        let mut child = build_child_agent(
+            Arc::new(Script(Mutex::new(calls))),
+            Some(Arc::new(tools)),
+            Some(parent.subagent_authority()),
+            &SubagentConfig {
+                allowed_tools: Some(vec![
+                    "write".into(),
+                    "enter_plan_mode".into(),
+                    "exit_plan_mode".into(),
+                ]),
+                denied_tools: Some(vec!["read".into()]),
+                ..SubagentConfig::default()
+            },
+            root.path(),
+        );
+        child.prompt("exercise scope transition").await.unwrap();
+        assert_eq!(approvals.load(Ordering::SeqCst), 2);
+        assert!(!root.path().join("blocked.txt").exists());
+        let messages = child.session.read().messages();
+        let read = messages
+            .iter()
+            .find(|message| message.tool_call_id.as_deref() == Some("call-4"))
+            .unwrap();
+        assert!(
+            read.content.contains("denied by policy"),
+            "{}",
+            read.content
+        );
+        assert!(!read.content.contains("filtered content"));
     }
 
     #[cfg(feature = "providers")]
