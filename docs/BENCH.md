@@ -19,10 +19,27 @@ The benchmark glue requires LuaJIT 2.1 (`brew install luajit` on macOS or
 vendored; no LuaRocks setup is needed. Dataset download, Pier task handling,
 and the official SWE-bench evaluator remain Python integrations.
 
-Output: `scripts/bench/out/<date>/REPORT.md` and `results.json`. Each cell is
-`{harness, model, instance_id, resolved, seconds}`. `resolved` is `null` when
-the official eval did not run (no Docker, `--skip-eval`, or harness missing).
-This bench never invents a resolve rate.
+Output: `scripts/bench/out/<date>/REPORT.md`, `results.json`, and `plan.json`.
+Each cell is `{harness, model, instance_id, resolved, seconds, adapter_model,
+effort, patch_bytes}`. `resolved` is `null` when the official eval did not
+produce a verdict (no Docker, `--skip-eval`, checkout or adapter failure,
+empty patch, eval error).
+
+Scoring rules:
+
+- **Denominator = every planned cell** (`plan.json`: configured pairs × sampled
+  ids). Unscored (`null`) and never-run cells count as unresolved. `upper` is
+  the rate if every unscored cell had resolved; the 95% Wilson interval is
+  shown only when every cell is scored. Status is `complete`, `INCOMPLETE`, or
+  `NOT SCORED`; only `complete` rows are comparable.
+- **Attribution**: a model runs on a harness only when its `models.json` entry
+  has that harness's own `model`. Other pairs are listed under Exclusions and
+  never fall back to an adapter's default model. Cells record the model string
+  the adapter actually received (`adapter_model`).
+- The report lists unscored cells by reason, pairs not run, duplicate or
+  unplanned cells, and adapter failures, plus provenance (rotary commit and
+  dirty flag, `models.json` and instance-set sha256, start/finish UTC).
+- `scripts/bench/test.sh` (run by `check.sh`) pins these rules.
 
 Needs Docker (OrbStack is fine) for Harbor, Pier, and
 `python -m swebench.harness.run_evaluation`.
@@ -79,13 +96,17 @@ Confirms adapters exist, `models.json` parses, and `run.sh --help` works.
 It also checks LuaJIT is installed and that an unscored cell stays `null` in
 the generated report.
 
-## fx n=10 / full 500
+## Past runs
 
-A mid-run adapter add does not attach to an already-started serial job
-(`com.rotary.swebench.full500` tk×500). Smoke fx with
-`scripts/bench/run.sh --harness fx --n 10 --model gpt-5.6-sol --out scripts/bench/out/2026-08-23-fx`.
-Skip official eval if Docker is busy with that full500 eval. A full 500 fx
-pass waits until the current serial run finishes.
+The August 2026 runs under `scripts/bench/out/` (never committed) were scored
+with the old denominator, which dropped unscored cells. Corrected:
+
+- n10 pi: reported 5/9 (56%), actually 5/10 (50%). n10 omp 0/10 was an
+  adapter crash (`adapter_exit=1` on all 10 cells), not a model result.
+- "full500" codex 8/9 (89%) and tk/pi/omp 6/10 (60%): official eval errored on
+  478–488 of 500 instances, so only 9–10 were scored (8/500 and 6/500
+  resolved). No rate can be defended from those runs.
+- DeepSWE runs produced no verifier verdicts.
 
 ## Resume
 
@@ -117,7 +138,7 @@ TK_BIN=/path/to/tk scripts/bench/harness-live.sh
 
 ## DeepSWE (faster live score)
 
-DeepSWE is the live pass@1 while Verified 500 is still running.
+DeepSWE gives a faster pass@1 than a full Verified 500 run.
 
     scripts/bench/deepswe/run.sh --n 20 --sample-seed 0 --model gpt-5.6-sol \
       --harness tk --harness codex --harness pi --harness omp --harness fx \
@@ -127,7 +148,10 @@ Agents run host-side (same adapters as Verified). Pier in-container Codex
 loops on DeepSWE no-network tasks. After each host patch, Pier applies it
 (`apply_host_patch.py`) and runs the official task verifier. `resolved` is
 true only when `verifier/reward.json` has `reward == 1`. No score is invented
-if Docker/Pier is down.
+if Docker/Pier is down. Each cell gets a fresh Pier job dir
+(`pier/<harness>/<harness>__<model>__<task>`), and `deepswe/reward.lua` only
+accepts exactly one `reward.json` inside that dir, so a task is never scored
+from another task's or a stale trial's reward.
 
 Sample matches Pier: filesystem iterdir order, then Random(seed).shuffle,
 then first n. Seed 0 / n=20 starts with meriyah-explicit-resource-declarations.
