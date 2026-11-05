@@ -124,6 +124,25 @@ async fn script_allocation_is_bounded() {
 }
 
 #[tokio::test]
+async fn grep_rejects_an_excessive_directory_frontier() {
+    let root = tempfile::tempdir().unwrap();
+    for i in 0..4097 {
+        std::fs::create_dir(root.path().join(format!("d{i}"))).unwrap();
+    }
+    let result = execute(context(root.path()), "return #grep('needle', '.')").await;
+    assert!(
+        result.is_error,
+        "unbounded traversal succeeded: {}",
+        result.content
+    );
+    assert!(
+        result.content.contains("directory limit"),
+        "{}",
+        result.content
+    );
+}
+
+#[tokio::test]
 async fn cpu_native_and_protected_timeouts_are_reaped() {
     for code in [
         "return string.find(string.rep('a',20000), 'a*a*a*a*b')",

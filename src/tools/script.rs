@@ -456,7 +456,11 @@ fn bridge(
             Ok(json!(rows))
         }
         Some("grep") => {
-            let pattern = regex::Regex::new(text(0)?).map_err(|e| e.to_string())?;
+            let pattern = regex::RegexBuilder::new(text(0)?)
+                .size_limit(2 * 1024 * 1024)
+                .dfa_size_limit(2 * 1024 * 1024)
+                .build()
+                .map_err(|e| e.to_string())?;
             let root = path(text(1)?)?;
             let mut stack = vec![root.clone()];
             let mut hits = Vec::new();
@@ -483,6 +487,9 @@ fn bridge(
                         continue;
                     };
                     if kind.is_dir() {
+                        if stack.len() >= 4096 {
+                            return Err("grep directory limit exceeded".into());
+                        }
                         stack.push(full);
                         continue;
                     }
@@ -491,7 +498,16 @@ fn bridge(
                     {
                         continue;
                     }
-                    let content = std::fs::read_to_string(&full).map_err(|e| e.to_string())?;
+                    use std::io::Read;
+                    let mut content = String::new();
+                    std::fs::File::open(&full)
+                        .map_err(|e| e.to_string())?
+                        .take(1_000_001)
+                        .read_to_string(&mut content)
+                        .map_err(|e| e.to_string())?;
+                    if content.len() > 1_000_000 {
+                        return Err("grep file exceeds limit".into());
+                    }
                     for (i, line) in content.lines().enumerate() {
                         check()?;
                         if pattern.is_match(line) {

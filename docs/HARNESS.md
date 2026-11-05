@@ -56,8 +56,13 @@ to its absolute path. A missing or incompatible helper fails closed.
 Scripts run in a supervised process. The parent authorizes each file bridge
 through its normal tool gates and enforces a wall-clock deadline. On Linux,
 the helper limits its address space to 96 MiB, or a lower inherited limit.
-This per-process limit does not bound memory used by bridges in the parent;
-hosts must limit the parent separately when running untrusted workloads.
+The bridge runs in the parent because it enforces the parent's authorization.
+Per script, frames are capped at 2 MiB, reads at 1 MiB, directory listings and
+the grep traversal frontier at 4096 entries, grep matches at 500, and regex
+compilation and cache sizes at 2 MiB each. A script has at most one bridge job
+in flight, with a maximum of 4096 requests. These are per-script bounds, not
+an aggregate parent quota: hosts must bound concurrent scripts and limit the
+parent process separately when running untrusted workloads.
 The helper fails closed on other platforms and when it cannot apply the limit.
 
 ## Hashline
