@@ -73,6 +73,7 @@ luajit "$ROOT/lib/config.lua" json-valid "$MODELS_JSON"
 DATE=$(date +%Y-%m-%d)
 OUT=${OUT:-"$ROOT/out/${DATE}-deepswe${N}"}
 mkdir -p "$OUT" "$OUT/patches" "$OUT/logs" "$OUT/workspaces" "$OUT/pier"
+OUT=$(cd "$OUT" && pwd)
 CELLS="$OUT/cells.jsonl"
 IDS_FILE="$OUT/task_ids.txt"
 
@@ -218,6 +219,9 @@ for harness in $RUN_HARNESSES; do
     echo "-- $harness $MID $iid --" >&2
     patch="$OUT/patches/${harness}__${MID}__${iid}.patch"
     log="$OUT/logs/${harness}__${MID}__${iid}.log"
+    export BENCH_CELL_METADATA="$OUT/logs/${harness}__${MID}__${iid}.metadata.json"
+    export BENCH_MODEL_ID="$MID"
+    rm -f "$BENCH_CELL_METADATA"
     t0=$(date +%s)
     set +e
     "$HERE/thin_task.sh" "$harness" "$TASKS/$iid" "$patch" >"$log" 2>&1
@@ -256,7 +260,7 @@ for harness in $RUN_HARNESSES; do
     fi
     t1=$(date +%s)
     seconds=$((t1 - t0))
-    luajit "$ROOT/lib/cell.lua" --cells "$CELLS" --harness "$harness" --model "$MID" --instance "$iid" --seconds "$seconds" --exit "$adapter_exit" --resolved "$resolved" --patch "$patch" --driver thin+pier-verifier --dataset deep-swe --reward-json "$reward_path" --verifier "$verifier" --adapter-model "$adapter_model" --effort "$EFFORT" --unscored-reason "$unscored"
+    luajit "$ROOT/lib/cell.lua" --cells "$CELLS" --harness "$harness" --model "$MID" --instance "$iid" --seconds "$seconds" --exit "$adapter_exit" --resolved "$resolved" --patch "$patch" --driver thin+pier-verifier --dataset deep-swe --reward-json "$reward_path" --verifier "$verifier" --adapter-model "$adapter_model" --effort "$EFFORT" --unscored-reason "$unscored" --execution-json "$BENCH_CELL_METADATA"
     write_live_report >/dev/null || true
   done < "$IDS_FILE"
 done

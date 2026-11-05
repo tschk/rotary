@@ -1,0 +1,53 @@
+{
+  "isolation_verified": false,
+  "evaluation_status": "bridge_networked_historical_results; not_isolated",
+  "published_run_network_access": true,
+  "provenance_correction": "The Docker SDK collection monkeypatch was ineffective. The published run had bridge-network access; requested per-container memory/PID limits were not applied. Original daemon inspections were not saved. Archive isolation fields are erroneous requested values, not observations. Independent replay reproduced verdicts and identified network-sensitive test-level differences without changing unresolved verdicts.",
+  "calibration_mismatches": [],
+  "gold_fail": [
+    "psf__requests-1724",
+    "psf__requests-1766",
+    "psf__requests-1921",
+    "psf__requests-2317"
+  ],
+  "gold_pass": 496,
+  "gold_unscored": [],
+  "models": {
+    "codex__gpt-5.6-sol": {
+      "eligible": 496,
+      "eligible_resolved": 395,
+      "gold_excluded": 4,
+      "planned": 500,
+      "resolved": 395,
+      "scored": 496,
+      "status": "complete"
+    },
+    "omp__gpt-5.6-sol": {
+      "eligible": 496,
+      "eligible_resolved": 393,
+      "gold_excluded": 4,
+      "planned": 500,
+      "resolved": 393,
+      "scored": 494,
+      "status": "INCOMPLETE"
+    },
+    "pi__gpt-5.6-sol": {
+      "eligible": 496,
+      "eligible_resolved": 368,
+      "gold_excluded": 4,
+      "planned": 500,
+      "resolved": 368,
+      "scored": 495,
+      "status": "INCOMPLETE"
+    },
+    "tk__gpt-5.6-sol": {
+      "eligible": 496,
+      "eligible_resolved": 346,
+      "gold_excluded": 4,
+      "planned": 500,
+      "resolved": 346,
+      "scored": 496,
+      "status": "complete"
+    }
+  }
+}

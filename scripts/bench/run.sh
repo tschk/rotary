@@ -95,6 +95,7 @@ SEED=${SEED:-$DEFAULT_SEED}
 DATE=$(date +%Y-%m-%d)
 OUT=${OUT:-"$ROOT/out/$DATE"}
 mkdir -p "$OUT" "$CACHE_DIR"
+OUT=$(cd "$OUT" && pwd)
 # Match Z.ai Flash protocol (6h). Inherited 1800s from older jobs starves SWE.
 export BENCH_AGENT_TIMEOUT=${BENCH_AGENT_TIMEOUT:-21600}
 export TK_MAX_TURNS=${TK_MAX_TURNS:-400}
@@ -196,7 +197,7 @@ PLAN="$OUT/plan.json"
 # reported as exclusions instead of running an adapter's default model.
 MATRIX=$(luajit "$ROOT/lib/config.lua" matrix "$MODELS_JSON" "$MODEL_IDS" "$HARNESSES" "$IDS_FILE" "$PLAN")
 export BENCH_PROVENANCE
-BENCH_PROVENANCE=$(luajit "$ROOT/lib/config.lua" provenance "$ROOT" "$MODELS_JSON" "$IDS_FILE")
+BENCH_PROVENANCE=$(luajit "$ROOT/lib/config.lua" provenance "$ROOT" "$MODELS_JSON" "$IDS_FILE" "$SAMPLE_JSONL")
 
 json_get() {
   if [ "$#" -gt 2 ]; then
@@ -329,6 +330,9 @@ run_thin_cell() {
   mkdir -p "$OUT/workspaces" "$OUT/patches" "$OUT/logs"
   log="$OUT/logs/${harness}__${mid}__${iid}.log"
   patch="$OUT/patches/${harness}__${mid}__${iid}.patch"
+  export BENCH_CELL_METADATA="$OUT/logs/${harness}__${mid}__${iid}.metadata.json"
+  export BENCH_MODEL_ID="$mid"
+  rm -f "$BENCH_CELL_METADATA"
   t0=$(date +%s)
   if ! checkout_instance "$iid" "$dest"; then
     echo "checkout failed: $iid" >&2
@@ -385,7 +389,7 @@ run_thin_cell() {
   collect_patch "$dest" "$base" "$patch"
   t1=$(date +%s)
   seconds=$((t1 - t0))
-  luajit "$ROOT/lib/cell.lua" --cells "$CELLS" --harness "$harness" --model "$mid" --instance "$iid" --seconds "$seconds" --exit "$rc" --patch "$patch" --adapter-model "$model" --effort "$effort"
+  luajit "$ROOT/lib/cell.lua" --cells "$CELLS" --harness "$harness" --model "$mid" --instance "$iid" --seconds "$seconds" --exit "$rc" --patch "$patch" --adapter-model "$model" --effort "$effort" --execution-json "$BENCH_CELL_METADATA"
 }
 
 eval_pending_patches() {
