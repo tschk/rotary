@@ -2236,6 +2236,120 @@ mod tests {
         assert_eq!(executed.load(Ordering::SeqCst), 0);
     }
 
+    #[cfg(feature = "providers")]
+    #[test]
+    fn child_authority_is_bounded_across_all_scope_transitions() {
+        use crate::permissions::{Approver, Decision};
+
+        struct ApprovalGate(bool);
+        impl Authorizer for ApprovalGate {
+            fn uses_live_policy(&self) -> bool {
+                self.0
+            }
+            fn authorize(
+                &self,
+                _: &Policy,
+                _: &str,
+                _: &str,
+                _: Option<&dyn Approver>,
+                _: Option<&Path>,
+            ) -> Decision {
+                Decision::Ask
+            }
+        }
+        let modes = [
+            PermissionMode::DenyAll,
+            PermissionMode::ReadOnly,
+            PermissionMode::WorkspaceWrite,
+            PermissionMode::FullAccess,
+        ];
+        let scopes = [
+            Scope::Coding,
+            Scope::Research,
+            Scope::Plan,
+            Scope::Ask,
+            Scope::ComputerUse,
+        ];
+        let rank = |mode| {
+            modes
+                .iter()
+                .position(|candidate| *candidate == mode)
+                .unwrap()
+        };
+        for parent_mode in modes {
+            for parent_scope in scopes {
+                for requested in modes {
+                    for from in scopes {
+                        for to in scopes {
+                            for live in [false, true] {
+                                let mut parent = Agent::new();
+                                parent.set_scope(parent_scope);
+                                let mut policy = Policy::read_only();
+                                policy.mode = parent_mode;
+                                parent.set_policy(policy);
+                                parent.set_authorizer(Arc::new(ApprovalGate(live)));
+                                let mut child = build_child_agent(
+                                    Arc::new(OneToolProvider {
+                                        emitted: AtomicUsize::new(0),
+                                    }),
+                                    None,
+                                    Some(parent.subagent_authority()),
+                                    &SubagentConfig {
+                                        permission_mode: Some(requested),
+                                        allowed_tools: Some(vec!["write".into(), "read".into()]),
+                                        denied_tools: Some(vec!["read".into()]),
+                                        ..SubagentConfig::default()
+                                    },
+                                    Path::new("."),
+                                );
+                                for scope in [from, to] {
+                                    child.set_scope(scope);
+                                    let case = || {
+                                        format!("parent={parent_mode:?}/{parent_scope:?}, child={requested:?}, transition={from:?}->{to:?}, at={scope:?}")
+                                    };
+                                    assert!(
+                                        rank(child.policy.mode) <= rank(parent_mode),
+                                        "{}",
+                                        case()
+                                    );
+                                    assert!(
+                                        rank(child.policy.mode) <= rank(requested),
+                                        "{}",
+                                        case()
+                                    );
+                                    let gate =
+                                        child.authorizer.as_ref().expect("inherited gate retained");
+                                    assert_eq!(
+                                        gate.authorize(&child.policy, "read", "{}", None, None),
+                                        Decision::Deny,
+                                        "{}",
+                                        case()
+                                    );
+                                    assert_eq!(
+                                        gate.authorize(&child.policy, "ls", "{}", None, None),
+                                        Decision::Deny,
+                                        "{}",
+                                        case()
+                                    );
+                                    let decision =
+                                        gate.authorize(&child.policy, "write", "{}", None, None);
+                                    assert_ne!(decision, Decision::Allow, "{}", case());
+                                    if parent_scope == Scope::Coding
+                                        && parent_mode == PermissionMode::FullAccess
+                                        && requested == PermissionMode::FullAccess
+                                        && scope == Scope::Coding
+                                    {
+                                        assert_eq!(decision, Decision::Ask, "{}", case());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     #[cfg(all(feature = "providers", feature = "builtin-tools"))]
     #[tokio::test]
     async fn filtered_child_retains_live_gate_after_model_scope_transition() {

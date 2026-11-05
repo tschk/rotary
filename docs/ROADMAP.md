@@ -36,6 +36,11 @@ and scheduling. Each item needs an end-to-end contract test before release.
   Provide a shared, host-configurable aggregate budget with cancellation and
   accounting across helpers and bridges. See `src/tools/script.rs` and
   `src/tools/script/worker.rs`.
+- **Non-Linux script support.** The supervised Lua helper fails closed outside
+  Linux because its address-space quota is not implemented there. Hosts on
+  those platforms cannot use the `script` tool, including its Lua processing
+  and read/list/grep bridges. Add an equivalent enforced quota before enabling
+  it; do not silently run without one.
 - **Recoverable sessions.** `Session::save_jsonl` overwrites the existing file
   and `load_jsonl` skips malformed records. Add an atomic save and an explicit
   recovery report so a host can distinguish a complete history from a damaged
