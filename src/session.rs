@@ -74,6 +74,7 @@ pub struct SessionProjection {
 }
 
 /// JSONL records that could not be restored, using one-based line numbers.
+#[must_use = "inspect skipped records and session integrity before using recovered data"]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionRecoveryReport {
     pub skipped_lines: Vec<usize>,

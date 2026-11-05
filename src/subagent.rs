@@ -372,6 +372,7 @@ pub struct SteerReceipt {
 
 /// Recorded calls without a recorded result when an interrupted worker was restored.
 /// The snapshot may not include every effect, and an unresolved call may have run.
+#[must_use = "inspect unresolved tool calls before acting on recovered work"]
 #[derive(Debug, Clone, Serialize)]
 pub struct SubagentRecoveryReport {
     pub unresolved_calls: Vec<crate::agent::ToolCall>,
@@ -536,6 +537,7 @@ impl SubagentHandle {
     }
 
     /// Describe recorded uncertain calls; restoring a worker never replays them.
+    #[must_use = "inspect unresolved tool calls before acting on recovered work"]
     pub fn recovery_report(&self) -> Option<SubagentRecoveryReport> {
         let state = self.state.lock();
         if state.status != SubagentStatus::Interrupted {
