@@ -69,11 +69,12 @@ and scheduling. Each item needs an end-to-end contract test before release.
   as completed work after a stream failure. See `src/agent/mod.rs` and
   `src/provider.rs`.
 - **Composable long-running work.** Background tool results, bounded tool
-  pipelines and durable worker handles exist. Extend recovery beyond restoring
-  state: define which work can be resumed without replaying side effects, and
-  expose checkpoints and cancellation to hosts. Keep approval and scheduling
-  with the host. See `src/agent/mod.rs`, `src/subagent.rs`, and
-  `src/agent/pipeline.rs`.
+  pipelines and durable worker handles exist. Restored interrupted workers
+  report recorded calls without results; they are not replayed because their
+  effects may already have occurred. Snapshots may omit effects, so hosts must
+  not treat the report as exhaustive. Expose checkpoints and cancellation to
+  hosts. Keep approval and scheduling with the host. See `src/agent/mod.rs`,
+  `src/subagent.rs`, and `src/agent/pipeline.rs`.
 
 ### P0
 1. [x] Stream-JSON / noninteractive protocol — `rx4 exec --stream-json` NDJSON events (0.3.8)

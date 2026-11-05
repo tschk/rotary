@@ -369,6 +369,14 @@ pub struct SteerReceipt {
     fingerprint: String,
 }
 
+/// Recorded calls without a recorded result when an interrupted worker was restored.
+/// The snapshot may not include every effect, and an unresolved call may have run.
+#[derive(Debug, Clone, Serialize)]
+pub struct SubagentRecoveryReport {
+    pub unresolved_calls: Vec<crate::agent::ToolCall>,
+    pub reason: String,
+}
+
 const MAX_CONTEXT_BYTES: usize = 64 * 1024;
 const MAX_STEER_BYTES: usize = 8 * 1024;
 const MAX_STEERS: usize = 128;
@@ -524,6 +532,28 @@ impl SubagentHandle {
     /// Current lifecycle status.
     pub fn status(&self) -> SubagentStatus {
         self.state.lock().status
+    }
+
+    /// Describe recorded uncertain calls; restoring a worker never replays them.
+    pub fn recovery_report(&self) -> Option<SubagentRecoveryReport> {
+        let state = self.state.lock();
+        if state.status != SubagentStatus::Interrupted {
+            return None;
+        }
+        let session = state.session.read();
+        let mut unresolved_calls: Vec<crate::agent::ToolCall> = Vec::new();
+        for entry in &session.entries {
+            unresolved_calls.extend(entry.tool_calls.iter().cloned());
+            if let Some(id) = &entry.tool_call_id {
+                if let Some(index) = unresolved_calls.iter().position(|call| &call.id == id) {
+                    unresolved_calls.remove(index);
+                }
+            }
+        }
+        Some(SubagentRecoveryReport {
+            unresolved_calls,
+            reason: "Calls were not replayed because their external effects may already have occurred. The snapshot may omit other effects; inspect the history and external state before acting.".into(),
+        })
     }
 
     /// The result if the subagent has completed, otherwise `None`.

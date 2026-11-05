@@ -173,6 +173,51 @@ async fn stable_requests_deduplicate_and_restore_never_replays() {
 }
 
 #[tokio::test]
+async fn restored_worker_reports_calls_with_unknown_outcomes() {
+    let (mut manager, started, _) = pending_manager();
+    let handle = manager
+        .spawn_background_with_identity(
+            SubagentConfig::default(),
+            "wait",
+            Path::new("."),
+            identity("recovery"),
+        )
+        .unwrap();
+    entered(&started, 1).await;
+    assert!(handle.recovery_report().is_none());
+    let mut snapshot = handle.snapshot();
+    let calls = vec![
+        ToolCall {
+            id: "done".into(),
+            name: "read".into(),
+            arguments: "{}".into(),
+        },
+        ToolCall {
+            id: "unknown".into(),
+            name: "write".into(),
+            arguments: "{\"path\":\"report\"}".into(),
+        },
+    ];
+    snapshot
+        .session
+        .append_message(&Message::assistant_with_tools("", calls));
+    snapshot
+        .session
+        .append_message(&Message::tool("done", "completed"));
+    let restored = SubagentManager::new().restore(snapshot).unwrap();
+    let report = restored.recovery_report().unwrap();
+    assert_eq!(report.unresolved_calls.len(), 1);
+    assert_eq!(report.unresolved_calls[0].id, "unknown");
+    assert_eq!(report.unresolved_calls[0].name, "write");
+    assert_eq!(
+        report.unresolved_calls[0].arguments,
+        "{\"path\":\"report\"}"
+    );
+    assert!(report.reason.contains("not replayed"));
+    manager.shutdown_and_wait(Duration::from_secs(3)).await;
+}
+
+#[tokio::test]
 async fn empty_and_oversized_requests_fail_before_reservation() {
     let (mut manager, _, _) = pending_manager();
     assert!(SubagentManager::new()
