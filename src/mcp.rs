@@ -866,6 +866,20 @@ impl McpClient {
         Err(McpError::Protocol("pagination page limit exceeded".into()))
     }
 
+    /// Calls `resources/read` and returns all content parts and result metadata.
+    pub async fn read_resource_result(&self, uri: &str) -> Result<Value, McpError> {
+        let mut inner = self.inner.lock().await;
+        let result = inner
+            .send_request("resources/read", Some(json!({ "uri": uri })))
+            .await?;
+        if !result.get("contents").is_some_and(Value::is_array) {
+            return Err(McpError::Protocol(
+                "invalid 'contents' field in response".into(),
+            ));
+        }
+        Ok(result)
+    }
+
     /// Calls `resources/read` and returns the text content of the first entry.
     pub async fn read_resource(&self, uri: &str) -> Result<String, McpError> {
         let mut inner = self.inner.lock().await;
@@ -1025,6 +1039,56 @@ impl Default for McpRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct ResourceTransport(Value);
+
+    #[async_trait]
+    impl McpTransport for ResourceTransport {
+        async fn send_request(
+            &mut self,
+            method: &str,
+            params: Option<Value>,
+        ) -> Result<Value, McpError> {
+            assert_eq!(method, "resources/read");
+            assert_eq!(params, Some(json!({"uri":"example:resource"})));
+            Ok(self.0.clone())
+        }
+        async fn send_notification(&mut self, _: &str, _: Option<Value>) -> Result<(), McpError> {
+            Ok(())
+        }
+        async fn close(&mut self) -> Result<(), McpError> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn resource_result_preserves_all_parts_and_metadata() {
+        let result = json!({"contents":[
+            {"uri":"example:one","text":"alpha","mimeType":"text/plain","extra":42},
+            {"uri":"example:two","blob":"AAEC","mimeType":"application/octet-stream"}
+        ],"future":{"token":"value"}});
+        let client = McpClient {
+            inner: Mutex::new(Box::new(ResourceTransport(result.clone()))),
+        };
+        assert_eq!(
+            client
+                .read_resource_result("example:resource")
+                .await
+                .unwrap(),
+            result
+        );
+        assert_eq!(
+            client.read_resource("example:resource").await.unwrap(),
+            "alpha"
+        );
+        let malformed = McpClient {
+            inner: Mutex::new(Box::new(ResourceTransport(json!({"contents":{}})))),
+        };
+        assert!(matches!(
+            malformed.read_resource_result("example:resource").await,
+            Err(McpError::Protocol(_))
+        ));
+    }
 
     struct PagedTransport {
         repeat_cursor: bool,

@@ -59,9 +59,10 @@ and scheduling. Each item needs an end-to-end contract test before release.
   error, but hosts that discard standard error can miss the warning. Preserve
   fork, projection, and artifact references during recovery. See `src/session.rs`.
 - **MCP concurrency and rich resources.** `McpClient` holds one mutex across
-  each request, and `read_resource` returns the first text item. Discovery
-  follows tool and resource pagination. Support concurrent request IDs,
-  cancellation, and typed resource contents without discarding additional items.
+  each request. `read_resource_result` preserves all resource content parts
+  and metadata as JSON; the older `read_resource` returns the first text item.
+  Discovery follows tool and resource pagination. Support concurrent request IDs,
+  cancellation, and typed resource contents.
   Test against a server that sends out-of-order replies and multi-part resources.
   See `src/mcp.rs`.
 - **Observable provider retries.** The agent retries transient stream failures

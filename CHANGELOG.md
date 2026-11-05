@@ -81,6 +81,8 @@ Patch release on crates.io `0.7.1` (git `Cargo.toml` had lagged at `0.6.5`).
   `..`.
 
 ### Added
+- `McpClient::read_resource_result` preserves all resource parts and metadata
+  as JSON; the existing first-text `read_resource` remains unchanged.
 - Session recovery with unverified or skipped records, and interrupted worker
   restoration, write warnings to standard error even without a logging subscriber.
 - Interrupted worker recovery reports identify recorded tool calls without a
