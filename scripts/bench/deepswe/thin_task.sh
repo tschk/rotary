@@ -6,8 +6,18 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 HARNESS=$1
 TASK=$2
 OUT_PATCH=$3
-ADAPTERS="$ROOT/adapters"
+ADAPTERS=${BENCH_ADAPTERS:-"$ROOT/adapters"}
 MODELS_JSON="$ROOT/models.json"
+MID=${BENCH_MODEL_ID:?BENCH_MODEL_ID is required}
+cfg() { luajit "$ROOT/lib/config.lua" model-get "$MODELS_JSON" "$MID" "$@"; }
+# Resolve the model from models.json only. A missing harness entry must not
+# fall through to the adapter's default model under this model's label.
+if ! BENCH_MODEL=$(cfg "$HARNESS/model" 2>/dev/null) || [ -z "$BENCH_MODEL" ]; then
+  echo "thin_task: model $MID has no $HARNESS entry in models.json; refusing to run" >&2
+  exit 3
+fi
+BENCH_EFFORT=$(cfg effort)
+export BENCH_MODEL BENCH_EFFORT
 python3 - "$TASK" "$OUT_PATCH" "$HARNESS" <<'PY'
 import os, subprocess, sys
 from pathlib import Path
@@ -43,24 +53,14 @@ WS=$(cat "${OUT_PATCH}.ws")
 # its work; capturing after the run would make committed work invisible to the
 # `git diff` below and score solved tasks as empty patches.
 base=$(git -C "$WS" rev-parse HEAD)
-MID=${BENCH_MODEL_ID:-gpt-5.6-sol}
-export BENCH_MODEL=${BENCH_MODEL:-$(luajit "$ROOT/lib/config.lua" model-get "$MODELS_JSON" "$MID" "$HARNESS/model")}
-export BENCH_EFFORT=${BENCH_EFFORT:-$(luajit "$ROOT/lib/config.lua" model-get "$MODELS_JSON" "$MID" effort)}
 export BENCH_AGENT_TIMEOUT=${BENCH_AGENT_TIMEOUT:-21600}
 case "$HARNESS" in
-  pi)
-    export BENCH_PI_PROVIDER=${BENCH_PI_PROVIDER:-$(luajit "$ROOT/lib/config.lua" model-get "$MODELS_JSON" "$MID" pi/provider openai-codex)}
-    ;;
-  omp)
-    export BENCH_OMP_PROVIDER=${BENCH_OMP_PROVIDER:-$(luajit "$ROOT/lib/config.lua" model-get "$MODELS_JSON" "$MID" omp/provider openai-codex)}
-    ;;
-  tk)
-    export BENCH_PROVIDER=${BENCH_PROVIDER:-$(luajit "$ROOT/lib/config.lua" model-get "$MODELS_JSON" "$MID" tk/provider "")}
-    ;;
-  codex)
-    export BENCH_CODEX_CONFIG=${BENCH_CODEX_CONFIG:-$(luajit "$ROOT/lib/config.lua" model-get "$MODELS_JSON" "$MID" codex/config model_reasoning_effort=low)}
-    ;;
+  pi) export BENCH_PI_PROVIDER; BENCH_PI_PROVIDER=$(cfg pi/provider openai-codex) ;;
+  omp) export BENCH_OMP_PROVIDER; BENCH_OMP_PROVIDER=$(cfg omp/provider openai-codex) ;;
+  tk) export BENCH_PROVIDER; BENCH_PROVIDER=$(cfg tk/provider "") ;;
+  codex) export BENCH_CODEX_CONFIG; BENCH_CODEX_CONFIG=$(cfg codex/config "model_reasoning_effort=$BENCH_EFFORT") ;;
 esac
+echo "$BENCH_MODEL" > "${OUT_PATCH}.model"
 set +e
 "$ADAPTERS/${HARNESS}.sh" "$WS" "$WS/.bench_prompt.md"
 rc=$?

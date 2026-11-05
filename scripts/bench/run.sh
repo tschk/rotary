@@ -6,7 +6,7 @@ set -euo pipefail
 ROOT=$(cd "$(dirname "$0")" && pwd)
 MODELS_JSON="$ROOT/models.json"
 CACHE_DIR="$ROOT/.cache"
-ADAPTERS="$ROOT/adapters"
+ADAPTERS=${BENCH_ADAPTERS:-"$ROOT/adapters"}
 export PATH="${HOME}/.local/bin:${PATH}"
 
 usage() {
@@ -175,6 +175,11 @@ fi
 luajit "$ROOT/lib/config.lua" sample-ids "$SAMPLE_JSONL" "$IDS_FILE"
 fi
 
+if [ ! -s "$IDS_FILE" ]; then
+  echo "empty sample: $IDS_FILE has no ids; refusing to write a 0-cell report" >&2
+  exit 1
+fi
+
 if [ -z "$HARNESSES" ]; then
   HARNESSES=$(luajit "$ROOT/lib/config.lua" harnesses "$MODELS_JSON")
 fi
@@ -186,6 +191,12 @@ for h in $HARNESSES; do
 done
 
 MODEL_IDS=$(luajit "$ROOT/lib/config.lua" model-ids "$MODELS_JSON" $MODELS)
+PLAN="$OUT/plan.json"
+# Only model x harness pairs with their own model entry run; the rest are
+# reported as exclusions instead of running an adapter's default model.
+MATRIX=$(luajit "$ROOT/lib/config.lua" matrix "$MODELS_JSON" "$MODEL_IDS" "$HARNESSES" "$IDS_FILE" "$PLAN")
+export BENCH_PROVENANCE
+BENCH_PROVENANCE=$(luajit "$ROOT/lib/config.lua" provenance "$ROOT" "$MODELS_JSON" "$IDS_FILE")
 
 json_get() {
   if [ "$#" -gt 2 ]; then
@@ -329,45 +340,42 @@ run_thin_cell() {
   write_prompt "$iid" "$dest"
   base=$(git -C "$dest" rev-parse HEAD)
   effort=$(json_get "$mid" effort)
+  # Strict lookup: the matrix only schedules configured pairs, and an empty
+  # model would let the adapter run its own default under this label.
+  model=$(json_get "$mid" "$harness/model")
   rc=0
   set +e
   case "$harness" in
     codex)
-      model=$(json_get "$mid" codex/model)
-      cfg=$(json_get "$mid" codex/config)
+      cfg=$(json_get "$mid" codex/config "model_reasoning_effort=$effort")
       BENCH_MODEL="$model" BENCH_EFFORT="$effort" BENCH_CODEX_CONFIG="$cfg" \
         "$ADAPTERS/codex.sh" "$dest" "$dest/.bench_prompt.md" >"$log" 2>&1
       rc=$?
       ;;
     pi)
-      model=$(json_get "$mid" pi/model)
-      prov=$(json_get "$mid" pi/provider)
+      prov=$(json_get "$mid" pi/provider openai-codex)
       BENCH_MODEL="$model" BENCH_EFFORT="$effort" BENCH_PI_PROVIDER="$prov" \
         "$ADAPTERS/pi.sh" "$dest" "$dest/.bench_prompt.md" >"$log" 2>&1
       rc=$?
       ;;
     tk)
-      model=$(json_get "$mid" tk/model)
       prov=$(json_get "$mid" tk/provider "")
       BENCH_MODEL="$model" BENCH_EFFORT="$effort" BENCH_PROVIDER="$prov" \
         "$ADAPTERS/tk.sh" "$dest" "$dest/.bench_prompt.md" >"$log" 2>&1
       rc=$?
       ;;
     omp)
-      model=$(json_get "$mid" omp/model)
-      prov=$(json_get "$mid" omp/provider)
+      prov=$(json_get "$mid" omp/provider openai-codex)
       BENCH_MODEL="$model" BENCH_EFFORT="$effort" BENCH_OMP_PROVIDER="$prov" \
         "$ADAPTERS/omp.sh" "$dest" "$dest/.bench_prompt.md" >"$log" 2>&1
       rc=$?
       ;;
     fx)
-      model=$(json_get "$mid" fx/model)
       BENCH_MODEL="$model" BENCH_EFFORT="$effort" \
         "$ADAPTERS/fx.sh" "$dest" "$dest/.bench_prompt.md" >"$log" 2>&1
       rc=$?
       ;;
     opencode)
-      model=$(json_get "$mid" opencode/model)
       BENCH_MODEL="$model" BENCH_EFFORT="$effort" \
         "$ADAPTERS/opencode.sh" "$dest" "$dest/.bench_prompt.md" >"$log" 2>&1
       rc=$?
@@ -377,7 +385,7 @@ run_thin_cell() {
   collect_patch "$dest" "$base" "$patch"
   t1=$(date +%s)
   seconds=$((t1 - t0))
-  luajit "$ROOT/lib/cell.lua" --cells "$CELLS" --harness "$harness" --model "$mid" --instance "$iid" --seconds "$seconds" --exit "$rc" --patch "$patch"
+  luajit "$ROOT/lib/cell.lua" --cells "$CELLS" --harness "$harness" --model "$mid" --instance "$iid" --seconds "$seconds" --exit "$rc" --patch "$patch" --adapter-model "$model" --effort "$effort"
 }
 
 eval_pending_patches() {
@@ -399,8 +407,9 @@ echo "sample: n=$N seed=$SEED" >&2
 echo "models: $MODEL_IDS" >&2
 echo "harnesses: $HARNESSES" >&2
 
-for mid in $MODEL_IDS; do
-  for harness in $HARNESSES; do
+echo "$MATRIX" | grep '^skip ' >&2 || true
+while read -r verb harness mid _reason <&3; do
+    [ "$verb" = run ] || continue
     echo "== $harness x $mid ==" >&2
     used=thin
     if [ "$harness" = codex ] && [ "$DRIVER" != thin ] && [ "$DRIVER" != auto ]; then
@@ -433,9 +442,10 @@ for mid in $MODEL_IDS; do
       run_thin_cell "$harness" "$mid" "$iid"
     done < "$IDS_FILE"
     eval_pending_patches "$harness" "$mid"
-  done
-done
+done 3<<EOF
+$MATRIX
+EOF
 
 META=$(luajit "$ROOT/lib/config.lua" meta-json "$N" "$SEED" "$DRIVER" "$DOCKER" "$MODEL_IDS" "$HARNESSES")
-luajit "$ROOT/lib/report.lua" --cells "$CELLS" --out-dir "$OUT" --meta "$META"
+luajit "$ROOT/lib/report.lua" --cells "$CELLS" --out-dir "$OUT" --meta "$META" --plan "$PLAN"
 echo "wrote $OUT/REPORT.md and $OUT/results.json" >&2
