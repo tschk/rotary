@@ -40,9 +40,10 @@ smoke=$(mktemp -d "${TMPDIR:-/tmp}/rotary-bench-lua.XXXXXX")
 trap 'rm -rf "$smoke"' EXIT
 luajit "$ROOT/lib/cell.lua" --cells "$smoke/cells.jsonl" --harness tk --model smoke --instance null-cell --seconds 3
 luajit "$ROOT/lib/report.lua" --cells "$smoke/cells.jsonl" --out-dir "$smoke/report" --meta '{}' >/dev/null
-grep -Fq '| tk | smoke | n/a (no official eval) | 1 |' "$smoke/report/REPORT.md"
+grep -Fq '| tk | smoke | n/a (no official eval) | — | 100% | 0/1 (0%) | NOT SCORED |' "$smoke/report/REPORT.md"
 grep -Fq '| tk | smoke | null-cell | null | 3 |' "$smoke/report/REPORT.md"
 echo "ok Lua cell/report null handling"
+"$ROOT/test.sh"
 
 "$ROOT/run.sh" --help >/dev/null
 echo "ok run.sh --help"
@@ -62,7 +63,7 @@ fi
 
 "$ROOT/deepswe/run.sh" --help >/dev/null
 echo "ok deepswe/run.sh --help"
-if [[ -x "$ROOT/deepswe/thin_task.sh" && -f "$ROOT/deepswe/apply_host_patch.py" && -f "$ROOT/deepswe/sample.py" && -f "$ROOT/deepswe/report.lua" ]]; then
+if [[ -x "$ROOT/deepswe/thin_task.sh" && -f "$ROOT/deepswe/apply_host_patch.py" && -f "$ROOT/deepswe/sample.py" && -f "$ROOT/deepswe/report.lua" && -f "$ROOT/deepswe/reward.lua" ]]; then
   echo "ok deepswe runner files"
 else
   echo "missing deepswe runner files"; fail=1
