@@ -385,6 +385,25 @@ impl Session {
     ) -> std::io::Result<(Self, SessionRecoveryReport)> {
         let content = read_limited_file(path)?;
         let integrity_verified = content.starts_with(SESSION_HEADER);
+        if !integrity_verified
+            && content
+                .lines()
+                .next()
+                .and_then(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+                .and_then(|value| {
+                    value
+                        .get("type")
+                        .and_then(|kind| kind.as_str())
+                        .map(str::to_owned)
+                })
+                .as_deref()
+                == Some("rx4_session_integrity")
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "unsupported or invalid session integrity header",
+            ));
+        }
         let content = if integrity_verified {
             use sha2::{Digest, Sha256};
             let invalid = || {
@@ -1030,6 +1049,12 @@ not valid json at all
             .unwrap()
             + 1;
         std::fs::write(&path, &bytes[..last_line]).unwrap();
+        assert!(Session::load_jsonl(&path).is_err());
+        let unsupported =
+            String::from_utf8(bytes)
+                .unwrap()
+                .replacen("\"version\":1", "\"version\":2", 1);
+        std::fs::write(&path, unsupported).unwrap();
         assert!(Session::load_jsonl(&path).is_err());
     }
 
