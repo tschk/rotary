@@ -18,12 +18,24 @@
 These are proposals, not completed features. Hosts continue to choose policy
 and scheduling. Each item needs an end-to-end contract test before release.
 
-- **Authority across scope changes.** `Agent::set_scope` applies the new
-  scope's policy mode, and model tools can request a scope change. Preserve the
-  parent's authority ceiling for subagents and fail closed when a host gate
-  cannot safely follow a change. Test filtered children and read-only parents
-  across model-requested plan-mode transitions. See `src/agent/mod.rs`,
-  `src/subagent.rs`, and `src/permissions.rs`.
+- **Authority remains patched, not structurally proven.** Child construction
+  now intersects inherited policy, scope, tool selection and approval, and
+  scope changes retain the inherited ceiling. Regression tests cover two
+  previously escaping paths. However, authority is still distributed across
+  mutable `Agent` fields, policy, authorizers and tool-specific bridges; it is
+  not encoded as a single non-widening capability in the type system. Audit
+  every delegation and tool-dispatch path, including nested children and script
+  bridges, against one authority contract. Move enforcement to a mandatory
+  boundary that cannot be replaced by a scope transition or forgotten by a
+  new tool. Keep host-owned policy and approval semantics. See
+  `src/agent/mod.rs`, `src/subagent.rs`, and `src/permissions.rs`.
+- **Resource budgets for delegated work.** Script helpers have a Linux
+  per-process address-space cap and bounded parent bridge operations. Those
+  limits do not bound aggregate parent memory across concurrent scripts or
+  blocking host callbacks; hosts must limit concurrency and parent resources.
+  Provide a shared, host-configurable aggregate budget with cancellation and
+  accounting across helpers and bridges. See `src/tools/script.rs` and
+  `src/tools/script/worker.rs`.
 - **Recoverable sessions.** `Session::save_jsonl` overwrites the existing file
   and `load_jsonl` skips malformed records. Add an atomic save and an explicit
   recovery report so a host can distinguish a complete history from a damaged
