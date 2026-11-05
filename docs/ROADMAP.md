@@ -52,10 +52,11 @@ and scheduling. Each item needs an end-to-end contract test before release.
   reasons to hosts, and verify that partial text or tool calls are not repeated
   as completed work after a stream failure. See `src/agent/mod.rs` and
   `src/provider.rs`.
-- **Composable long-running work.** Background tool results and bounded tool
-  pipelines already exist. Give hosts a durable handle for long-running work
-  that can be inspected, cancelled, and resumed without replaying side effects.
-  Keep approval and scheduling with the host. See `src/agent/mod.rs` and
+- **Composable long-running work.** Background tool results, bounded tool
+  pipelines and durable worker handles exist. Extend recovery beyond restoring
+  state: define which work can be resumed without replaying side effects, and
+  expose checkpoints and cancellation to hosts. Keep approval and scheduling
+  with the host. See `src/agent/mod.rs`, `src/subagent.rs`, and
   `src/agent/pipeline.rs`.
 
 ### P0
