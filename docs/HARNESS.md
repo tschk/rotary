@@ -54,10 +54,11 @@ helper beside the current executable, or the host can set `Agent::script_worker`
 to its absolute path. A missing or incompatible helper fails closed.
 
 Scripts run in a supervised process. The parent authorizes each file bridge
-through its normal tool gates and enforces a wall-clock deadline. LuaJIT does
-not have a memory limit here. Hosts must apply an external memory limit before
-enabling this tool for untrusted scripts. The process isolation implementation
-requires Unix; unsupported platforms fail closed.
+through its normal tool gates and enforces a wall-clock deadline. On Linux,
+the helper limits its address space to 96 MiB, or a lower inherited limit.
+This per-process limit does not bound memory used by bridges in the parent;
+hosts must limit the parent separately when running untrusted workloads.
+The helper fails closed on other platforms and when it cannot apply the limit.
 
 ## Hashline
 

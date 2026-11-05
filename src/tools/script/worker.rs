@@ -332,7 +332,30 @@ fn json_to_lua(
     })
 }
 
+#[cfg(not(target_os = "linux"))]
 pub fn main() -> Result<(), String> {
+    Err("script memory isolation is unavailable on this platform".into())
+}
+
+#[cfg(target_os = "linux")]
+pub fn main() -> Result<(), String> {
+    use rustix::process::{getrlimit, setrlimit, Resource, Rlimit};
+    const MAX_ADDRESS_SPACE: u64 = 96 * 1024 * 1024;
+    let previous = getrlimit(Resource::As);
+    let maximum = previous
+        .maximum
+        .unwrap_or(MAX_ADDRESS_SPACE)
+        .min(MAX_ADDRESS_SPACE);
+    let current = previous.current.unwrap_or(maximum).min(maximum);
+    setrlimit(
+        Resource::As,
+        Rlimit {
+            current: Some(current),
+            maximum: Some(maximum),
+        },
+    )
+    .map_err(|error| format!("failed to set script memory limit: {error}"))?;
+
     write_frame(
         &mut std::io::stdout().lock(),
         &json!({"version":1,"kind":"hello"}),

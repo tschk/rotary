@@ -44,7 +44,7 @@ skills = ["dep:serde_yaml", "dep:dirs"]
 # Indexed grep/find via fff-search (git2/notify). Slim hosts use stdlib walk.
 fff = ["dep:fff-search"]
 # Sandboxed Lua `script` tool (read-only bridges; vendored LuaJIT, Lua 5.1).
-script = ["dep:mlua", "dep:regex", "tokio/process", "tokio/io-util"]
+script = ["dep:mlua", "dep:regex", "dep:rustix", "tokio/process", "tokio/io-util"]
 # Host-API islands — off unless a host names them.
 autoresearch = ["tokio/process"]
 marketplace = ["mcp"]
@@ -101,6 +101,9 @@ dirs = { version = "6", optional = true }
 sha2 = "0.10"
 # IPC token compare. Marketplace does not use this crate.
 subtle = { version = "2.6.1", optional = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+rustix = { version = "1", features = ["process"], optional = true }
 
 [[example]]
 name = "provider_agent"

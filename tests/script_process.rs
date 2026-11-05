@@ -1,4 +1,4 @@
-#![cfg(all(feature = "script", unix))]
+#![cfg(all(feature = "script", target_os = "linux"))]
 use rx4::agent::{ToolContext, ToolRegistry};
 use std::{path::Path, sync::Arc, time::Duration};
 
@@ -82,6 +82,47 @@ async fn scalar_tables_protected_calls_and_limits() {
         assert!(execute(context(root.path()), code).await.is_error);
     }
 }
+
+#[tokio::test]
+async fn script_allocation_is_bounded() {
+    let root = tempfile::tempdir().unwrap();
+    let worker = tokio::spawn(execute(tracked_context(root.path()), "while true do end"));
+    let worker_pid = pid(root.path()).await;
+    tokio::time::timeout(Duration::from_millis(750), async {
+        loop {
+            let limits = std::fs::read_to_string(format!("/proc/{worker_pid}/limits")).unwrap();
+            let address_space = limits
+                .lines()
+                .find(|line| line.starts_with("Max address space"))
+                .unwrap();
+            let values: Vec<_> = address_space.split_whitespace().collect();
+            if values[3]
+                .parse::<u64>()
+                .is_ok_and(|limit| limit <= 96 * 1024 * 1024)
+                && values[4]
+                    .parse::<u64>()
+                    .is_ok_and(|limit| limit <= 96 * 1024 * 1024)
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(worker.await.unwrap().is_error);
+    let result = execute(
+        context(root.path()),
+        "local s=string.rep('a', 134217728); return #s",
+    )
+    .await;
+    assert!(
+        result.is_error,
+        "unbounded allocation succeeded: {}",
+        result.content
+    );
+}
+
 #[tokio::test]
 async fn cpu_native_and_protected_timeouts_are_reaped() {
     for code in [
