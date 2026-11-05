@@ -72,6 +72,12 @@ pub struct SessionProjection {
     pub step: ProjectionStep,
 }
 
+/// JSONL records that could not be restored, using one-based line numbers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionRecoveryReport {
+    pub skipped_lines: Vec<usize>,
+}
+
 /// Kind of model-retrievable payload retained outside the provider context.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -350,41 +356,72 @@ impl Session {
     }
 
     pub fn load_jsonl(path: &std::path::Path) -> std::io::Result<Self> {
+        Self::load_jsonl_with_report(path).map(|(session, _)| session)
+    }
+
+    /// Load recoverable records and report every nonempty record that was skipped.
+    pub fn load_jsonl_with_report(
+        path: &std::path::Path,
+    ) -> std::io::Result<(Self, SessionRecoveryReport)> {
         let content = read_limited_file(path)?;
         let id = path.file_stem().unwrap().to_string_lossy().to_string();
         let mut session = Self::new(id.clone(), id);
-        for line in content.lines() {
+        let mut skipped_lines = Vec::new();
+        for (index, line) in content.lines().enumerate() {
             if line.is_empty() {
                 continue;
             }
             let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+                skipped_lines.push(index + 1);
                 continue;
             };
-            if value.get("type").and_then(|value| value.as_str()) == Some("session_todos") {
-                if let Some(todos) = value.get("todos") {
-                    if let Ok(todos) = serde_json::from_value(todos.clone()) {
-                        session.todos = todos;
-                    }
+            let restored = if value.get("type").and_then(|value| value.as_str())
+                == Some("session_todos")
+            {
+                if let Some(todos) = value
+                    .get("todos")
+                    .and_then(|todos| serde_json::from_value(todos.clone()).ok())
+                {
+                    session.todos = todos;
+                    true
+                } else {
+                    false
                 }
             } else if value.get("type").and_then(|value| value.as_str()) == Some("projection") {
                 if let Ok(projection) = serde_json::from_value::<SessionProjection>(value) {
+                    let previous = session.projections.len();
                     session.record_projection(projection);
+                    session.projections.len() != previous
+                } else {
+                    false
                 }
             } else if value.get("type").and_then(|value| value.as_str()) == Some("context_artifact")
             {
                 if let Ok(artifact) = serde_json::from_value::<ContextArtifact>(value) {
                     if crate::tools::common::validate_identifier(&artifact.reference).is_ok() {
+                        let previous = session.artifacts.len();
                         session.record_artifact(artifact);
+                        session.artifacts.len() != previous
+                    } else {
+                        false
                     }
+                } else {
+                    false
                 }
             } else if let Ok(entry) = serde_json::from_value::<Entry>(value) {
                 if entry.id >= session.next_id {
                     session.next_id = entry.id + 1;
                 }
                 session.entries.push(entry);
+                true
+            } else {
+                false
+            };
+            if !restored {
+                skipped_lines.push(index + 1);
             }
         }
-        Ok(session)
+        Ok((session, SessionRecoveryReport { skipped_lines }))
     }
 
     /// Export Codex/rollout-friendly JSONL (one object per line).
@@ -908,6 +945,9 @@ not valid json at all
         assert_eq!(loaded.entries.len(), 1);
         assert_eq!(loaded.entries[0].content, "valid message");
         assert!(loaded.todos.items.is_empty());
+        let (recovered, report) = Session::load_jsonl_with_report(&path).unwrap();
+        assert_eq!(recovered.entries[0].content, "valid message");
+        assert_eq!(report.skipped_lines, vec![3, 4]);
     }
 
     #[test]

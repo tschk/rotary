@@ -42,9 +42,10 @@ and scheduling. Each item needs an end-to-end contract test before release.
   and read/list/grep bridges. Add an equivalent enforced quota before enabling
   it; do not silently run without one.
 - **Recoverable sessions.** `Session::save_jsonl` overwrites the existing file
-  and `load_jsonl` skips malformed records. Add an atomic save and an explicit
-  recovery report so a host can distinguish a complete history from a damaged
-  one. Preserve fork, projection, and artifact references during recovery. See
+  and `load_jsonl` skips malformed records. `load_jsonl_with_report` reports
+  skipped lines, but cannot detect a cleanly truncated file. Add an atomic
+  save and integrity metadata so hosts can identify incomplete histories.
+  Preserve fork, projection, and artifact references during recovery. See
   `src/session.rs`.
 - **MCP concurrency and rich resources.** `McpClient` holds one mutex across
   each request, and `read_resource` returns the first text item. Discovery
