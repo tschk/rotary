@@ -113,6 +113,7 @@ pub struct SubagentBudget {
 pub struct SubagentAuthority {
     pub(crate) policy: Policy,
     pub(crate) scope: Option<Scope>,
+    pub(crate) extra_allowed_tools: Vec<String>,
     pub(crate) authorizer: Option<Arc<dyn Authorizer>>,
     pub(crate) approver: Option<Arc<dyn Approver>>,
     pub(crate) async_approver: Option<Arc<dyn AsyncApprover>>,
@@ -904,7 +905,10 @@ fn policy_from_config(config: &SubagentConfig) -> Policy {
     policy
 }
 
-fn restrictive_mode(parent: PermissionMode, requested: PermissionMode) -> PermissionMode {
+pub(crate) fn restrictive_mode(
+    parent: PermissionMode,
+    requested: PermissionMode,
+) -> PermissionMode {
     fn rank(mode: PermissionMode) -> u8 {
         match mode {
             PermissionMode::DenyAll => 0,
@@ -955,15 +959,16 @@ fn restricted_policy(authority: &SubagentAuthority, config: &SubagentConfig) -> 
 
 struct ToolSelectionAuthorizer {
     inherited: Option<Arc<dyn Authorizer>>,
+    parent_policy: Policy,
+    parent_scope: Option<Scope>,
+    parent_extra_tools: Vec<String>,
     allowed: Option<Vec<String>>,
     denied: Vec<String>,
 }
 
 impl Authorizer for ToolSelectionAuthorizer {
     fn uses_live_policy(&self) -> bool {
-        self.inherited
-            .as_ref()
-            .is_none_or(|authorizer| authorizer.uses_live_policy())
+        true
     }
 
     fn authorize(
@@ -982,17 +987,53 @@ impl Authorizer for ToolSelectionAuthorizer {
         {
             return crate::permissions::Decision::Deny;
         }
-        match &self.inherited {
-            Some(authorizer) => {
-                authorizer.authorize(policy, tool_name, arguments, approver, workspace_root)
-            }
-            None => crate::permissions::PolicyAuthorizer::new().authorize(
-                policy,
+        if self.parent_scope.is_some_and(|scope| {
+            !crate::mode::tool_allowed_with_extra(
+                &crate::mode::profile(scope),
+                &self.parent_extra_tools,
                 tool_name,
-                arguments,
-                approver,
-                workspace_root,
-            ),
+            )
+        }) {
+            return crate::permissions::Decision::Deny;
+        }
+        let parent = crate::permissions::PolicyAuthorizer::new().authorize(
+            &self.parent_policy,
+            tool_name,
+            arguments,
+            None,
+            workspace_root,
+        );
+        let inherited = self
+            .inherited
+            .as_ref()
+            .map_or(crate::permissions::Decision::Allow, |gate| {
+                gate.authorize(policy, tool_name, arguments, None, workspace_root)
+            });
+        let child = crate::permissions::PolicyAuthorizer::new().authorize(
+            policy,
+            tool_name,
+            arguments,
+            None,
+            workspace_root,
+        );
+        match (parent, inherited, child) {
+            (crate::permissions::Decision::Deny, _, _)
+            | (_, crate::permissions::Decision::Deny, _)
+            | (_, _, crate::permissions::Decision::Deny) => crate::permissions::Decision::Deny,
+            (crate::permissions::Decision::Ask, _, _)
+            | (_, crate::permissions::Decision::Ask, _)
+            | (_, _, crate::permissions::Decision::Ask) => {
+                if let Some(approver) = approver {
+                    approver.approve(&crate::agent::ToolCall {
+                        id: String::new(),
+                        name: tool_name.into(),
+                        arguments: arguments.into(),
+                    })
+                } else {
+                    crate::permissions::Decision::Ask
+                }
+            }
+            _ => crate::permissions::Decision::Allow,
         }
     }
 }
@@ -1102,13 +1143,14 @@ fn build_child_agent(
             budget,
             config.max_steps.min(authority.max_tool_iterations),
         );
-        if config.allowed_tools.is_some() || config.denied_tools.is_some() {
-            agent.set_authorizer(Arc::new(ToolSelectionAuthorizer {
-                inherited: authority.authorizer.clone(),
-                allowed: selected_allowed,
-                denied: config.denied_tools.clone().unwrap_or_default(),
-            }));
-        }
+        agent.set_authorizer(Arc::new(ToolSelectionAuthorizer {
+            inherited: authority.authorizer.clone(),
+            parent_policy: authority.policy.clone(),
+            parent_scope: authority.scope,
+            parent_extra_tools: authority.extra_allowed_tools.clone(),
+            allowed: selected_allowed,
+            denied: config.denied_tools.clone().unwrap_or_default(),
+        }));
     } else {
         agent.set_policy(policy);
         agent.max_tool_iterations = config.max_steps.max(1);
@@ -1541,6 +1583,10 @@ mod tests {
             Some(30)
         );
 
+        child.set_scope(Scope::Plan);
+        child.set_scope(Scope::Coding);
+        assert_eq!(child.policy.mode, PermissionMode::ReadOnly);
+
         child.prompt("attempt a write").await.expect("child prompt");
         assert_eq!(denied.load(Ordering::SeqCst), 1);
         assert_eq!(executed.load(Ordering::SeqCst), 0);
@@ -1604,6 +1650,38 @@ mod tests {
         );
 
         child.prompt("attempt a write").await.expect("child prompt");
+        assert_eq!(approvals.load(Ordering::SeqCst), 1);
+        assert_eq!(executed.load(Ordering::SeqCst), 0);
+    }
+
+    #[cfg(feature = "providers")]
+    #[tokio::test]
+    async fn child_scope_round_trip_cannot_widen_parent_read_only_authority() {
+        let root = tempfile::tempdir().unwrap();
+        let executed = Arc::new(AtomicUsize::new(0));
+        let approvals = Arc::new(AtomicUsize::new(0));
+        let mut parent = Agent::new();
+        parent.set_workspace_root(root.path());
+        parent.set_scope(Scope::Coding);
+        parent.set_policy(Policy::read_only());
+        parent.set_async_approver(Arc::new(DenyAsyncApprover {
+            calls: Arc::clone(&approvals),
+        }));
+        let mut child = build_child_agent(
+            Arc::new(OneToolProvider {
+                emitted: AtomicUsize::new(0),
+            }),
+            Some(write_tools(Arc::clone(&executed))),
+            Some(parent.subagent_authority()),
+            &SubagentConfig {
+                allowed_tools: Some(vec!["write".into()]),
+                ..SubagentConfig::default()
+            },
+            root.path(),
+        );
+        child.set_scope(Scope::Plan);
+        child.set_scope(Scope::Coding);
+        child.prompt("attempt a write").await.unwrap();
         assert_eq!(approvals.load(Ordering::SeqCst), 1);
         assert_eq!(executed.load(Ordering::SeqCst), 0);
     }
@@ -1781,6 +1859,7 @@ mod tests {
         );
 
         assert_eq!(child.scope, Scope::Plan);
+        child.set_scope(Scope::Coding);
         child.prompt("attempt a write").await.expect("child prompt");
         assert_eq!(executed.load(Ordering::SeqCst), 0);
     }

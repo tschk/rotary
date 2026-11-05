@@ -549,6 +549,8 @@ pub struct Agent {
     pub policy: Policy,
     pub scope: Scope,
     scope_profile: Option<Profile>,
+    inherited_mode_ceiling: Option<crate::permissions::PermissionMode>,
+    inherited_os_sandbox_required: bool,
     pub hooks: Option<HookRegistry>,
     pub approver: Option<Arc<dyn Approver>>,
     /// Async Approver (pi `beforeToolCall` Promise shape). Preferred for UI hosts.
@@ -669,6 +671,8 @@ impl Agent {
             policy: Policy::workspace_write(),
             scope: Scope::Coding,
             scope_profile: None,
+            inherited_mode_ceiling: None,
+            inherited_os_sandbox_required: false,
             hooks: None,
             approver: None,
             async_approver: None,
@@ -832,7 +836,11 @@ impl Agent {
         self.lsp = lsp;
     }
 
-    pub fn set_policy(&mut self, policy: Policy) {
+    pub fn set_policy(&mut self, mut policy: Policy) {
+        if let Some(ceiling) = self.inherited_mode_ceiling {
+            policy.mode = crate::subagent::restrictive_mode(ceiling, policy.mode);
+        }
+        policy.enable_os_sandbox |= self.inherited_os_sandbox_required;
         self.policy = policy;
         self.invalidate_snapshot_authorizer();
         self.ensure_userspace_sandbox();
@@ -849,6 +857,10 @@ impl Agent {
         let profile = mode::profile(scope);
         // Scope changes mode/sandbox only — keep host shell lists / allowlists.
         self.policy.apply_scope(&profile.policy);
+        if let Some(ceiling) = self.inherited_mode_ceiling {
+            self.policy.mode = crate::subagent::restrictive_mode(ceiling, self.policy.mode);
+        }
+        self.policy.enable_os_sandbox |= self.inherited_os_sandbox_required;
         self.invalidate_snapshot_authorizer();
         self.ensure_userspace_sandbox();
         if self.policy.enable_os_sandbox && self.os_sandbox.is_none() && !self.os_sandbox_failed {
@@ -943,6 +955,7 @@ impl Agent {
         crate::subagent::SubagentAuthority {
             policy: self.policy.clone(),
             scope: self.scope_profile.as_ref().map(|profile| profile.scope),
+            extra_allowed_tools: self.extra_allowed_tools.clone(),
             authorizer: self.authorizer.clone(),
             approver: self.approver.clone(),
             async_approver: self.async_approver.clone(),
@@ -962,6 +975,8 @@ impl Agent {
         budget: Option<AgentBudget>,
         max_tool_iterations: usize,
     ) {
+        self.inherited_mode_ceiling = Some(policy.mode);
+        self.inherited_os_sandbox_required = policy.enable_os_sandbox;
         self.policy = policy;
         if let Some(scope) = authority.scope {
             self.scope = scope;
