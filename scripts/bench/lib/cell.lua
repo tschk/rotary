@@ -21,6 +21,7 @@ local args = common.parse_flags(arg, {
   ["--adapter-model"] = "adapter_model",
   ["--effort"] = "effort",
   ["--unscored-reason"] = "unscored_reason",
+  ["--execution-json"] = "execution_json",
 }, { "cells", "harness", "model", "instance", "seconds" },
   "cell.lua --cells CELLS --harness NAME --model ID --instance ID --seconds N [--exit N] [--error TEXT] [--patch PATH] [--driver NAME] [--resolved true|false|null] [--reward-json PATH] [--verifier NAME] [--dataset NAME] [--adapter-model ID] [--effort LEVEL] [--unscored-reason TEXT]")
 
@@ -54,6 +55,13 @@ local cell = {
 }
 for _, key in ipairs({ "patch", "error", "reward_json", "verifier", "dataset", "adapter_model", "effort", "unscored_reason" }) do
   if args[key] ~= nil and args[key] ~= "" then cell[key] = args[key] end
+end
+if args.execution_json then
+  local file = io.open(args.execution_json, "rb")
+  if file then
+    file:close()
+    cell.execution = common.read_json(args.execution_json)
+  end
 end
 if cell.patch then
   local patch_file = io.open(cell.patch, "rb")

@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import random
 import sys
 from pathlib import Path
 
-HF_ID = "princeton-nlp/SWE-bench_Verified"
+HF_ID = "SWE-bench/SWE-bench_Verified"
+REVISION = "78f471bf655a3137b2e8a75af1501690ec009ec3"
 KEEP = (
     "instance_id",
     "repo",
@@ -47,11 +49,15 @@ def load_or_download(cache_jsonl: Path) -> list[dict]:
             file=sys.stderr,
         )
         raise
-    ds = load_dataset(HF_ID, split="test")
+    ds = load_dataset(HF_ID, revision=REVISION, split="test")
     rows = [_row(dict(ex)) for ex in ds]
     with cache_jsonl.open("w") as fh:
         for r in rows:
             fh.write(json.dumps(r, ensure_ascii=False) + "\n")
+    cache_jsonl.with_suffix(".meta.json").write_text(json.dumps(dict(
+        dataset=HF_ID, revision=REVISION,
+        sha256=hashlib.sha256(cache_jsonl.read_bytes()).hexdigest()
+    )) + "\n")
     return rows
 
 
@@ -80,6 +86,12 @@ def main() -> int:
     with out.open("w") as fh:
         for r in chosen:
             fh.write(json.dumps(r, ensure_ascii=False) + "\n")
+    cached_meta = Path(args.cache).with_suffix(".meta.json")
+    meta = json.loads(cached_meta.read_text()) if cached_meta.exists() else {"revision": "unrecorded"}
+    if meta.get("sha256") != hashlib.sha256(Path(args.cache).read_bytes()).hexdigest():
+        meta = {"revision": "unrecorded"}
+    meta["sample_sha256"] = hashlib.sha256(out.read_bytes()).hexdigest()
+    out.with_suffix(".meta.json").write_text(json.dumps(meta) + "\n")
     print(f"sampled {len(chosen)} / {len(rows)} seed={args.sample_seed}", file=sys.stderr)
     return 0
 
