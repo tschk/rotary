@@ -818,13 +818,7 @@ impl McpClient {
 
     /// Calls `tools/list` and returns the tools exposed by the server.
     pub async fn list_tools(&self) -> Result<Vec<McpToolInfo>, McpError> {
-        let mut inner = self.inner.lock().await;
-        let result = inner.send_request("tools/list", None).await?;
-        let tools = result
-            .get("tools")
-            .ok_or_else(|| McpError::Protocol("missing 'tools' field in response".into()))?;
-        serde_json::from_value(tools.clone())
-            .map_err(|e| McpError::Protocol(format!("failed to parse tools: {e}")))
+        self.list_pages("tools/list", "tools").await
     }
 
     /// Calls `tools/call` with the given arguments and returns the raw result.
@@ -836,13 +830,40 @@ impl McpClient {
 
     /// Calls `resources/list` and returns the resources exposed by the server.
     pub async fn list_resources(&self) -> Result<Vec<McpResourceInfo>, McpError> {
+        self.list_pages("resources/list", "resources").await
+    }
+
+    async fn list_pages<T: serde::de::DeserializeOwned>(
+        &self,
+        method: &str,
+        field: &str,
+    ) -> Result<Vec<T>, McpError> {
         let mut inner = self.inner.lock().await;
-        let result = inner.send_request("resources/list", None).await?;
-        let resources = result
-            .get("resources")
-            .ok_or_else(|| McpError::Protocol("missing 'resources' field in response".into()))?;
-        serde_json::from_value(resources.clone())
-            .map_err(|e| McpError::Protocol(format!("failed to parse resources: {e}")))
+        let mut output = Vec::new();
+        let mut cursor: Option<String> = None;
+        let mut seen = std::collections::HashSet::new();
+        for _ in 0..1000 {
+            let params = cursor.as_ref().map(|cursor| json!({"cursor": cursor}));
+            let result = inner.send_request(method, params).await?;
+            let items = result.get(field).ok_or_else(|| {
+                McpError::Protocol(format!("missing '{field}' field in response"))
+            })?;
+            let page: Vec<T> = serde_json::from_value(items.clone())
+                .map_err(|e| McpError::Protocol(format!("failed to parse {field}: {e}")))?;
+            output.extend(page);
+            match result.get("nextCursor") {
+                None | Some(Value::Null) => return Ok(output),
+                Some(Value::String(next)) if seen.insert(next.clone()) => {
+                    cursor = Some(next.clone());
+                }
+                _ => {
+                    return Err(McpError::Protocol(
+                        "invalid or repeated pagination cursor".into(),
+                    ))
+                }
+            }
+        }
+        Err(McpError::Protocol("pagination page limit exceeded".into()))
     }
 
     /// Calls `resources/read` and returns the text content of the first entry.
@@ -1004,6 +1025,84 @@ impl Default for McpRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct PagedTransport {
+        repeat_cursor: bool,
+    }
+
+    #[async_trait]
+    impl McpTransport for PagedTransport {
+        async fn send_request(
+            &mut self,
+            method: &str,
+            params: Option<Value>,
+        ) -> Result<Value, McpError> {
+            if self.repeat_cursor {
+                return Ok(json!({"tools": [], "nextCursor": "same"}));
+            }
+            let next = params
+                .as_ref()
+                .and_then(|p| p.get("cursor"))
+                .and_then(Value::as_str);
+            match (method, next) {
+                ("tools/list", None) => {
+                    Ok(json!({"tools":[{"name":"first"}],"nextCursor":"page2"}))
+                }
+                ("tools/list", Some("page2")) => Ok(json!({"tools":[{"name":"second"}]})),
+                ("resources/list", None) => {
+                    Ok(json!({"resources":[{"uri":"a:","name":"a"}],"nextCursor":"page2"}))
+                }
+                ("resources/list", Some("page2")) => {
+                    Ok(json!({"resources":[{"uri":"b:","name":"b"}]}))
+                }
+                _ => Err(McpError::Protocol("unexpected request".into())),
+            }
+        }
+        async fn send_notification(&mut self, _: &str, _: Option<Value>) -> Result<(), McpError> {
+            Ok(())
+        }
+        async fn close(&mut self) -> Result<(), McpError> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn discovery_returns_all_tool_and_resource_pages() {
+        let client = McpClient {
+            inner: Mutex::new(Box::new(PagedTransport {
+                repeat_cursor: false,
+            })),
+        };
+        let tools = client.list_tools().await.unwrap();
+        assert_eq!(
+            tools
+                .iter()
+                .map(|tool| tool.name.as_str())
+                .collect::<Vec<_>>(),
+            ["first", "second"]
+        );
+        let resources = client.list_resources().await.unwrap();
+        assert_eq!(
+            resources
+                .iter()
+                .map(|resource| resource.uri.as_str())
+                .collect::<Vec<_>>(),
+            ["a:", "b:"]
+        );
+    }
+
+    #[tokio::test]
+    async fn discovery_rejects_repeated_cursors() {
+        let client = McpClient {
+            inner: Mutex::new(Box::new(PagedTransport {
+                repeat_cursor: true,
+            })),
+        };
+        assert!(matches!(
+            client.list_tools().await,
+            Err(McpError::Protocol(_))
+        ));
+    }
 
     impl McpRegistry {
         fn register_tools_for_test(&mut self, name: &str, tools: &[&str]) {
