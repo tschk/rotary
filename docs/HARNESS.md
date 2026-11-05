@@ -39,12 +39,31 @@ host control.
 
 `builtin_tools` selects exactly from `read`, `write`, `edit`, `hashline_edit`,
 `bash`, `grep`, `find`, `ls`, `web_fetch`, `todo`, `spawn_agent`, plan-mode,
-LSP, and `exec` tools already in rotary. Unknown or duplicate names fail during
+LSP, `exec`, and `script` tools already in rotary. Unknown or duplicate names fail during
 `build`; explicitly selecting `bash`/`grep`/`find`, `web_fetch`, or an LSP tool
 without its `builtin-tools`, `providers`, or `ipc` feature respectively also
 fails during construction. The default loadout contains the portable coding
-tools available under the enabled features. This builder does not add a
-programmatic-calling tool.
+tools available under the enabled features. Selecting `script` requires its
+feature and the helper described below.
+
+## Supervised scripts
+
+The optional `script` feature adds a LuaJIT tool. Build and package the
+matching `rx4-script-worker` binary with the host. The agent searches for the
+helper beside the current executable, or the host can set `Agent::script_worker`
+to its absolute path. A missing or incompatible helper fails closed.
+
+Scripts run in a supervised process. The parent authorizes each file bridge
+through its normal tool gates and enforces a wall-clock deadline. On Linux,
+the helper limits its address space to 96 MiB, or a lower inherited limit.
+The bridge runs in the parent because it enforces the parent's authorization.
+Per script, frames are capped at 2 MiB, reads at 1 MiB, directory listings and
+the grep traversal frontier at 4096 entries, grep matches at 500, and regex
+compilation and cache sizes at 2 MiB each. A script has at most one bridge job
+in flight, with a maximum of 4096 requests. These are per-script bounds, not
+an aggregate parent quota: hosts must bound concurrent scripts and limit the
+parent process separately when running untrusted workloads.
+The helper fails closed on other platforms and when it cannot apply the limit.
 
 ## Hashline
 

@@ -13,6 +13,52 @@
 
 ## Next
 
+### Engine capability gaps
+
+These are proposals, not completed features. Hosts continue to choose policy
+and scheduling. Each item needs an end-to-end contract test before release.
+
+- **Authority remains patched, not structurally proven.** Child construction
+  now intersects inherited policy, scope, tool selection and approval, and
+  scope changes retain the inherited ceiling. Regression tests cover two
+  previously escaping paths. However, authority is still distributed across
+  mutable `Agent` fields, policy, authorizers and tool-specific bridges; it is
+  not encoded as a single non-widening capability in the type system. Audit
+  every delegation and tool-dispatch path, including nested children and script
+  bridges, against one authority contract. Move enforcement to a mandatory
+  boundary that cannot be replaced by a scope transition or forgotten by a
+  new tool. Keep host-owned policy and approval semantics. See
+  `src/agent/mod.rs`, `src/subagent.rs`, and `src/permissions.rs`.
+- **Resource budgets for delegated work.** Script helpers have a Linux
+  per-process address-space cap and bounded parent bridge operations. Those
+  limits do not bound aggregate parent memory across concurrent scripts or
+  blocking host callbacks; hosts must limit concurrency and parent resources.
+  Provide a shared, host-configurable aggregate budget with cancellation and
+  accounting across helpers and bridges. See `src/tools/script.rs` and
+  `src/tools/script/worker.rs`.
+- **Recoverable sessions.** `Session::save_jsonl` overwrites the existing file
+  and `load_jsonl` skips malformed records. Add an atomic save and an explicit
+  recovery report so a host can distinguish a complete history from a damaged
+  one. Preserve fork, projection, and artifact references during recovery. See
+  `src/session.rs`.
+- **MCP concurrency and rich resources.** `McpClient` holds one mutex across
+  each request, `list_tools` reads one response page, and `read_resource`
+  returns the first text item. Support concurrent request IDs, cancellation,
+  pagination, and typed resource contents without discarding additional items.
+  Test against a server that sends out-of-order replies and paginated results.
+  See `src/mcp.rs`.
+- **Observable provider retries.** The agent retries transient stream failures
+  with fixed backoff in `Agent::prompt`. Expose retry attempts and terminal
+  reasons to hosts, and verify that partial text or tool calls are not repeated
+  as completed work after a stream failure. See `src/agent/mod.rs` and
+  `src/provider.rs`.
+- **Composable long-running work.** Background tool results, bounded tool
+  pipelines and durable worker handles exist. Extend recovery beyond restoring
+  state: define which work can be resumed without replaying side effects, and
+  expose checkpoints and cancellation to hosts. Keep approval and scheduling
+  with the host. See `src/agent/mod.rs`, `src/subagent.rs`, and
+  `src/agent/pipeline.rs`.
+
 ### P0
 1. [x] Stream-JSON / noninteractive protocol — `rx4 exec --stream-json` NDJSON events (0.3.8)
 2. [x] Approval UX hooks — `Event::ApprovalRequired(ApprovalRequest)` rich ask payload (0.3.8)

@@ -15,6 +15,11 @@ name = "rx4"
 path = "src/bin/rotary.rs"
 required-features = ["cli"]
 
+[[bin]]
+name = "rx4-script-worker"
+path = "src/bin/script-worker.rs"
+required-features = ["script"]
+
 [lib]
 name = "rx4"
 path = "src/lib.rs"
@@ -38,6 +43,8 @@ personality = ["zkr-memory"]
 skills = ["dep:serde_yaml", "dep:dirs"]
 # Indexed grep/find via fff-search (git2/notify). Slim hosts use stdlib walk.
 fff = ["dep:fff-search"]
+# Sandboxed Lua `script` tool (read-only bridges; vendored LuaJIT, Lua 5.1).
+script = ["dep:mlua", "dep:regex", "dep:rustix", "tokio/process", "tokio/io-util"]
 # Host-API islands — off unless a host names them.
 autoresearch = ["tokio/process"]
 marketplace = ["mcp"]
@@ -73,6 +80,9 @@ futures = { version = "0.3", optional = true }
 regex = { version = "1", optional = true }
 fff-search = { version = "0.10.2-nightly.686a849", optional = true }
 
+# Optional — sandboxed LuaJIT for the `script` tool
+mlua = { version = "0.10", default-features = false, features = ["luajit", "vendored"], optional = true }
+
 # Optional — computer-use
 ed25519-dalek = { version = "2.1", default-features = false, features = ["rand_core", "std"], optional = true }
 hex = { version = "0.4", optional = true }
@@ -91,6 +101,9 @@ dirs = { version = "6", optional = true }
 sha2 = "0.10"
 # IPC token compare. Marketplace does not use this crate.
 subtle = { version = "2.6.1", optional = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+rustix = { version = "1", features = ["process"], optional = true }
 
 [[example]]
 name = "provider_agent"

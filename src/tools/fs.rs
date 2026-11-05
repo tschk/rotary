@@ -373,55 +373,112 @@ async fn wait_and_drain(
     let mut stdout_pipe = child.stdout.take();
     let mut stderr_pipe = child.stderr.take();
 
+    let deadline = tokio::time::Instant::now() + timeout;
     let drain = async {
         let stdout_task = async {
             let mut buf = Vec::new();
-            if let Some(mut out) = stdout_pipe.take() {
-                let _ = out.read_to_end(&mut buf).await;
+            if let Some(mut pipe) = stdout_pipe.take() {
+                let _ = pipe.read_to_end(&mut buf).await;
             }
             buf
         };
         let stderr_task = async {
             let mut buf = Vec::new();
-            if let Some(mut err) = stderr_pipe.take() {
-                let _ = err.read_to_end(&mut buf).await;
+            if let Some(mut pipe) = stderr_pipe.take() {
+                let _ = pipe.read_to_end(&mut buf).await;
             }
             buf
         };
-        let wait_task = async {
-            loop {
-                if ctx.cancellation.is_canceled() {
-                    let _ = child.kill().await;
-                    let _ = child.wait().await;
-                    return Err("command cancelled".to_string());
-                }
-                match child.try_wait() {
-                    Ok(Some(status)) => return Ok(status.code().unwrap_or(-1)),
-                    Ok(None) => tokio::time::sleep(Duration::from_millis(10)).await,
-                    Err(e) => return Err(format!("wait failed: {e}")),
+        tokio::join!(stdout_task, stderr_task)
+    };
+    let (buffers, mut stop_reason) =
+        match tokio::time::timeout_at(deadline, ctx.cancellation.run(drain)).await {
+            Ok(Ok(buffers)) => (Some(buffers), None),
+            Ok(Err(_)) => (None, Some("command cancelled".to_string())),
+            Err(_) => (
+                None,
+                Some(format!("command timed out after {}s", timeout.as_secs())),
+            ),
+        };
+    // Pipes closing does not prove that a redirected descendant has stopped.
+    // Never reap the direct child before the owned group is proved stopped.
+    let mut group = crate::tools::exec::OwnedProcessGroup::new(
+        child.id().ok_or("direct child ownership unavailable")?,
+    );
+    loop {
+        if stop_reason.is_none() {
+            if ctx.cancellation.is_canceled() {
+                stop_reason = Some("command cancelled".into());
+            } else if tokio::time::Instant::now() >= deadline {
+                stop_reason = Some(format!("command timed out after {}s", timeout.as_secs()));
+            }
+        }
+        let retry = ctx.process_settlement.retry_notice();
+        tokio::pin!(retry);
+        retry.as_mut().enable();
+        let control = Arc::clone(&ctx.process_settlement);
+        let stopping = stop_reason.is_some();
+        // Await each bounded helper completely; cancellation must not detach a
+        // helper command or its pipe reader while publishing worker completion.
+        let attempt = tokio::task::spawn_blocking(move || {
+            let result = if stopping {
+                group.try_settle(&control).map(|()| true)
+            } else {
+                group.observe(&control, Duration::from_millis(500))
+            };
+            (group, result)
+        })
+        .await;
+        match attempt {
+            Ok((owned, result)) => {
+                group = owned;
+                match result {
+                    Ok(true) => {
+                        ctx.process_settlement.clear();
+                        break;
+                    }
+                    Ok(false) => {
+                        let _ = ctx
+                            .cancellation
+                            .run(tokio::time::sleep(Duration::from_millis(5)))
+                            .await;
+                    }
+                    Err(error) => {
+                        ctx.process_settlement.record_unknown(error);
+                        retry.await;
+                    }
                 }
             }
-        };
-        // Drain pipes concurrent with wait — avoid pipe-buffer deadlock.
-        let (stdout_buf, stderr_buf, wait_res) = tokio::join!(stdout_task, stderr_task, wait_task);
-        let exit_code = wait_res?;
-        // If process still has leftover status after pipes closed:
-        let exit_code = if exit_code == -1 {
-            child.wait().await.ok().and_then(|s| s.code()).unwrap_or(-1)
-        } else {
-            exit_code
-        };
-        Ok::<_, String>((stdout_buf, stderr_buf, exit_code))
-    };
-
-    match tokio::time::timeout(timeout, drain).await {
-        Ok(Ok(v)) => Ok(v),
-        Ok(Err(msg)) => Err(msg),
-        Err(_) => {
-            let _ = child.kill().await;
-            let _ = child.wait().await;
-            Err(format!("command timed out after {}s", timeout.as_secs()))
+            Err(error) => {
+                ctx.process_settlement.record_unknown(format!(
+                    "process cleanup ownership lost; external reconciliation required: {error}"
+                ));
+                std::future::pending::<()>().await;
+                return Err("process cleanup ownership lost".into());
+            }
         }
+    }
+    let exit_code = loop {
+        let retry = ctx.process_settlement.retry_notice();
+        tokio::pin!(retry);
+        retry.as_mut().enable();
+        match child.wait().await {
+            Ok(status) => {
+                ctx.process_settlement.clear();
+                break status.code().unwrap_or(-1);
+            }
+            Err(error) => {
+                ctx.process_settlement
+                    .record_unknown(format!("direct child reaping unconfirmed: {error}"));
+                retry.await;
+            }
+        }
+    };
+    if let Some(reason) = stop_reason {
+        Err(reason)
+    } else {
+        let (stdout, stderr) = buffers.ok_or("process output unavailable")?;
+        Ok((stdout, stderr, exit_code))
     }
 }
 
@@ -492,6 +549,8 @@ async fn run_bash_with_retry(
     let mut escalated = false;
     for attempt in 0..2 {
         let mut cmd = build_command(&ctx, &command, &working_dir, runner.as_deref())?;
+        #[cfg(unix)]
+        cmd.process_group(0);
         let child = cmd.spawn().map_err(|e| format!("failed to execute: {e}"))?;
         let (stdout_buf, stderr_buf, exit_code) =
             wait_and_drain(ctx.clone(), child, timeout).await?;

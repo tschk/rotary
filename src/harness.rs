@@ -173,6 +173,7 @@ const BUILTIN_TOOL_NAMES: &[&str] = &[
     "ls",
     "retrieve_context_artifact",
     "tool_pipeline",
+    "script",
     "web_fetch",
     "todo",
     "spawn_agent",
@@ -211,9 +212,10 @@ fn selected_builtin_tools(
 }
 
 fn default_builtin_tools() -> Vec<&'static str> {
+    let names = vec!["read", "write", "edit", "hashline_edit", "ls", "todo"];
     #[cfg(feature = "builtin-tools")]
-    {
-        let mut names = vec!["read", "write", "edit", "hashline_edit", "ls", "todo"];
+    let names = {
+        let mut names = names;
         names.extend([
             "bash",
             "grep",
@@ -222,15 +224,19 @@ fn default_builtin_tools() -> Vec<&'static str> {
             "tool_pipeline",
         ]);
         names
-    }
-    #[cfg(not(feature = "builtin-tools"))]
-    {
-        vec!["read", "write", "edit", "hashline_edit", "ls", "todo"]
-    }
+    };
+    #[cfg(feature = "script")]
+    let names = {
+        let mut names = names;
+        names.push("script");
+        names
+    };
+    names
 }
 
 fn disabled_feature(name: &str) -> Option<&'static str> {
     match name {
+        "script" if !cfg!(feature = "script") => Some("script"),
         "bash" | "grep" | "find" if !cfg!(feature = "builtin-tools") => Some("builtin-tools"),
         "web_fetch" if !cfg!(feature = "providers") => Some("providers"),
         "lsp_diagnostics" | "lsp_definition" | "lsp_references" if !cfg!(feature = "ipc") => {
@@ -269,6 +275,17 @@ mod tests {
             .collect::<Vec<_>>();
         expected.sort();
         assert_eq!(agent.tools.names(), expected);
+    }
+
+    #[test]
+    fn script_builtin_selection_follows_feature() {
+        let selected = HarnessBuilder::new().builtin_tools(["script"]).build();
+        #[cfg(feature = "script")]
+        assert_eq!(selected.unwrap().tools.names(), vec!["script"]);
+        #[cfg(not(feature = "script"))]
+        assert!(
+            matches!(selected, Err(HarnessError::FeatureDisabled { tool, feature: "script" }) if tool == "script")
+        );
     }
 
     #[test]
