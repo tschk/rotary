@@ -63,7 +63,6 @@ fn run_owned_lua(code: String, duration: Duration) -> Result<String, String> {
     };
     let lua = mlua::Lua::new_with(safe_libs(), mlua::LuaOptions::new())
         .map_err(|e| format!("lua init: {e}"))?;
-    // LuaJIT cannot enforce allocator limits; do not claim a memory cap.
     lua.load(STRIP_ESCAPE_HATCHES)
         .set_name("=sandbox-bootstrap")
         .exec()
