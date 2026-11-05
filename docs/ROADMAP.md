@@ -27,7 +27,13 @@ and scheduling. Each item needs an end-to-end contract test before release.
   every delegation and tool-dispatch path, including nested children and script
   bridges, against one authority contract. Move enforcement to a mandatory
   boundary that cannot be replaced by a scope transition or forgotten by a
-  new tool. Keep host-owned policy and approval semantics. See
+  new tool. Extend the matrix with host allow/deny lists, shell rules, path
+  boundaries, argument encodings and approval outcomes; generate adversarial
+  paths and commands and compare child decisions against the actual parent
+  gate across nested delegations and every dispatch path. Arbitrary host
+  authorizers can be stateful, so require an explicit non-widening contract
+  or a mandatory parent-gate intersection rather than claiming enumeration
+  proves all callbacks. Keep host-owned policy and approval semantics. See
   `src/agent/mod.rs`, `src/subagent.rs`, and `src/permissions.rs`.
 - **Resource budgets for delegated work.** Script helpers have a Linux
   per-process address-space cap and bounded parent bridge operations. Those
@@ -41,12 +47,12 @@ and scheduling. Each item needs an end-to-end contract test before release.
   those platforms cannot use the `script` tool, including its Lua processing
   and read/list/grep bridges. Add an equivalent enforced quota before enabling
   it; do not silently run without one.
-- **Recoverable sessions.** `Session::save_jsonl` overwrites the existing file
-  and `load_jsonl` skips malformed records. `load_jsonl_with_report` reports
-  skipped lines, but cannot detect a cleanly truncated file. Add an atomic
-  save and integrity metadata so hosts can identify incomplete histories.
-  Preserve fork, projection, and artifact references during recovery. See
-  `src/session.rs`.
+- **Recoverable sessions.** JSONL saves use atomic replacement and checksums;
+  `load_jsonl_with_report` identifies skipped records and whether the envelope
+  was verified. Legacy files have no checksum, so truncation or a missing
+  header cannot be distinguished from legacy data. Hosts that require
+  integrity must reject unverified reports. Preserve fork, projection, and
+  artifact references during recovery. See `src/session.rs`.
 - **MCP concurrency and rich resources.** `McpClient` holds one mutex across
   each request, and `read_resource` returns the first text item. Discovery
   follows tool and resource pagination. Support concurrent request IDs,
