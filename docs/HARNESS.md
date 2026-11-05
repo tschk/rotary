@@ -39,12 +39,25 @@ host control.
 
 `builtin_tools` selects exactly from `read`, `write`, `edit`, `hashline_edit`,
 `bash`, `grep`, `find`, `ls`, `web_fetch`, `todo`, `spawn_agent`, plan-mode,
-LSP, and `exec` tools already in rotary. Unknown or duplicate names fail during
+LSP, `exec`, and `script` tools already in rotary. Unknown or duplicate names fail during
 `build`; explicitly selecting `bash`/`grep`/`find`, `web_fetch`, or an LSP tool
 without its `builtin-tools`, `providers`, or `ipc` feature respectively also
 fails during construction. The default loadout contains the portable coding
-tools available under the enabled features. This builder does not add a
-programmatic-calling tool.
+tools available under the enabled features. Selecting `script` requires its
+feature and the helper described below.
+
+## Supervised scripts
+
+The optional `script` feature adds a LuaJIT tool. Build and package the
+matching `rx4-script-worker` binary with the host. The agent searches for the
+helper beside the current executable, or the host can set `Agent::script_worker`
+to its absolute path. A missing or incompatible helper fails closed.
+
+Scripts run in a supervised process. The parent authorizes each file bridge
+through its normal tool gates and enforces a wall-clock deadline. LuaJIT does
+not have a memory limit here. Hosts must apply an external memory limit before
+enabling this tool for untrusted scripts. The process isolation implementation
+requires Unix; unsupported platforms fail closed.
 
 ## Hashline
 
