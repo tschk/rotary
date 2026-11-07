@@ -89,7 +89,7 @@ async fn execute_spawn_agent(
         configured.set_tools(tools);
     }
     if let Some(authority) = ctx.subagent_authority.clone() {
-        configured.set_authority(authority);
+        configured = configured.with_authority(authority);
     }
     spawn_subagent(&mut configured, config, &prompt, &ctx.workspace_root)
 }
