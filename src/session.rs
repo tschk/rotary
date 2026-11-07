@@ -776,6 +776,12 @@ impl Session {
             "UPDATE sessions SET artifacts = ?1 WHERE id = ?2",
             params![encoded, self.id],
         );
+        let _ = conn.execute("ALTER TABLE sessions ADD COLUMN todos TEXT", []);
+        let encoded = serde_json::to_string(&self.todos).unwrap_or_else(|_| "{}".into());
+        let _ = conn.execute(
+            "UPDATE sessions SET todos = ?1 WHERE id = ?2",
+            params![encoded, self.id],
+        );
 
         Ok(())
     }
@@ -850,6 +856,16 @@ impl Session {
         ) {
             if let Ok(projections) = serde_json::from_str::<Vec<SessionProjection>>(&raw) {
                 session.projections = projections;
+            }
+        }
+        let _ = conn.execute("ALTER TABLE sessions ADD COLUMN todos TEXT", []);
+        if let Ok(Some(raw)) = conn.query_row(
+            "SELECT todos FROM sessions WHERE id = ?1",
+            params![id],
+            |row| row.get::<_, Option<String>>(0),
+        ) {
+            if let Ok(todos) = serde_json::from_str::<TodoState>(&raw) {
+                session.todos = todos;
             }
         }
         let _ = conn.execute("ALTER TABLE sessions ADD COLUMN artifacts TEXT", []);
@@ -1270,6 +1286,29 @@ not valid json at all
         assert_eq!(loaded.entries[2].tool_call_id.as_deref(), Some("c1"));
         assert_eq!(loaded.next_id, s.next_id);
         assert_eq!(loaded.artifacts, s.artifacts);
+    }
+
+    #[cfg(feature = "sqlite-sessions")]
+    #[test]
+    fn test_todo_state() {
+        let mut session = Session::new("s_todo", "todo_test");
+        session.todos.items.push(crate::todo::TodoItem {
+            id: "todo_1".to_string(),
+            content: "A pending task".to_string(),
+            status: crate::todo::TodoStatus::Pending,
+            creation_confidence: 90,
+            completion_confidence: None,
+            verification_attempts: 0,
+        });
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session_todos.db");
+        session.save_sqlite(&path).unwrap();
+
+        let loaded = Session::load_sqlite(&path).unwrap();
+        // Todos should be loaded successfully
+        assert_eq!(loaded.todos.items.len(), 1);
+        assert_eq!(loaded.todos.items[0].id, "todo_1");
     }
 
     #[test]
