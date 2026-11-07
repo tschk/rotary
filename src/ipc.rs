@@ -79,10 +79,6 @@ impl IpcServer {
         *self.agent.lock().await = agent;
     }
 
-    pub fn attach_tools(&self, tools: ToolRegistry) {
-        *self.tools.lock().unwrap_or_else(|e| e.into_inner()) = tools;
-    }
-
     #[cfg(feature = "marketplace")]
     pub fn attach_plugins(&self, plugins: PluginRegistry) {
         *self.plugins.lock().unwrap_or_else(|e| e.into_inner()) = plugins;
