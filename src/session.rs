@@ -764,6 +764,12 @@ impl Session {
 
         tx.commit().map_err(|e| e.to_string())?;
 
+        let _ = conn.execute("ALTER TABLE sessions ADD COLUMN todos TEXT", []);
+        let encoded = serde_json::to_string(&self.todos).unwrap_or_else(|_| "{}".into());
+        let _ = conn.execute(
+            "UPDATE sessions SET todos = ?1 WHERE id = ?2",
+            params![encoded, self.id],
+        );
         let _ = conn.execute("ALTER TABLE sessions ADD COLUMN projections TEXT", []);
         let encoded = serde_json::to_string(&self.projections).unwrap_or_else(|_| "[]".into());
         let _ = conn.execute(
@@ -841,6 +847,16 @@ impl Session {
 
         for row in rows {
             session.entries.push(row.map_err(|e| e.to_string())?);
+        }
+        let _ = conn.execute("ALTER TABLE sessions ADD COLUMN todos TEXT", []);
+        if let Ok(Some(raw)) = conn.query_row(
+            "SELECT todos FROM sessions WHERE id = ?1",
+            params![id],
+            |row| row.get::<_, Option<String>>(0),
+        ) {
+            if let Ok(todos) = serde_json::from_str::<crate::todo::TodoState>(&raw) {
+                session.todos = todos;
+            }
         }
         let _ = conn.execute("ALTER TABLE sessions ADD COLUMN projections TEXT", []);
         if let Ok(Some(raw)) = conn.query_row(
