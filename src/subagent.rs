@@ -717,11 +717,6 @@ impl SubagentManager {
         self.tools = Some(tools);
     }
 
-    /// Replace the authority inherited by subsequently spawned children.
-    pub fn set_authority(&mut self, authority: SubagentAuthority) {
-        self.authority = Some(authority);
-    }
-
     pub fn subscribe(&mut self, callback: impl Fn(&SubagentEvent) + Send + Sync + 'static) {
         self.subscribers.push(Arc::new(callback));
     }
