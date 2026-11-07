@@ -464,7 +464,7 @@ impl AutoresearchController {
     ) -> Result<Self, AutoresearchControllerError> {
         config.validate()?;
         let requested_root = root.into();
-        let root = std::fs::canonicalize(&requested_root)?;
+        let root = tokio::fs::canonicalize(&requested_root).await?;
         if !root.is_dir() {
             return Err(AutoresearchControllerError::InvalidConfig(format!(
                 "workspace is not a directory: {}",
@@ -473,7 +473,7 @@ impl AutoresearchController {
         }
         let no_cancel = AutoresearchCancellation::new();
         let git_root = git_output(&root, &["rev-parse", "--show-toplevel"], &no_cancel).await?;
-        let git_root = std::fs::canonicalize(git_root.trim())?;
+        let git_root = tokio::fs::canonicalize(git_root.trim()).await?;
         if git_root != root {
             return Err(AutoresearchControllerError::InvalidConfig(
                 "controller root must be the Git repository root".into(),
