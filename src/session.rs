@@ -777,6 +777,13 @@ impl Session {
             params![encoded, self.id],
         );
 
+        let _ = conn.execute("ALTER TABLE sessions ADD COLUMN todos TEXT", []);
+        let encoded = serde_json::to_string(&self.todos).unwrap_or_else(|_| "{}".into());
+        let _ = conn.execute(
+            "UPDATE sessions SET todos = ?1 WHERE id = ?2",
+            params![encoded, self.id],
+        );
+
         Ok(())
     }
 
@@ -865,6 +872,16 @@ impl Session {
                         crate::tools::common::validate_identifier(&artifact.reference).is_ok()
                     })
                     .collect();
+            }
+        }
+        let _ = conn.execute("ALTER TABLE sessions ADD COLUMN todos TEXT", []);
+        if let Ok(Some(raw)) = conn.query_row(
+            "SELECT todos FROM sessions WHERE id = ?1",
+            params![id],
+            |row| row.get::<_, Option<String>>(0),
+        ) {
+            if let Ok(todos) = serde_json::from_str::<TodoState>(&raw) {
+                session.todos = todos;
             }
         }
         Ok(session)
@@ -1231,6 +1248,29 @@ not valid json at all
         assert!(s.entries[0].content.contains(&secret));
         assert_eq!(loaded.todos.items.len(), 1);
         assert_eq!(loaded.todos.items[0].content, "a task");
+    }
+
+    #[cfg(feature = "sqlite-sessions")]
+    #[test]
+    fn test_todo_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session_todos.db");
+        let mut session = Session::new("s1", "test");
+        session.todos.items.push(crate::todo::TodoItem {
+            id: "todo_1".to_string(),
+            content: "A pending task".to_string(),
+            status: crate::todo::TodoStatus::Pending,
+            creation_confidence: 100,
+            completion_confidence: None,
+            verification_attempts: 0,
+        });
+
+        session.save_sqlite(&path).unwrap();
+
+        let loaded = Session::load_sqlite(&path).unwrap();
+        // Todos should be loaded successfully
+        assert_eq!(loaded.todos.items.len(), 1);
+        assert_eq!(loaded.todos.items[0].id, "todo_1");
     }
 
     #[cfg(feature = "sqlite-sessions")]
