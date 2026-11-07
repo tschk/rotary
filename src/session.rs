@@ -901,6 +901,25 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_todo_state() {
+        let mut session = Session::default();
+        session.todos.items.push(crate::todo::TodoItem {
+            id: "todo_1".to_string(),
+            description: "A pending task".to_string(),
+            status: crate::todo::TodoStatus::Pending,
+            confidence: Some(crate::todo::TodoConfidence::High),
+        });
+
+        let mut buffer = Vec::new();
+        session.save(&mut buffer).unwrap();
+
+        let loaded = Session::load(&buffer[..]).unwrap();
+        // Todos should be loaded successfully
+        assert_eq!(loaded.todos.items.len(), 1);
+        assert_eq!(loaded.todos.items[0].id, "todo_1");
+    }
+
+    #[test]
     fn jsonl_roundtrip() {
         let dir = tempfile::tempdir().unwrap();
         let mut s = Session::new("test_jsonl_session", "jsonl-test");
