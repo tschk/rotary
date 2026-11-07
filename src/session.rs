@@ -776,6 +776,12 @@ impl Session {
             "UPDATE sessions SET artifacts = ?1 WHERE id = ?2",
             params![encoded, self.id],
         );
+        let _ = conn.execute("ALTER TABLE sessions ADD COLUMN todos TEXT", []);
+        let encoded = serde_json::to_string(&self.todos).unwrap_or_else(|_| "{}".into());
+        let _ = conn.execute(
+            "UPDATE sessions SET todos = ?1 WHERE id = ?2",
+            params![encoded, self.id],
+        );
 
         Ok(())
     }
@@ -865,6 +871,16 @@ impl Session {
                         crate::tools::common::validate_identifier(&artifact.reference).is_ok()
                     })
                     .collect();
+            }
+        }
+        let _ = conn.execute("ALTER TABLE sessions ADD COLUMN todos TEXT", []);
+        if let Ok(Some(raw)) = conn.query_row(
+            "SELECT todos FROM sessions WHERE id = ?1",
+            params![id],
+            |row| row.get::<_, Option<String>>(0),
+        ) {
+            if let Ok(todos) = serde_json::from_str::<crate::todo::TodoState>(&raw) {
+                session.todos = todos;
             }
         }
         Ok(session)
